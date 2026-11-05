@@ -45,13 +45,35 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
 const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
-assert.ok(worker.length <= 4103);
+assert.ok(worker.length <= 6214);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assertNoRecitation(text);
 }
 assert.match(voice, /# Work and spoken delivery/);
 assert.match(voice, /MUST be handed off in the same turn/);
+// C-PROMPT: one rule per behaviour. A hand-off usually needs no words, delivery keeps every fact exact and
+// may add her own view after the facts, and the base asks a closing question only when it is earned.
+for (const rule of [
+  'A hand-off usually needs no words',
+  'an acknowledgement never promises work',
+  "Say a person's name as it is written",
+  'A large amount may be said rounded in speech when the exact figure adds nothing and he did not ask for it',
+  'your own view may follow in your own voice',
+  'never summarise what he asked to hear',
+]) assert.ok(voice.includes(rule), `the delivery rule is stated: ${rule}`);
+for (const gone of ['freshly worded', 'nothing summarised', 'Close with a costly question', 'Say still about one',
+  'Say still about one only'])
+  assert.equal(voice.includes(gone) || persona.NAYA_CHARACTER.includes(gone), false, `the contradictory or garbled line is gone: ${gone}`);
+assert.match(persona.NAYA_CHARACTER, /A closing question earns its place only when his answer would change what you do next/);
+assert.match(persona.NAYA_CHARACTER, /Call something still open or still true only when it was confirmed in the last 24 hours/);
+assert.match(persona.NAYA_VOICE_SURFACE, /when nothing current is open, greet the moment itself/,
+  'a call with nothing open greets the moment');
+// C-PROMPT: the class one topic belongs to is the class the note names and the plan refuses.
+assert.equal(persona.openerClass('the supplier payment came to 4,200 dollars'), 'recent-thread');
+assert.equal(persona.openerClass('the 15:00 meeting moved'), 'calendar');
+assert.equal(persona.openerClass('the open loop on the deposit'), 'open-loop');
+assert.equal(persona.openerClass('my tools failed again'), 'tool_failure');
 // 10.11: each new rule is a judgment she applies, and neither public text carries a said line.
 for (const rule of [
   'Everything else is yours and you answer it yourself',
@@ -70,6 +92,14 @@ for (const rule of [
   'Use a returned reference only with its own reader',
   'give all of it now',
   'answered only from verified host status and task evidence',
+  'say what it reported in plain words and what can be done next',
+  // C-REPEAT: a follow-up is judged, an already spoken answer is not written again, and state comes from facts.
+  'A follow-up that asks something new is read together with the task before it',
+  'Words that add no new ask, agreement and an unfinished sentence among them, return no_action',
+  'What is listed as already said is his: never write it again',
+  'A cut answer may continue from where it stopped',
+  'widen the sources, open what was only a pointer, and say what changed',
+  'when the status says nothing is running, say that nothing is running and give the real outcome',
 ]) assert.ok(worker.includes(rule), `the new helper rule is stated: ${rule}`);
 assert.doesNotMatch(voice, /"/, 'the voice conduct hands her no quoted line to say');
 const backchannel = persona.NAYA_VOICE_SURFACE.slice(persona.NAYA_VOICE_SURFACE.indexOf('# Backchannel policy'),

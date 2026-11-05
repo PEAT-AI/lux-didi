@@ -21,7 +21,7 @@ import { composeMcpRuntime } from '../host/mcp.js';
 import type { LiveAuthority, ConnectionPolicy } from '../tools/types.js';
 import type { ModelPort, ModelRequest, DataClass } from '../adapters/model/types.js';
 
-const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
+const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, snippet_chars: { type: 'integer', minimum: 100, maximum: 6000 } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
 const tools: { name: string; inputSchema: Record<string, unknown> }[] = [{ name: 'search_knowledge', inputSchema: schema }];
 const ACCEPTED = 'ACCEPTED [Überblick 🌱](https://example.com/evidence) insight 42';
 const REJECTED = 'REJECTED [diagnostic](https://example.com/rejected) insight 99';
@@ -45,7 +45,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
     if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { id: '42', cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived' }, id: randomUUID() } }] } };
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { ids: [42], include_links: true, cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived' }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);

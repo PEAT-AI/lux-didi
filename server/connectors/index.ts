@@ -1,3 +1,4 @@
+import { validateKnowledgeLookup } from './lux-knowledge.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { SourceDispatchEvidence, CompletedResult, McpPort, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -180,6 +181,17 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
   declarations(policy) {
     const bounds = policy.bounds;
     return [
+      ...(['list_meetings', 'get_meeting', 'list_insights'] as const).map(name => ({
+        name, description: name === 'list_meetings' ? 'Find meetings by participant and calendar dates.' : name === 'get_meeting' ? 'Read a known meeting and its entries.' : 'List vault entries with a true total; use for all or counts.',
+        effect: 'read' as const, guidance: 'Use literal identifiers, calendar dates and bounded pages. Never use ranked search for complete sets.',
+        parameters: { type: 'object', additionalProperties: false, properties: {
+          ...(name === 'list_meetings' ? { participant: { type: 'string' }, date_from: { type: 'string' }, date_to: { type: 'string' }, order: { type: 'string', enum: ['newest', 'oldest'] } }
+          : name === 'get_meeting' ? { meeting_id: { type: 'string' }, offset: { type: 'integer', minimum: 0 } }
+          : { project: { type: 'string' }, status: { type: 'string', enum: ['active', 'archived', 'all'] }, count_only: { type: 'boolean' }, offset: { type: 'integer', minimum: 0 }, participant: { type: 'string' }, meeting_date_from: { type: 'string' }, meeting_date_to: { type: 'string' } }),
+          limit: { type: 'integer', minimum: 1, maximum: Math.min(50, bounds.maxSearchLimit) },
+        }, required: name === 'get_meeting' ? ['meeting_id'] : [] },
+        validate(args: unknown) { return isRecord(args) && validateKnowledgeLookup(name, args, bounds.maxSearchLimit); },
+      })),
       {
         name: 'search_knowledge',
         description: 'Search the owner knowledge base. Pass 2 to 5 core terms, not a sentence; returns matching entry ids with short excerpts. Fetch an entry by id with get_insight for the full body. Returns the top 3 entries with 400-character bodies; call get_insight only to read one entry in full.',
@@ -242,6 +254,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
     });
     return {
       async call(tool, args, signal) {
+        if (tool === 'list_meetings' || tool === 'get_meeting' || tool === 'list_insights') return await reader.lookup(tool, args, signal);
         if (tool !== 'search_knowledge') return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
         // The declaration speaks the wire names; the reader takes the connector's own field names.
         const search = args as {
@@ -334,7 +347,7 @@ const googleDescriptor: ConnectorDescriptor = {
     return [
       { name: 'gmail_get_profile', description: 'Read the Gmail profile of the selected binding.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: {} }, validate: args => isRecord(args) && Object.keys(args).length === 0 },
       { name: 'gmail_search_messages', description: 'List Gmail messages matching a Gmail query, newest first. q uses Gmail operators, for example from:name after:2026/10/07 or subject:(board deck) is:unread. Returns message ids; read the full message with gmail_read_message. Returns at most 5 messages with 300-character excerpts.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, maxResults: { ...listProps.maxResults, maximum: 25 }, q: { type: 'string', minLength: 1, description: 'Gmail search query using Gmail operators.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'q'].includes(key)) },
-      { name: 'gmail_read_message', description: 'Read one full Gmail message by id from gmail_search_messages: subject, from, date and body. Returns the body up to 1500 characters.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['metadata', 'full'] } } }, validate: args => isRecord(args) && typeof args['id'] === 'string' && (args['id'] as string).length > 0 && Object.keys(args).every(key => ['id', 'format'].includes(key)) },
+      { name: 'gmail_read_message', description: 'Read one full Gmail message by id from gmail_search_messages: subject, from, date and the message body, including the quoted chain below it. The helper bounds the inline body; when it cuts the body, the read reports the body incomplete instead of shortening it silently.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['metadata', 'full'] } } }, validate: args => isRecord(args) && typeof args['id'] === 'string' && (args['id'] as string).length > 0 && Object.keys(args).every(key => ['id', 'format'].includes(key)) },
       { name: 'calendar_list_calendars', description: 'List the calendars visible to the selected binding. Returns names only, no events. Call it only when the owner asks which calendars exist; an event read needs no calendar list.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, refresh: { type: 'boolean' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'refresh'].includes(key)) },
       { name: 'drive_search_files', description: 'Find the owner\'s own Drive files by name, newest first: name, type, modified date and owner, and an open: handle when exactly one file matches. Several matches carry ids and no handle; read the one he picks with drive_get_file. Returns at most 5 files.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', minLength: 1, maxLength: 200, description: 'Words from the file name, for example harbour review.' }, mime_types: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 3, maxLength: 161 }, description: 'Optional file types, for example application/vnd.google-apps.presentation for a deck.' }, modified_after: { type: 'string', minLength: 1, description: 'Optional RFC3339 lower bound on the modified time.' }, limit: { type: 'integer', minimum: 1, maximum: 10 } } }, validate: args => isRecord(args) && typeof args['query'] === 'string' && Object.keys(args).every(key => ['query', 'mime_types', 'modified_after', 'limit'].includes(key)) },
       { name: 'drive_get_file', description: 'Read one Drive file by the id a drive_search_files result carried: name, type, modified date and owner, and its open: handle unless it is in the trash.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['file_id'], properties: { file_id: { type: 'string', minLength: 1, maxLength: 256 } } }, validate: args => isRecord(args) && typeof args['file_id'] === 'string' && Object.keys(args).every(key => key === 'file_id') },
@@ -648,7 +661,7 @@ function companyProjection(evidence: ConnectorEvidence, policy: ConnectionPolicy
   const unknownClass = policy.sourcePolicy.unknownClass;
   if (!unknownClass) throw Error('unknown_source_denied');
   return {
-    response: { tool: evidence.tool, text: projection.projection.text, coverage: evidence.coverage, projection: evidence.projection, partial: projection.projection.partial, originalCharacters: projection.projection.originalCharacters, omittedCharacters: projection.projection.omittedCharacters, ...(projection.projection.sources ? { sources: projection.projection.sources } : {}) },
+    response: { ...('native' in projection.projection ? { native: projection.projection.native as ModelSnapshot['response'] } : {}), tool: evidence.tool, text: projection.projection.text, coverage: evidence.coverage, projection: evidence.projection, partial: projection.projection.partial, originalCharacters: projection.projection.originalCharacters, omittedCharacters: projection.projection.omittedCharacters, ...(projection.projection.sources ? { sources: projection.projection.sources } : {}) },
     dataClasses: [unknownClass],
   };
 }

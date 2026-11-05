@@ -66,11 +66,16 @@ const definitions: Definition[] = [
   { outside: true, name: 'trello_read', description: 'Read the configured board.', fields: strictSchema(TRELLO_READ_PARAMETERS).properties as Record<string, Schema>, validate: validateTrelloRead },
   { name: 'trello_write', description: 'Write the configured board.', fields: strictSchema(TRELLO_WRITE_PARAMETERS).properties as Record<string, Schema>, effect: 'external', outside: false, validate: validateTrelloWrite },
   { outside: true, name: 'search_mail', description: 'Search mail with time operators inside query. Use null cursor for the first page, then the returned next_cursor to continue the same query.', fields: { query: string, cursor: optionalString } },
-  ...['chat', 'knowledge', 'company', 'drive', 'memory'].map(source => ({ outside: source !== 'memory', name: `search_${source}`, description: `Search ${source}; put mail and chat time operators inside query.`, fields: { query: string } })),
-  ...['mail', 'knowledge', 'drive'].map(source => ({ outside: source !== 'memory', name: `read_${source}`, description: `Read ${source} using the exact id returned by search_${source}. ${source === 'knowledge' ? 'Knowledge is authoritative for retained insights, not current company records.' : source === 'mail' ? 'Mail is authoritative for the retrieved message.' : 'Drive is authoritative for the retrieved document.'} Use returned cursor to continue.`, fields: { id: string, cursor: optionalString } })),
+  { outside: true, name: 'vault_meetings', description: 'Find vault meetings by participant and date rather than topic search. Use who and when, then read the returned meeting id.', fields: { cursor: optionalString, participant: optionalString, date_from: optionalString, date_to: optionalString, limit: { type: 'integer', minimum: 1, maximum: 20 } } },
+  { outside: true, name: 'read_vault_meeting', description: 'Read a known vault meeting card, sources and entries. Follow the returned paging information.', fields: { cursor: optionalString, meeting_id: string, limit: { type: 'integer', minimum: 1, maximum: 20 }, offset: { type: 'integer', minimum: 0 } } },
+  { outside: true, name: 'list_vault', description: 'Use for all vault entries or how many, not ranked search. Returns a true total and bounded page. Continue with offset for complete coverage.', fields: { cursor: optionalString, project: optionalString, participant: optionalString, meeting_date_from: optionalString, meeting_date_to: optionalString, count_only: { type: 'boolean' }, limit: { type: 'integer', minimum: 1, maximum: 20 }, offset: { type: 'integer', minimum: 0 } } },
+  { outside: true, name: 'search_knowledge', description: 'Search the private vault with a few core terms using his names. Expand common nouns from owner context; inspect snippets and open plausible current hits. A reference marked snippet_status=not_supplied is a title-only remote candidate, not an absence: read it if plausible. Try different terms before claiming absence.', fields: { query: string } },
+  ...['chat', 'company', 'drive', 'memory'].map(source => ({ outside: source !== 'memory', name: `search_${source}`, description: source === 'company' ? 'Search company knowledge first in answer or browse mode. Follow native refs, handoffs and next_cursor through complete coverage. No match and restricted records are normal outcomes. Metrics go to ask_data_agent, coverage to check_data_capability, and customers to get_company.' : `Search ${source}; put mail and chat time operators inside query.`, fields: { query: string, ...(source === 'company' ? { mode: { type: ['string', 'null'], enum: ['answer', 'browse', null] }, cursor: optionalString } : {}) } })),
+  { outside: true, name: 'read_knowledge', description: 'Read several vault insight ids together, with linked rationale. Prefer current replacements over superseded facts and say when a fact was replaced.', fields: { ids: { type: 'array', minItems: 1, maxItems: 6, uniqueItems: true, items: { type: 'integer', minimum: 1 } }, include_links: { type: 'boolean' }, cursor: optionalString } },
+  ...['mail', 'drive'].map(source => ({ outside: source !== 'memory', name: `read_${source}`, description: `Read ${source} using the exact id returned by search_${source}. ${source === 'knowledge' ? 'Knowledge is authoritative for retained insights, not current company records.' : source === 'mail' ? 'Mail is authoritative for the retrieved message.' : 'Drive is authoritative for the retrieved document.'} Use returned cursor to continue.`, fields: { id: string, cursor: optionalString } })),
   ...['thread', 'company', 'memory'].map(source => ({ outside: source !== 'memory', name: `read_${source}`, description: `Read ${source} using the exact ${source === 'company' ? 'ref from search_company' : source === 'memory' ? 'entry id from search_memory, passed as ref' : 'thread ref from search_chat'}. ${source === 'company' ? 'Company is authoritative for current connected company records; pass ref verbatim, never substitute a numeric id.' : source === 'memory' ? 'Memory is authoritative for retained local entries.' : 'Chat is authoritative for the retrieved thread.'} Use returned cursor to continue.`, fields: { ref: string, cursor: optionalString, ...(source === 'company' ? { depth: { type: ['string', 'null'], enum: ['summary', 'full', 'all', null] } } : {}) } })),
   { outside: false, name: 'calendar_events', description: 'List events in the owner time window.', fields: { start: string, end: string } },
-  { outside: false, name: 'people_lookup', description: 'Look up configured people.', fields: { query: string } },
+  { outside: false, name: 'people_lookup', description: 'Look up a configured person by the spoken name, alias or handle.', fields: { name: string } },
   { outside: true, name: 'search_web', description: 'Search the web.', fields: { query: string } },
   { name: 'remember_note', description: 'Remember a local note.', fields: { text: string }, effect: 'local', outside: false },
   { name: 'save_to_vault', description: 'Save a note to the configured Lux vault and return its real connector receipt.', fields: { title: string, text: string }, effect: 'local', outside: false },
@@ -92,7 +97,7 @@ function integerSchema(value: unknown): boolean {
 }
 export const TASK_ACCOUNT = 'gateway:tasks';
 export const TASK_RESOURCE = 'owner-task-tools';
-export const TASK_TOOL_NAMES: ReadonlySet<string> = new Set([...definitions.map(tool => tool.name), 'query_company']);
+export const TASK_TOOL_NAMES: ReadonlySet<string> = new Set([...definitions.map(tool => tool.name), 'query_company', 'ask_data_agent', 'data_agent_job', 'check_data_capability', 'get_company']);
 export function createRegistry(ports: ToolPorts, configured: readonly Definition[] = []): Map<string, TaskTool> {
   const registry = new Map<string, TaskTool>();
   for (const definition of [...definitions, ...configured]) {
@@ -104,11 +109,11 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
         if (!validation.ok) {
           if (tool.name === 'alarm_create' && !signal.aborted) {
             const active = await ports.execute('alarm_list', {}, signal, outsideTextSeen, identity);
-            return failed(`${validation.repair} Already armed alarms: ${active.text}`);
+            return failed(`${validation.repair} Already armed alarms: ${active.text}`, 'invalid_argument');
           }
-          return failed(validation.repair);
+          return failed(validation.repair, 'invalid_argument');
         }
-        if (signal.aborted) return failed('Use the current task revision. This call was not admitted.');
+        if (signal.aborted) return failed('Use the current task revision. This call was not admitted.', 'cancelled');
         const execute = async (): Promise<ToolResult> => {
           if (tool.name === OPEN_SCHEMA.name) {
             const result = await executeOpen(nativeActions, ports.nativeSessionId ?? '', validation.args);
@@ -116,7 +121,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
           }
           if (tool.name === FIND_FILE_SCHEMA.name) {
             const result = await findFile(validation.args);
-            if (result.code === 'unavailable' || result.code === 'invalid_arguments') return failed(`File search: ${result.code}.`);
+            if (result.code === 'unavailable' || result.code === 'invalid_arguments') return failed(`File search: ${result.code}.`, result.code === 'unavailable' ? 'unavailable' : 'invalid_argument');
             return { status: result.code === 'empty' ? 'empty' : 'ok', text: JSON.stringify(result.files),
               references: result.files.map(file => ({ id: file.path, title: file.name })), next_cursor: null,
               coverage: 'At most 20 local file metadata matches, no file bodies.', repair: null,

@@ -105,8 +105,8 @@ test('connector projection is structural and no_match never opens a neighbour', 
   const body = 'body '.repeat(4500);
   const result = projectTaskPayload('read_mail', { content: [{ type: 'text', text: JSON.stringify({ data: { body } }) }] }, { id: 'm' });
   assert.equal(result.text, body.trim());
-  const ranked = projectTaskPayload('search_company', { results: [{ id: 'near', title: 'Cedar', body: 'must not be opened' }] }, { query: 'Orchid' });
-  assert.equal(ranked.status, 'no_match'); assert.equal(ranked.references[0]?.match, 'neighbour');
+  const ranked = projectTaskPayload('search_company', { outcome: 'no_match', items: [], next_cursor: null }, { query: 'Orchid' });
+  assert.equal(ranked.status, 'no_match'); assert.deepEqual(ranked.references, []); assert.match(ranked.text, /no_match/);
   assert.doesNotMatch(ranked.text, /must not/);
   assert.equal(projectTaskPayload('search_mail', { unexpected: 'x' }, { query: 'x' }).status, 'failed');
   assert.equal(projectTaskPayload('search_mail', { messages: [] }, { query: 'x' }).status, 'empty');
@@ -139,9 +139,9 @@ test('real connector wire shapes retain thread bodies, event times and ranked Ma
   const event = projectTaskPayload('calendar_events', { events: [{ id: 'e', summary: 'Synthetic meeting', start: { dateTime: '2026-01-01T10:00:00Z' }, end: { dateTime: '2026-01-01T11:00:00Z' } }] }, {});
   assert.match(event.text, /Synthetic meeting/); assert.match(event.text, /10:00:00Z/);
   const ranked = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Orchid' });
-  assert.equal(ranked.references[0]?.match, 'exact');
+  assert.equal(ranked.references[0]?.rank, 1);
   const neighbour = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Cedar' });
-  assert.equal(neighbour.status, 'no_match'); assert.equal(neighbour.text, '');
+  assert.equal(neighbour.status, 'ok'); assert.match(neighbour.text, /Orchid/);
 });
 
 test('configured schemas reject floats but accept integer bounds', () => {
@@ -171,7 +171,7 @@ test('configured connector executor forwards query operators and whole read bodi
   assert.deepEqual(seen[0], { name: 'gmail_search_messages', args: { q: 'after:2026/01/01 before:2026/02/01' } });
   assert.ok((await execute('read_mail', { id: 'm' }, new AbortController().signal)).text.length > 10000);
   assert.equal((await connectorExecutor([])('read_mail', { id: 'm' }, new AbortController().signal)).status, 'failed');
-  const companyPolicy = { ...policy, connector: 'mongoose', endpoint: { ...policy.endpoint, resource: 'mongoose:knowledge' } };
+  const companyPolicy = { ...policy, connector: 'mongoose', toolNames: ['search', 'read'], endpoint: { ...policy.endpoint, resource: 'mongoose:knowledge' } };
   const configured = configuredCompanyTools([{ connector: 'mongoose', policy: companyPolicy, reader }]);
   const registry = createRegistry({ execute, authority: new FakeAuthority() }, configured);
   assert.ok(registry.has('query_company'));
@@ -201,7 +201,7 @@ test('default model and effort are applied without provider-specific caller code
 test('review-owned worker instructions are short and preserve absence after widening', async () => {
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   // 10.11: the mandated worker rules re-pin the block to its measured size (TR-R5).
-assert.ok(WORKER_INSTRUCTIONS.length <= 4103);
+assert.ok(WORKER_INSTRUCTIONS.length <= 6214);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
   assert.match(WORKER_INSTRUCTIONS, /Absence\./);
 });
@@ -297,7 +297,7 @@ test('R29 native chat capabilities have distinct outside-read schemas, not actio
   }
 });
 
-test('worker inference receives public instructions followed by presentation style, never lore', async () => {
+test('worker inference receives presentation style and private owner lore', async () => {
   const { runWorker } = await import('../tasks/worker.js');
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   const profile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId: 'synthetic', profileVersion: '1', displayName: 'Synthetic Owner',
@@ -309,7 +309,7 @@ test('worker inference receives public instructions followed by presentation sty
   await runWorker(options);
   assert.ok(received.startsWith(`${WORKER_INSTRUCTIONS}\n\n`));
   assert.match(received, /SYNTHETIC STYLE/);
-  assert.doesNotMatch(received, /SYNTHETIC LORE/);
+  assert.match(received, /SYNTHETIC LORE/);
   received = '';
   const { profile: omittedProfile, ...withoutProfile } = options;
   assert.ok(omittedProfile);
@@ -319,9 +319,9 @@ test('worker inference receives public instructions followed by presentation sty
 
 test('company search preserves the native ref rather than a numeric record id', async () => {
   const { projectTaskPayload } = await import('../tasks/connectors.js');
-  const result = projectTaskPayload('search_company', { results: [{ id: 63, ref: 'ticket:63', title: 'Synthetic' }] }, { query: 'Synthetic' });
+  const result = projectTaskPayload('search_company', { outcome: 'evidence', items: [{ id: 63, ref: 'ticket:63', title: 'Synthetic' }] }, { query: 'Synthetic' });
   assert.equal(result.references[0]?.id, 'ticket:63');
-  const plain = projectTaskPayload('search_company', { results: [{ id: 'ticket:64', title: 'Synthetic' }] }, { query: 'Synthetic' });
+  const plain = projectTaskPayload('search_company', { outcome: 'evidence', items: [{ ref: 'ticket:64', title: 'Synthetic' }] }, { query: 'Synthetic' });
   assert.equal(plain.references[0]?.id, 'ticket:64');
 });
 
@@ -514,7 +514,7 @@ test('invalid insight identifiers name search_knowledge and valid insight ids re
   assert.equal(seen.length, 0);
   const valid = await execute('read_knowledge', { id: '63' }, new AbortController().signal);
   assert.equal(valid.text, 'synthetic insight');
-  assert.deepEqual(seen[0], { ids: [63] });
+  assert.deepEqual(seen[0], { ids: [63], include_links: true });
 });
 
 test('a no-tool answer with no completed reads can compose for thirteen seconds', async () => {

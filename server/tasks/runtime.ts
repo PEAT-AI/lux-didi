@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { Store } from '../runtime/store.js';
 import { safeEvent } from '../host/log.js';
 import { TaskController, workerInput, type Delivery, type Revision, type RevisionIdentity } from './controller.js';
-import { runWorker, type Infer, type WorkerResult } from './worker.js';
+import { runWorker, type FailureRecord, type Infer, type WorkerResult } from './worker.js';
 import { createRegistry, type TaskTool, type ToolPorts, type Definition } from './tools.js';
 import { Authority, createTaskAuthority, type Exposure } from './authority.js';
 import type { ToolResult } from './results.js';
@@ -22,6 +22,9 @@ export class TaskRuntime {
   #isCurrent: () => boolean = () => true;
   bindCurrent(check: () => boolean): void { this.#isCurrent = check; }
   readonly #toolsUsed = new Set<string>();
+  /** Closed failure codes per task, so the helper can name what failed and why. */
+  readonly #taskFailures = new Map<string, { tool: string; code: string }[]>();
+  #lastTask: { status: string; failed_tools: { tool: string; code: string }[] } | undefined;
   usedTool(identity: RevisionIdentity): boolean { return this.#toolsUsed.has(identity.task_id); }
   readonly #contexts = new Map<string, { exposures: Set<Exposure>; urls: Set<string> }>();
   taskContext(taskId: string) {
@@ -44,12 +47,14 @@ export class TaskRuntime {
     visit(result);
   }
   hostStatus: () => { rebuilt: boolean; rebuild_cause: 'host' | 'network' | 'provider' | null } = () => ({ rebuilt: false, rebuild_cause: null });
+  #failures: readonly FailureRecord[] = [];
   deliveryState(identity: RevisionIdentity, state: 'sent' | 'accepted' | 'retry' | 'undelivered', chunk: number): void {
     this.options.store.saveTaskDelivery(identity, `${identity.task_id}:${identity.task_revision}:chunk:${chunk}`,
       state === 'accepted' ? 'delivered' : state === 'undelivered' ? 'failed' : 'pending');
   }
   constructor(readonly options: TaskRuntimeOptions) {
     const delivery: Delivery = {
+      said: () => options.delivery.said?.(),
       attach: (identity, binding) => { options.store.saveTaskDelivery(identity, binding, 'attached'); options.delivery.attach(identity, binding); },
       progress: identity => options.delivery.progress(identity),
       deliver: (identity, answer) => {
@@ -69,8 +74,8 @@ export class TaskRuntime {
     const event = safeEvent({ event: 'task_lifecycle', phase, taskId: identity?.task_id, generation: identity?.connection_generation, revision, count, ms });
     if (event) this.options.log?.(event);
   }
-  begin(words: string, generation: number, ownerTurn = 0): Revision {
-    const revision = this.controller.finalize(words, generation, ownerTurn), { identity } = revision;
+  begin(words: string, generation: number, ownerTurn = 0, overlapped = false): Revision {
+    const revision = this.controller.finalize(words, generation, ownerTurn, overlapped), { identity } = revision;
     revision.askAtUtc = (this.options.now ?? Date.now)();
     for (const evidence of revision.evidence) this.#capture(identity.task_id, evidence);
     this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence });
@@ -94,11 +99,18 @@ export class TaskRuntime {
     const state = output === null ? 'pending' : effect === 'none' ? output.status === 'failed' ? 'failed' : 'committed' : output.receipt?.state ?? 'unknown';
     this.options.store.saveTaskOperation({ ...operation, tool, effect, state, args, result: output });
     if (output) this.#capture(operation.task_id, output, this.registry.get(tool));
+    if (output?.status === 'failed') {
+      const failures = this.#taskFailures.get(operation.task_id) ?? [];
+      failures.push({ tool, code: output.failure_category ?? 'upstream_error' });
+      this.#taskFailures.set(operation.task_id, failures.slice(-8));
+    }
     if (output?.receipt) this.controller.recordReceipt(output);
   }
   settle(identity: RevisionIdentity, answer: WorkerResult): WorkerResult {
+    this.#failures = answer.failures ?? [];
     answer = { ...answer, text: redactSecrets(answer.text), findings: answer.findings.map(result => redactTaskResult(result, 'task_answer')),
       ...(answer.receipts ? { receipts: answer.receipts.map(result => redactTaskResult(result, 'task_answer')) } : {}) };
+    this.#lastTask = { status: answer.status, failed_tools: [...(this.#taskFailures.get(identity.task_id) ?? [])] };
     if (this.controller.isCurrent(identity)) {
       this.options.store.finishTask(identity, answer.status, answer);
       this.controller.complete(identity, answer);
@@ -106,9 +118,14 @@ export class TaskRuntime {
     } else this.log('stale', identity.task_revision, 0, 0, identity);
     return answer;
   }
-  finalize(words: string, generation: number, ownerTurn = 0): { revision: Revision; result: Promise<WorkerResult> } {
-    const revision = this.begin(words, generation, ownerTurn), { identity } = revision;
-    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, JSON.stringify({ status: 'running', ...this.hostStatus(), staged_deletion: this.options.authority.stagedDeletion() ?? null }), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
+  /** Verified host facts about work: never a claim that this run is running. */
+  verifiedStatus(identity: RevisionIdentity): string {
+    return JSON.stringify({ other_work_running: this.controller.runningOther(identity), last_task: this.#lastTask ?? null,
+      ...this.hostStatus(), staged_deletion: this.options.authority.stagedDeletion() ?? null, failures: this.#failures });
+  }
+  finalize(words: string, generation: number, ownerTurn = 0, overlapped = false): { revision: Revision; result: Promise<WorkerResult> } {
+    const revision = this.begin(words, generation, ownerTurn, overlapped), { identity } = revision;
+    const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, this.verifiedStatus(identity), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
     }).then(answer => this.settle(identity, answer));

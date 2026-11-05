@@ -1092,7 +1092,7 @@ test('the warm calendar digest reads the primary calendar once and renders the e
   assert.equal(read.calls[0]!.calendarId, 'primary', 'the primary calendar only');
   assert.equal(read.calls[0]!.timeMin, '2026-10-18T00:00:00+00:00');
   assert.equal(read.calls[0]!.timeMax, '2026-10-19T00:00:00+00:00');
-  assert.equal(read.calls[0]!.maxResults, 10);
+  assert.equal(read.calls[0]!.maxResults, 50, 'the merged calendar digest reads the bounded whole day');
 });
 
 test('the warm calendar digest keeps one bounded line and trims a day that does not fit', async () => {
@@ -1786,10 +1786,10 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         const read = task.tools.find(tool => tool.name === 'read_knowledge');
         assert.ok(read, 'the canonical registry is stable while connector publication gates execution');
         if (recoveredAt === Infinity) {
-          const unavailable = await task.runtime.runTool('read_knowledge', { id: '1', cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
+          const unavailable = await task.runtime.runTool('read_knowledge', { ids: [1], include_links: true, cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
           assert.equal(unavailable.status, 'failed', 'an unpublished native read must not become a usable task capability');
         }
-        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).id, { type: 'string', minLength: 1 });
+        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).ids, { type: 'array', minItems: 1, maxItems: 6, uniqueItems: true, items: { type: 'integer', minimum: 1 } });
       } finally { task.close(); }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
@@ -1799,7 +1799,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         assert.match(prompt.system, /"connector":"lux-knowledge"/);
         assert.match(prompt.system, /"reason":"deadline"/);
         assert.equal(incomplete.length, 1);
-        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 2, reason: 'deadline' }]);
+        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 5, reason: 'deadline' }]);
         assert.equal(JSON.stringify(incomplete).includes('fixture-read'), false);
         assert.equal(JSON.stringify(incomplete).includes('synthetic-private-endpoint-detail'), false);
       } else {

@@ -237,6 +237,83 @@ read as a 0 ms audio path.
 
 ## Helper tool execution (10.11)
 
-Use `task_tool` events to identify the task, revision, operation id, tool, duration in milliseconds, terminal category, and cache disposition (`miss`, `hit`, or `join`). These are closed metadata fields: arguments, results, owner words, and exception messages are not admitted. Reader `tool_failure` events contain only the tool and closed failure category. Existing connector-level diagnostics retain their own approved schema.
+Use `task_tool` events to identify the task, revision, operation id, tool, duration in milliseconds, terminal category, `reason_code`, and the cache disposition (`miss`, `hit`, or `join`). `reason_code` is the closed reason a failure gave, and it is `null` when nothing failed. These are closed metadata fields: arguments, results, owner words, connector text, and exception messages are not admitted. The ranked-search status labels are the search owner's, not this field's: a search that returned rows without an exact title is `no_match` and is not a failed read.
+
+Read `reason_code` before the coarse category. `server/tasks/results.ts` maps each connector failure code and status line to one closed word: `no_access` for a read the connection or endpoint does not allow, `sign_in_needed` when the source needs the owner to sign in again, `not_found`, `wrong_id`, `bad_argument`, `timeout`, `rate_limited`, `source_down`, `empty_content` for a read that returned no usable text, `not_configured`, `cancelled`, `invalid_result` and `unknown` only when nothing in the failure names a meaning. A search with no rows is `empty` rather than a failure. A thrown executor error and any code the connector did not classify cost the most: they land in `source_down` and `unknown`, so add the missing code to the map rather than reading the blanket.
+
+An operation row for a failed tool keeps its `reason_code` and the host-authored repair text, which is what the helper was told; it never keeps connector text or arguments. Reader `tool_failure` events contain only the tool and closed failure category. Existing connector-level diagnostics retain their own approved schema.
 
 A revised task may join a read started by its previous revision. That read is not a cancelled failure merely because speech continued. An actual task cancellation still aborts it. A final answer marked `incomplete` may contain useful evidence: inspect unfinished-tool coverage instead of treating it as either a complete answer or an empty search. The final no-tool composition budget is separate from the tool-phase deadline.
+
+## The task audit inside `call --audit` (10.12)
+
+`call --audit` ends with a `TASK AUDIT (metadata only)` block. It is the same call from the helper's
+side: the store rows name the task, its status, how many revisions it took and how its delivery
+chunks ended, and the host log supplies the tool rows in the order the call ran them.
+
+```text
+coverage: metadata only; store rows are all retained tasks, not joined to this call
+task task-synthetic-1 status=complete revisions=2/2 delivery=store:delivered=1
+  tool web_search outcome=ok ms=400 cache=miss state=committed
+  tool web_fetch outcome=unavailable ms=700 cache=miss state=failed
+  tool web_search outcome=ok ms=120 cache=hit state=committed
+  lifecycle start@1000 revision@2500
+task task-synthetic-2 status=no_action revisions=1/1 delivery=store:closed=1
+  tool calendar_list outcome=empty ms=300 cache=miss state=committed
+  lifecycle start@5000
+tool rows in call order: 4; unjoined task log events: 0
+```
+
+The trailing count is the number of `task_tool` rows the call's log lines carry, so it equals the `tool` lines
+printed under every task together, not the lines of one task.
+
+`synthetic` fixture names only: the section never prints owner words, tool arguments, a result body
+or the helper's final answer.
+
+| Field | Means |
+| --- | --- |
+| `status`, `revisions` | `tasks.status` and the revision count of that task, then its current revision after `/` |
+| `delivery` | the delivery chunk states: `store:` rows from `task_deliveries`, `log:` states from `task_delivery` events |
+| `tool`, `outcome` | the tool the helper ran and the `task_tool` terminal category (`ok`, `empty`, `partial`, or a failure category) |
+| `ms`, `cache` | the call's own duration and its `miss`, `hit` or `join` cache disposition |
+| `state` | the store's own `task_operations.state` for the same operation id |
+| `reason` | `task_operations.reason_code` when the schema has that column, and absent when it does not |
+| `lifecycle` | the `task_lifecycle` phases the call's log lines carry, in the order they happened |
+
+A tool row with no `task_tool` line comes from the store alone: it prints `cache=unknown`, its span is
+the row's own `created_at` to `updated_at`, and it is listed after the rows the call ordered. A task
+that the store does not hold but the log names still gets a line, with `status=unknown`.
+
+## A playback segment with no `audible` receipt
+
+`playback.audible` is a positive per-segment receipt: the app sends it once, when the first audible
+chunk of that segment reached the output device. A segment without it reports that **no audible chunk
+was reported for this segment**. That is a statement about the receipt, not about the audio: it is not
+proof of silence, and it is not proof of lost accounting.
+
+Two things distinguish the cases, and both are metadata:
+
+- A lost receipt is a hole in the native sequence. `missingNativeRanges` reports each interior hole in
+  an instance's own `source_seq`, so a gap in the receipts is a gap in the report, never a segment
+  that reads as silent.
+- At the session level the audit already refuses to infer silence: while no segment in the session
+  has reported audibility, a started segment is `unknown`, so the `no_audible_output` gap does not
+  fire. Once any segment reports audibility, a later segment without it is that segment not being
+  audible, and an answered turn that never became audible keeps its gap.
+
+So a run of segments covering about two minutes after an answer with no `audible` receipt is: two
+minutes where the app reported no audible chunk in those segments. Whether the audio was silence, a
+quiet passage below the player's threshold, or a receipt lost before it reached the host is not
+decidable from the store, and the viewer must not say which. If `source_seq` is contiguous, nothing
+was lost in transport; if it is not, the hole is printed and is the accounting loss.
+
+## An owner sentence her speech cut off
+
+A provider stops finishing an input transcription when the model starts answering over it. The
+deltas are then the only record of what he said, so the host finalizes the sentence from them at the
+turn's close: one `trace_utterance` row with `final=1` on the turn that owns his words, joined in the
+order he said them, and one `history_turns` row for the conversation history. Nothing is invented,
+and a provider final that arrives after the cut is recognized as the same sentence and not appended
+twice. The turn's own `first_audible_at` survives a later response inside that turn, and
+`attribution_uncertain` is set only on a turn that replaced one still open, because only then can a
+provider transcript belong to either.

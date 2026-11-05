@@ -246,7 +246,9 @@ function stdioEndpointEntry(raw: unknown): Omit<StdioMcpEndpointEntry, 'unknownC
 }
 function endpointEntry(raw: unknown): McpEndpointEntry {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('invalid_profile');
-  const { unknownClass, ...binding } = raw as Record<string, unknown>;
+  const { unknownClass: configuredClass, ...binding } = raw as Record<string, unknown>;
+  // The owner's vault is private background for the helper. Explicit classifications still win.
+  const unknownClass = configuredClass === undefined && binding['connector'] === 'lux-knowledge' ? 'sensitive' : configuredClass;
   const classification: Pick<HttpMcpEndpointEntry, 'unknownClass' | 'configurationError'> = ['ordinary', 'private', 'sensitive'].includes(String(unknownClass)) && typeof unknownClass === 'string'
     ? { unknownClass: unknownClass as DataClass }
     : { unknownClass: null, configurationError: unknownClass === undefined ? 'unknown-class-missing' : 'unknown-class-invalid' };

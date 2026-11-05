@@ -59,8 +59,22 @@ Release 10.10 retains task revisions, reads, operation receipts and delivery sta
 
 ## Helper task diagnostics (10.11)
 
-`task_tool` logs contain only task/revision/operation identifiers, tool name, duration, terminal category and cache disposition. Failure repairs are helper-facing content, not log messages. No task arguments, results, final answers or owner speech are added to these events.
+`task_tool` logs contain only task/revision/operation identifiers, tool name, duration, terminal category, the closed `reason_code` of a failure (`null` when nothing failed) and cache disposition. A `reason_code` is one of the closed council reasons in `server/tasks/results.ts`: no_access, sign_in_needed, not_found, wrong_id, bad_argument, timeout, rate_limited, source_down, empty_content, not_configured, cancelled, invalid_result, unknown. Failure repairs are helper-facing content, not log messages. No task arguments, results, final answers, connector text or owner speech are added to these events.
+
+Task operation rows and revision evidence are metadata, not evidence copies. A failed operation row keeps a size, its closed category, its `reason_code` and the host-authored repair text, cut to 200 characters; a resolved one keeps a size and its status word. Revision evidence is the aggregate it is, so it keeps a size and an item count instead of borrowing `upstream_error`, which it never measured.
 
 Task owner words, tool arguments and the helper's own final answer text are captured unconditionally in the same owner-only local database as transcripts. There is no task capture flag. Existing task pruning nulls this content in place after 30 days and records `content_pruned_at`; metadata retention remains 90 days. Revision evidence, tool results and effect-journal responses retain only byte size and a closed terminal category, never source bodies or result references. A final answer stores only its spoken text, not the helper's findings or receipts. Pruning is also applied at host startup alongside transcript retention.
 
 The final answer record holds the helper's own text. A `no_action` has no helper text; the no-lookup commentary is host text, not a helper answer.
+
+## Task audit rows and turn summaries (10.12)
+
+`didi-timeline call --audit` reads the task tables through the same private snapshot: `tasks`,
+`task_revisions`, `task_operations` and `task_deliveries`, with `task_operations.reason_code` read
+only when that column exists. The block is metadata only, and `scripts/didi-timeline` documents its
+columns in [debugging.md](debugging.md#the-task-audit-inside-call---audit-1012).
+
+`trace_turn.first_audible_at` is written by the turn's own `turn.summary` event at close, so a turn
+records the first audible moment of the whole turn even when a later provider response produced the
+answer. `trace_utterance` holds one `final=1` row per owner sentence, including a sentence the
+model's speech cut off, which is finalized from its own deltas.

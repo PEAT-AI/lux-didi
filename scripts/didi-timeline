@@ -123,13 +123,16 @@ function refuseStale(reason) {
   process.exit(1);
 }
 
-/** The dist is only read: missing, older than its source, or an older build of the same module all refuse. */
+/** The dist is only read: missing, or an older build of the same module, refuse; stale is warned and read. */
 function freshDist() {
   const built = join(SERVER, 'dist', 'trace', 'timeline.js');
   if (!existsSync(built)) refuseStale('server/dist/trace/timeline.js is missing');
   const source = newestMtime(SERVER, name => /\.(ts|json)$/.test(name), new Set(['node_modules', 'dist']));
   const build = newestMtime(join(SERVER, 'dist'), () => true, new Set(['node_modules']));
-  if (build < source) refuseStale('server/dist is older than its source');
+  // C-TRACE: a read command that refuses because a build artifact is older than its source answers
+  // nothing, and a dev machine is often exactly there. The read is metadata over one database, so it
+  // runs on the dist it has and says so on stderr; a dist that genuinely cannot answer still refuses.
+  if (build < source) process.stderr.write('didi-timeline: warning: server/dist is older than its source; reading the stale build, run `npm --prefix server run build` for the current shape\n');
 }
 
 // The module's own surface is the honest freshness test: a view's export missing from the dist refuses the read.
@@ -173,6 +176,10 @@ function storeReader(database) {
 }
 
 // Task records contain private columns. Select and project metadata explicitly, never SELECT *.
+const TOOL_CATEGORIES = new Set(['ok', 'empty', 'no_match', 'partial', 'not_found', 'wrong_source_id', 'invalid_argument',
+  'unauthorized', 'timeout', 'unavailable', 'upstream_error', 'cancelled']);
+const TOOL_CACHES = new Set(['miss', 'hit', 'join']);
+
 function buildTaskAudit(read, lines = [], selection = {}) {
   const lifecyclePhases = new Set(['start', 'revision', 'inference', 'calls', 'dedupe', 'deadline', 'cancel', 'complete', 'stale', 'delivery']);
   const deliveryStates = new Set(['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered']);
@@ -181,7 +188,7 @@ function buildTaskAudit(read, lines = [], selection = {}) {
   for (const line of lines) {
     const record = line.record ?? line;
     if (line.stream !== undefined && line.stream !== 'host') continue;
-    if (!['task_lifecycle', 'task_delivery'].includes(record.event)) continue;
+    if (!['task_lifecycle', 'task_delivery', 'task_tool'].includes(record.event)) continue;
     const taskId = record.taskId ?? record.task_id;
     const revision = record.revision ?? record.task_revision;
     const generation = record.connectionGeneration ?? record.connection_generation ?? record.generation;
@@ -190,38 +197,108 @@ function buildTaskAudit(read, lines = [], selection = {}) {
       const exact = (selection.callId && line.callId === selection.callId) || (selection.liveSessionId && line.liveSessionId === selection.liveSessionId);
       if (!exact) { unjoined++; continue; }
     }
+    if (record.event === 'task_tool'
+      && (!TOOL_CATEGORIES.has(record.category) || !TOOL_CACHES.has(record.cache)
+        || typeof record.tool !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(record.tool)
+        || !Number.isFinite(record.durationMs) || record.durationMs < 0)) continue;
     if (record.event === 'task_lifecycle' && (!lifecyclePhases.has(record.phase) || !Number.isInteger(generation) || generation < 0)) continue;
     if (record.event === 'task_delivery' && !deliveryStates.has(record.state)) continue;
     events.push({ event: record.event, taskId, revision,
       ...(record.event === 'task_lifecycle' ? { phase: record.phase, connectionGeneration: generation,
         ...(Number.isSafeInteger(record.count) && record.count >= 0 ? { count: record.count } : {}),
-        ...(Number.isFinite(record.ms) && record.ms >= 0 ? { ms: record.ms } : {}) } : { state: record.state }),
+        ...(Number.isFinite(record.ms) && record.ms >= 0 ? { ms: record.ms } : {}) }
+        // C-TRACE: one tool row as the helper ran it: which tool, how it ended, how long it took, and
+        // whether the answer was cached. Metadata only; the arguments and the result never leave the store.
+        : record.event === 'task_tool' ? { tool: record.tool, category: record.category, ms: record.durationMs, cache: record.cache,
+          ...(typeof record.operationId === 'string' ? { operationId: record.operationId } : {}) }
+          : { state: record.state }),
       ...(Number.isFinite(line.at) ? { at: line.at } : {}) });
   }
   const deliveryEvents = events.filter(event => event.event === 'task_delivery');
-  const logAudit = { lifecycleCoverage: events.some(event => event.event === 'task_lifecycle') ? 'observed host-log task identities' : 'unavailable: no matching task_lifecycle events with task identity and generation', helperEvents: events.filter(event => event.event === 'task_lifecycle' && ['inference', 'calls', 'dedupe'].includes(event.phase)), lifecycle: events.filter(event => event.event === 'task_lifecycle'), deliveryEvents,
+  const logAudit = { events,
+    lifecycleCoverage: events.some(event => event.event === 'task_lifecycle') ? 'observed host-log task identities' : 'unavailable: no matching task_lifecycle events with task identity and generation', helperEvents: events.filter(event => event.event === 'task_lifecycle' && ['inference', 'calls', 'dedupe'].includes(event.phase)), lifecycle: events.filter(event => event.event === 'task_lifecycle'), deliveryEvents,
     deliveryStates: Object.fromEntries(['sent', 'accepted', 'heard'].map(state => [state, deliveryEvents.length ? deliveryEvents.filter(event => event.state === state).length : null])),
     deliveryCoverage: deliveryEvents.length ? 'observed host-log events; counts are observations, not complete call coverage' : 'unavailable: no matching task_delivery host-log events',
     unjoinedTaskEvents: unjoined, promisesWithoutTask: null,
     gaps: ['Promises without a task remain unavailable: no content-free promise-to-task identity.', 'Task store rows have no call/session key; log events require exact envelope attribution.'] };
 
   const project = (rows, keys) => rows.map(row => Object.fromEntries(keys.filter(key => row[key] !== undefined).map(key => [key, row[key]])));
+  // C-TRACE: C-FAIL adds reason_code to task_operations in another branch. Read it when it is there and
+  // print nothing rather than a guess when it is not.
+  let operationColumns = new Set();
+  try { operationColumns = new Set(read.all("SELECT name FROM pragma_table_info('task_operations')").map(row => String(row.name))); }
+  catch { operationColumns = new Set(); }
+  // F2: the column reaches a row only when it exists, so a schema without it projects no key at all and the
+  // renderer prints no reason line rather than a confident none.
+  const reasonCode = operationColumns.has('reason_code');
+  const reasonColumn = reasonCode ? ',reason_code' : '';
   try {
     const tasks = project(read.all('SELECT task_id,created_at,updated_at,current_revision,status FROM tasks ORDER BY created_at,task_id'), ['task_id', 'created_at', 'updated_at', 'current_revision', 'status']);
     const revisions = project(read.all('SELECT task_id,task_revision,connection_generation,created_at FROM task_revisions ORDER BY created_at,task_id,task_revision'), ['task_id', 'task_revision', 'connection_generation', 'created_at']);
-    const operations = project(read.all('SELECT operation_id,task_id,task_revision,connection_generation,tool,effect,state,created_at,updated_at FROM task_operations ORDER BY created_at,operation_id'), ['operation_id', 'task_id', 'task_revision', 'connection_generation', 'tool', 'effect', 'state', 'created_at', 'updated_at']);
+    const operations = project(read.all(`SELECT operation_id,task_id,task_revision,connection_generation,tool,effect,state,created_at,updated_at${reasonColumn} FROM task_operations ORDER BY created_at,operation_id`), [...'operation_id task_id task_revision connection_generation tool effect state created_at updated_at'.split(' '), ...(reasonCode ? ['reason_code'] : [])]);
     const deliveries = project(read.all('SELECT attempt_id,task_id,task_revision,connection_generation,state,updated_at FROM task_deliveries ORDER BY updated_at,attempt_id'), ['attempt_id', 'task_id', 'task_revision', 'connection_generation', 'state', 'updated_at']);
     return { ...logAudit, coverage: 'metadata only; store rows are all retained tasks, not joined to this call', tasks, revisions,
       helperCalls: operations,
+      // C-TRACE: the helper's tool rows as the call ran them. The log carries the call's own order; the store
+      // rows above are every retained task and carry the state and reason the log does not.
+      tools: events.filter(event => event.event === 'task_tool'),
       writes: operations.filter(row => row.effect !== 'none').map(row => ({ ...row, receipt: row.state === 'committed' ? 'committed' : row.state })),
       deliveries,
       storedDeliveryCoverage: 'Store delivered is not host-log heard.' };
   } catch (error) {
     if (!/no such table/.test(String(error))) throw error;
-    return { ...logAudit, coverage: 'unavailable: task schema missing; host-log events remain readable', tasks: [], revisions: [], helperCalls: [], writes: [], deliveries: [] };
+    return { ...logAudit, coverage: 'unavailable: task schema missing; host-log events remain readable', tasks: [], revisions: [], helperCalls: [], writes: [], deliveries: [], tools: [] };
   }
 }
-module.exports = { buildTaskAudit };
+module.exports = { buildTaskAudit, renderTaskAudit };
+
+/**
+ * C-TRACE: the task audit as lines a reviewer can read without a database browser. One line per task names its
+ * status, its revisions and its delivery chunks; under it the tool rows in the call's own order name tool,
+ * outcome, duration, cache and the closed reason when the schema has one, then the lifecycle phases.
+ * Metadata only: no owner words, no arguments, no result, no final answer.
+ */
+function renderTaskAudit(audit) {
+  const lines = [`coverage: ${audit.coverage}`];
+  const tasks = new Map();
+  const task = id => {
+    if (!tasks.has(id)) tasks.set(id, { status: null, revisions: null, current: null, deliveries: {}, phases: [], tools: [] });
+    return tasks.get(id);
+  };
+  const operations = new Map((audit.helperCalls ?? []).map(row => [row.operation_id, row]));
+  for (const event of audit.events ?? []) {
+    if (event.event === 'task_tool') task(event.taskId).tools.push(event);
+    else if (event.event === 'task_lifecycle') task(event.taskId).phases.push(`${event.phase}${Number.isFinite(event.at) ? `@${event.at}` : ''}`);
+    else task(event.taskId).deliveries[`log:${event.state}`] = (task(event.taskId).deliveries[`log:${event.state}`] ?? 0) + 1;
+  }
+  for (const row of audit.tasks ?? []) {
+    const entry = task(row.task_id);
+    entry.status = row.status; entry.current = row.current_revision; entry.revisions = 0;
+  }
+  for (const row of audit.revisions ?? []) { const entry = task(row.task_id); entry.revisions = (entry.revisions ?? 0) + 1; }
+  for (const row of audit.deliveries ?? []) { const entry = task(row.task_id); entry.deliveries[`store:${row.state}`] = (entry.deliveries[`store:${row.state}`] ?? 0) + 1; }
+  if (!tasks.size) lines.push('none: no task identity on this call\'s log lines and no retained task rows');
+  for (const [id, entry] of tasks) {
+    const chunks = Object.entries(entry.deliveries).map(([state, count]) => `${state}=${count}`).join(',') || 'none';
+    lines.push(`task ${id} status=${entry.status ?? 'unknown'} revisions=${entry.revisions ?? '?'}${entry.current === null || entry.current === undefined ? '' : `/${entry.current}`} delivery=${chunks}`);
+    for (const tool of entry.tools) {
+      const stored = tool.operationId === undefined ? undefined : operations.get(tool.operationId);
+      lines.push(`  tool ${tool.tool} outcome=${tool.category} ms=${tool.ms} cache=${tool.cache}`
+        + ` state=${stored?.state ?? 'unknown'}${stored && 'reason_code' in stored ? ` reason=${stored.reason_code ?? 'none'}` : ''}`);
+    }
+    // Store operations with no log line of their own: the call's own order is unavailable for them, so they
+    // come after it, in creation order, and say that their duration is the row's own span.
+    const logged = new Set(entry.tools.map(tool => tool.operationId));
+    for (const row of (audit.helperCalls ?? []).filter(row => row.task_id === id && !logged.has(row.operation_id))) {
+      const ms = Number.isFinite(row.updated_at) && Number.isFinite(row.created_at) ? Math.max(0, row.updated_at - row.created_at) : 'unknown';
+      lines.push(`  tool ${row.tool} outcome=${row.state} ms=${ms} cache=unknown state=${row.state}`
+        + `${'reason_code' in row ? ` reason=${row.reason_code ?? 'none'}` : ''}`);
+    }
+    if (entry.phases.length) lines.push(`  lifecycle ${entry.phases.join(' ')}`);
+  }
+  lines.push(`tool rows in call order: ${(audit.tools ?? []).length}; unjoined task log events: ${audit.unjoinedTaskEvents}`);
+  return lines.join('\n');
+}
 
 async function callView() {
   const { buildCallAudit, buildCallStory, buildTimeline, listCalls, renderCallAudit, renderCallStory, resolveSession, scanLogs, traceCallCarriesRefusalCode } = await traceModule();
@@ -257,7 +334,7 @@ async function callView() {
       // missing there instead of printing a confident none.
       const audit = buildCallAudit(report, scan, traceCallCarriesRefusalCode(store.read));
       const taskAudit = buildTaskAudit(store.read, scan.lines, { callId, liveSessionId });
-      process.stdout.write(options.json ? `${JSON.stringify({ ...audit, taskAudit }, null, 2)}\n` : `${renderCallAudit(audit)}\nTASK AUDIT (metadata only)\n${JSON.stringify(taskAudit, null, 2)}\n`);
+      process.stdout.write(options.json ? `${JSON.stringify({ ...audit, taskAudit }, null, 2)}\n` : `${renderCallAudit(audit)}\nTASK AUDIT (metadata only)\n${renderTaskAudit(taskAudit)}\n`);
       return;
     }
     if (story.entries.length === 0) fail(`no call ${spec} in the logs or the store under ${dataDirectory()}`);

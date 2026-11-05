@@ -1,7 +1,7 @@
 import { hostLogEvent } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import type { Identity } from './authority.js';
-import { failed, readerFailure, type ToolResult } from './results.js';
+import { closedFailure, failed, readerFailure, reasonCodeFor, type ReasonCode, type ToolResult } from './results.js';
 import { validateArguments, type TaskTool } from './tools.js';
 import { workerInstructions } from './instructions.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -23,7 +23,15 @@ export interface InferRequest {
   tools: TaskTool[]; model: string; effort: string;
 }
 export type Infer = (request: InferRequest, signal: AbortSignal) => Promise<Inference>;
-export interface WorkerResult { status: 'complete' | 'no_action' | 'incomplete' | 'cancelled'; text: string; findings: ToolResult[]; receipts?: ToolResult[] }
+/** One failed tool and the closed reason it gave, so the next task can say what happened. */
+export interface FailureRecord { tool: string; reason_code: ReasonCode }
+export interface WorkerResult { status: 'complete' | 'no_action' | 'incomplete' | 'cancelled'; text: string; findings: ToolResult[]; failures?: FailureRecord[]; receipts?: ToolResult[] }
+/** A thrown executor error carries its own closed code when it has one, and otherwise names the source as down. */
+const thrownReason = (error: unknown): ReasonCode => {
+  const reason = error instanceof Error && 'reason' in error && typeof error.reason === 'string' ? error.reason : '';
+  const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : '';
+  return reason || code ? reasonCodeFor(reason || code) : 'source_down';
+};
 export interface Clock {
   now(): number;
   timer(callback: () => void, ms: number): () => void;
@@ -59,12 +67,17 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   let pending = pendingReads.get(reads);
   if (!pending) { pending = new Map(); pendingReads.set(reads, pending); }
   const receipts: ToolResult[] = [];
-  const findings: ToolResult[] = [], outputs: Output[] = [], completedOutputs: Output[] = [], turns: Inference[] = [];
+  const findings: ToolResult[] = [], failures: FailureRecord[] = [], outputs: Output[] = [], completedOutputs: Output[] = [], turns: Inference[] = [];
+  /** One row per tool, first reason wins, so a retry of the same failure does not repeat itself in the status. */
+  const recordFailure = (tool: string, result: ToolResult): void => {
+    const code = result.reason_code ?? 'unknown';
+    if (!failures.some(failure => failure.tool === tool)) failures.push({ tool, reason_code: code });
+  };
   const current = (): boolean => !abort.signal.aborted && (options.isCurrent?.() ?? true) && clock.now() - start < REVISION_DEADLINE_MS;
   const failureText = "I couldn't finish that request.";
   const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join(' ')).filter(Boolean).join(' ');
-  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join(' '), findings, receipts });
-  const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, receipts };
+  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [failureText, partialText()].filter(Boolean).join(' '), findings, failures, receipts });
+  const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, failures, receipts };
   async function compose(): Promise<WorkerResult> {
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
     if (!findings.length) return incomplete();
@@ -80,7 +93,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
         outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
-      return { status: 'incomplete', text: answer.text.trim() || incomplete().text, findings, receipts };
+      return { status: 'incomplete', text: answer.text.trim() || incomplete().text, findings, failures, receipts };
     } catch { return options.signal.aborted ? finish() : incomplete(); }
     finally { clear(); options.signal.removeEventListener('abort', cancel); }
   }
@@ -108,16 +121,17 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   }
   async function call(call: ToolCall): Promise<Output> {
     const tool = options.registry.get(call.name);
-    if (!tool) return { id: call.id, name: call.name, result: failed(`Unknown tool. Choose one of: ${[...options.registry.keys()].join(', ')}.`) };
+    if (!tool) return { id: call.id, name: call.name, result: failed(`Unknown tool. Choose one of: ${[...options.registry.keys()].join(', ')}.`, 'invalid_argument') };
     const validation = validateArguments(tool, call.args);
-    if (!validation.ok) return { id: call.id, name: call.name, result: failed(validation.repair) };
-    if (!current()) return { id: call.id, name: call.name, result: failed('This revision has stopped; use verified findings only.') };
+    if (!validation.ok) return { id: call.id, name: call.name, result: failed(validation.repair, 'invalid_argument') };
+    if (!current()) return { id: call.id, name: call.name, result: failed('This revision has stopped; use verified findings only.', 'cancelled') };
     const key = canonical([tool.name, validation.args]);
     const operationId = randomUUID(), toolStart = clock.now();
     let cache: 'miss' | 'hit' | 'join' = 'miss';
     const telemetry = (result: ToolResult): void => hostLogEvent({ event: 'task_tool', taskId: options.identity.task_id,
       revision: options.identity.task_revision, operationId, tool: tool.name, durationMs: Math.max(0, Math.round(clock.now() - toolStart)),
-      category: result.status === 'failed' ? result.failure_category ?? 'upstream_error' : result.status, cache });
+      category: result.status === 'failed' ? result.failure_category ?? 'upstream_error' : result.status,
+      reason_code: result.status === 'failed' ? result.reason_code ?? 'unknown' : null, cache });
     const execute = async (): Promise<ToolResult> => {
       const identity = { ...options.identity, operation_id: operationId };
       options.operation?.(identity, tool.name, validation.args, null);
@@ -126,9 +140,11 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         ? await readBounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen))
         : await bounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
       catch (error) {
-        result = tool.effect === 'none' ? readerFailure(tool.name, error instanceof ReadStopped ? error.category : 'upstream_error') : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
+        result = tool.effect === 'none' ? readerFailure(tool.name, error instanceof ReadStopped ? error.category : 'upstream_error', error instanceof ReadStopped ? error.category : thrownReason(error)) : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
         if (tool.effect !== 'none') result.receipt = { operation_id: identity.operation_id, state: 'unknown' };
       }
+      result = closedFailure(result);
+      if (result.status === 'failed') recordFailure(tool.name, result);
       if (result.receipt) receipts.push(result);
       options.operation?.(identity, tool.name, validation.args, result);
       if (result.status !== 'failed') {
@@ -145,7 +161,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         let work = pending!.get(key);
         if (!work) { work = execute(); pending!.set(key, work); void work.finally(() => { pending!.delete(key); }); }
         else cache = 'join';
-        result = await work;
+        result = closedFailure(await work);
         if (result.status !== 'failed' && !findings.includes(result)) findings.push(result);
       }
     } else result = await execute();
@@ -163,7 +179,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length && !inference.no_action && !inference.text.trim() && findings.length) return compose();
-      if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, receipts };
+      if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, failures, receipts };
       options.event?.('calls', inference.calls.length, clock.now() - start);
       const outstanding = new Map(inference.calls.map(item => [item.id, item]));
       let stopCalls!: () => void;
@@ -180,7 +196,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         })), stopped]);
       } finally { abort.signal.removeEventListener('abort', stopCalls); }
       if (!current()) {
-        for (const item of outstanding.values()) outputs.push({ id: item.id, name: item.name, result: failed('This tool did not finish; no result is available. Do not infer absence.') });
+        for (const item of outstanding.values()) outputs.push({ id: item.id, name: item.name, result: failed('This tool did not finish; no result is available. Do not infer absence.', 'timeout') });
         return options.signal.aborted ? finish() : compose();
       }
     }

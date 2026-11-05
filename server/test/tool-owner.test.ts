@@ -131,7 +131,7 @@ test('intent commits before exact MCP dispatch; collision stops actual loop with
   const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } };
   const outcome = await f.run(model);
   assert.equal(outcome.status, 'complete'); assert.equal(f.calls.length, 1); assert.equal(seen.length, 2);
-  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 3, include_sensitive: false });
+  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 3, detail: 'snippets', include_sensitive: false });
   const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
   assert.equal(response['text'], 'nonempty synthetic α insight');
   assert.deepEqual(seen[1]!.dataClasses, ['ordinary', 'private']);
@@ -292,10 +292,11 @@ test('task search/read strict arguments keep requested ids distinct from verifie
   assert.equal(search.validate({ query: 'x', account: 'foreign' }), false);
   assert.equal(search.validate({ query: 'x' }), true);
   const read = f.definitions().find(tool => tool.name === 'read_knowledge')!;
-  assert.equal(read.validate({ ids: [13, 7] }), false, 'a task read opens one typed id, not a retired native batch schema');
+  assert.equal(read.validate({ ids: [13, 7], include_links: false, cursor: null }), true, 'a task read accepts the merged typed batch schema');
+  assert.equal(read.validate({ ids: [], include_links: false, cursor: null }), false);
   assert.equal(read.validate({ id: '13', cursor: null, account: 'foreign' }), false);
   for (const [index, id] of [13, 7].entries()) {
-    const args = { id: String(id), cursor: null };
+    const args = { ids: [id], include_links: false, cursor: null };
     const call = { ...f.intent(`run:read:${index}`, 'read_knowledge', args), callId: `read-${index}` };
     f.owner.journal.intent(call);
     const outcome = await read.execute(args, { ...call, signal: f.signal });
@@ -839,7 +840,7 @@ async function pagedTaskFixture(t: TestContext, resultOf: () => unknown) {
   return fixture(t, { policy: p, memoryBytes: 1_000_000, responseBytes: 200_000, resultOf });
 }
 async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, cursor: string | null, executionId: string) {
-  const args = { id, cursor }, call = { ...f.intent(executionId, 'read_knowledge', args), callId: executionId };
+  const args = { ids: [Number(id)], include_links: false, cursor }, call = { ...f.intent(executionId, 'read_knowledge', args), callId: executionId };
   f.owner.journal.intent(call);
   const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page execution failed');
@@ -855,7 +856,7 @@ test('task document pages reconstruct the complete source body and reject invali
   const first = await readTaskPage(f, '7', null, 'page-first');
   assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
   const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
-  assert.equal(String(first.text) + String(next.text), `### insight 7 [id 7]\n${body}`, 'whole-body paging neither truncates nor duplicates content');
+  assert.equal(String(first.text) + String(next.text), JSON.stringify({ id: 7, content: body }), 'whole-body paging neither truncates nor duplicates content');
   assert.equal(next.next_cursor, null);
   const invalid = await readTaskPage(f, '7', 'not-a-cursor', 'page-invalid');
   assert.equal(invalid.status, 'failed', 'malformed offsets cannot silently restart or choose another parent');
@@ -871,7 +872,7 @@ test('SOURCE DEFECT task document pages: a continuation cannot silently splice c
 });
 test('SOURCE DEFECT task read delivery: a captured document page is refused after its source is revoked', async t => {
   const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: 'A'.repeat(25_000) }) }] }));
-  const args = { id: '7', cursor: null }, call = f.intent('pending-page', 'read_knowledge', args); f.owner.journal.intent(call);
+  const args = { ids: [7], include_links: false, cursor: null }, call = f.intent('pending-page', 'read_knowledge', args); f.owner.journal.intent(call);
   const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page read failed');
   f.owner.applyConnection(policy({ generation: 2, enabled: false }));

@@ -33,6 +33,18 @@ Mongoose knowledge, data and CRM are separate OAuth resources with separate sign
 
 Drive setup is optional and requires its own consent. When it is unavailable, a lookup must report that limitation, not turn it into a successful empty search. [mcp-configuration.md](mcp-configuration.md) owns setup details; [debugging.md](debugging.md) owns failure diagnosis.
 
+### A mail read is the whole received mail
+
+`gmail_read_message` has two readers. The live display is shaped by `shapeGmailRead` in `server/tools/live-shape.ts` and keeps the new message only. The task helper reads the message's own structured envelope through `projectTaskPayload` in `server/tasks/connectors.ts`, so a read carries the message text below its header block: the new message plus the quoted chain and any forwarded block. `server/tasks/clean.ts` therefore separates `cleanMailStructure` (MIME boilerplate, inline data, HTML, entities and tracking links only) from `cleanMailBody` (that, plus dropping quotes and a signature, for the display). The helper path builds the received text with `receivedGmailBody` and applies the structural clean once; a leading header block is never read as a quoted-reply marker, and an Outlook-style `From:/Sent:` forward is mail text, so a read never comes back empty because of it. The live display cleans a body only, so that header split guards the task seam, where the header block and the body arrive together.
+
+The inline body the helper returns is bounded by the helper, and `bodyCoverage.complete` says whether it was cut. The task page bound is `DOCUMENT_CHARS` (24000) in `server/tasks/results.ts`: a source body longer than one page continues through the returned cursor, and a source that reports incomplete coverage is shown as `partial` with an omission note rather than a silent short body. `GOOGLE_DEFAULTS.readBodyChars` (4000) records the connector's accepted ceiling for that source body; the external helper enforces its own limit and reports coverage.
+
+A read with no readable body text is `failed`, never `ok`, so the helper can tell an empty read from a successful one.
+
+### A calendar window is the whole window
+
+`calendar_events` asks the connector for the whole window inside the existing 50-event budget (`GOOGLE_DEFAULTS.maxListResults`), and the warm digest's `Today:` line reads the same 50-event budget. Completeness is judged on the structured source, not on the rendered display text: a window reports `partial` only when the source returned a continuation or reported an unread calendar, never because the display text was mistaken for an unranked blob.
+
 ## One owner account, proven before every use
 
 Every identity-bearing connector acts as the one owner email in `ownerIdentity` of `provider-38/mcp.json` (for example `owner@example.invalid`) and never as another account. The comparison is exact and case-insensitive on the EMAIL: a connector that reports an email must match it, so a matching username never carries a different mailbox (`server/connectors/identity.ts`).
@@ -72,3 +84,56 @@ failures also log a closed exception class when known: refused, DNS, TLS, timeou
 HTTP status family or transport; otherwise unknown. Recovery spacing is unchanged.
 
 A late connector recovery does not itself grant access. A later task still uses the host's configured bindings and approved capabilities. Connector recovery must not make voice stall recovery more aggressive.
+
+## Company helper routes
+
+The helper searches company knowledge first with `search_company` in answer or browse mode. Native refs are opaque: `read_company` carries the ref, depth and cursor unchanged, and the helper follows pages until native coverage is complete. Reader follow-up pages are retained at the task boundary. No match, restricted records and handoffs remain native outcomes, not transport failures; suggestions and restrictions stay visible.
+
+Business metrics and KPIs go through the typed `ask_data_agent` tool and then `data_agent_job` with `op: get`. The helper presents the returned answer without recomputing or checking it with lower-level data tools. A running job stays partial with its `job_id` and `next_step`; there is no internal polling loop. A later helper call can resume the job within the existing call deadlines. No data is not zero. Mutation job operations are not exposed by the helper.
+
+`check_data_capability` is the typed coverage step before questions that may exceed available coverage; its decision and blocker codes govern the next action. `get_company` looks up CRM customers, deals and leads by native ref, a slug or canonical name. Published schemas and descriptions are retained, and grants still decide which tools exist. Generic company navigation is restricted to knowledge, explores and saved content, not metric calculation.
+
+Knowledge handoffs route only to the matching configured endpoint and granted helper capability, with at most two cross-endpoint transitions. A missing endpoint is named as a missing binding rather than a search failure. The content-free `company_bindings` host initialization line records closed knowledge/data/CRM binding flags; it contains no query, record or account content. These flags show configuration, not remote reachability. Scale figures are verified only when a tool returned them; raw reach counts remain internal.
+
+Synthetic executor-boundary coverage lives in `server/test/tasks-company.test.ts` and runs in `scripts/check-tasks.sh`. Envelope fixtures follow the Mongoose backend models, data-agent protocol and CRM integration response shapes. Fakes do not prove live endpoint availability, account authorization, provider latency or model tool choice; real-account evaluation is separate.
+
+## Owner vault helper
+
+The reviewed remote read catalogue is exactly `search_knowledge`, `get_insight`,
+`list_meetings`, `get_meeting` and `list_insights`. No maintenance, personnel mutation,
+link mutation or other remote tools are published. Discovery and approval still apply.
+The helper's typed meeting/list tools are `vault_meetings`, `read_vault_meeting` and
+`list_vault`; list pages and meeting child pages have bounded limits and offsets.
+
+Search wire arguments select `detail="snippets"` and
+`limit=min(12, configured maximum)`. Confidence and supersession are evidence, not
+instructions. Voice mode is not used: its secondary rows omit scores and relationship badges.
+Snippet width is the remote renderer's native width, not the voice-only `snippet_chars`
+argument. Full snippet rows carry scores and badges; remote weak title-only rows
+are retained with their ids and ranks and `snippet_status="not_supplied"` so the
+helper can distinguish missing source snippets from missing knowledge, without
+inventing absent evidence.
+The entire accepted text envelope reaches the helper, capped at 24000
+characters and twelve bounded references. Source policy validation still precedes delivery;
+structured diagnostics never outrank the accepted MCP text blocks.
+
+A fresh Lux Knowledge endpoint with no `unknownClass` defaults to `sensitive`.
+An explicit class is preserved; no other connector gains a default classification.
+Both source and route must allow sensitive content before search includes it. The
+remote `get_insight` API has no `include_sensitive` argument: id reads and linked reads
+are not filtered by that search flag, and returned content retains the source class.
+`get_meeting` and `list_insights` do take the sensitive flag; `list_meetings` does not.
+
+Installed private configuration is an installation responsibility, never a repository
+fixture. With the application stopped, the installer must set the vault endpoint's
+`unknownClass` to `sensitive` in `<dataDir>/provider-config/mcp.json` and ensure the
+active answer route's `dataClasses` and its credential record's `allowedClasses`
+include sensitive. The route files are `live.json` for voice and `profile.json` for
+text; the OpenAI credential record is `openai-primary.json`. Use the existing reviewed
+route-class configuration operation to update route and credential bindings together,
+not an ad hoc edit of persisted approvals. Other endpoints and routes retain their
+existing classes. No owner configuration or account is used by repository checks.
+
+Synthetic checks establish shaping, bounded arguments, disclosure classes, replacement
+links and refusal behavior. They do not establish production ranking quality, real
+private visibility, provider latency or search discoverability after a real save.

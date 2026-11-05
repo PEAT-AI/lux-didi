@@ -55,7 +55,7 @@
     "id": "people_lookup-valid",
     "tool": "people_lookup",
     "args": {
-      "query": "synthetic"
+      "name": "synthetic"
     },
     "words": "Read the synthetic source."
   }

@@ -230,9 +230,9 @@ test('people: the canonical helper registry executes people_lookup as a local no
   } }).get('people_lookup')!;
   assert.equal(tool.effect, 'none');
   assert.equal(tool.outside_text, false);
-  const result = await tool.run({ query: 'Synthetic Person' }, { task_id: 'synthetic-task', task_revision: 1, operation_id: 'lookup', connection_generation: 1 }, new AbortController().signal);
+  const result = await tool.run({ name: 'Synthetic Person' }, { task_id: 'synthetic-task', task_revision: 1, operation_id: 'lookup', connection_generation: 1 }, new AbortController().signal);
   assert.equal(result.text, 'Synthetic roster result');
-  assert.deepEqual(calls, [{ name: 'people_lookup', args: { query: 'Synthetic Person' } }]);
+  assert.deepEqual(calls, [{ name: 'people_lookup', args: { name: 'Synthetic Person' } }]);
 });
 
 test('people: an over-ceiling roster file reports the tier 2 lines it dropped', () => {

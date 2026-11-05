@@ -1,4 +1,4 @@
-import { FAILURE_CATEGORIES } from '../tasks/results.js';
+import { FAILURE_CATEGORIES, REASON_CODES } from '../tasks/results.js';
 import { taskMigrations, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
 import { backfillHistoryTurns } from '../domain/history-turns.js';
 import { DatabaseSync, constants } from 'node:sqlite';
@@ -74,12 +74,27 @@ const runtimeSchema = [
   'CREATE TABLE IF NOT EXISTS runtime_requests(assistant_id TEXT NOT NULL, client_id TEXT NOT NULL, request_key TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, PRIMARY KEY(assistant_id,client_id,request_key))',
   'CREATE TABLE IF NOT EXISTS runtime_sessions(token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, csrf_token TEXT NOT NULL, expires_at INTEGER NOT NULL)',
 ];
+const RESULT_WORDS = ['ok', 'empty', 'no_match', 'partial', ...FAILURE_CATEGORIES];
+/** Aggregate evidence is a count, not a failure category that was never measured. */
+function evidenceCount(value: unknown): number {
+  if (Array.isArray(value)) return value.length;
+  const record = value as Record<string, unknown>;
+  for (const key of ['evidence', 'findings', 'receipts']) { const candidate = record[key]; if (Array.isArray(candidate)) return candidate.length; }
+  return Object.keys(record).length;
+}
+/** A row keeps a closed outcome, the reason a failure named, and the host repair text, never model or source content. */
 function taskResultMetadata(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const result = typeof value === 'object' ? value as Record<string, unknown> : {};
-  const candidate = result.status === 'failed' ? result.failure_category : result.status;
-  const category = ['ok', 'empty', 'no_match', 'partial', ...FAILURE_CATEGORIES].includes(String(candidate)) ? String(candidate) : 'upstream_error';
-  return JSON.stringify({ size_bytes: Buffer.byteLength(JSON.stringify(value)), category });
+  const size_bytes = Buffer.byteLength(JSON.stringify(value));
+  if (result.status === 'failed') {
+    const category = FAILURE_CATEGORIES.includes(result.failure_category as typeof FAILURE_CATEGORIES[number]) ? String(result.failure_category) : 'upstream_error';
+    const reason_code = REASON_CODES.includes(result.reason_code as typeof REASON_CODES[number]) ? String(result.reason_code) : 'unknown';
+    const repair = typeof result.repair === 'string' && result.repair ? result.repair.slice(0, 200) : null;
+    return JSON.stringify({ size_bytes, category, reason_code, repair });
+  }
+  if (typeof result.status === 'string') return JSON.stringify({ size_bytes, category: RESULT_WORDS.includes(result.status) ? result.status : 'upstream_error' });
+  return JSON.stringify({ size_bytes, count: evidenceCount(value) });
 }
 
 export class Store {

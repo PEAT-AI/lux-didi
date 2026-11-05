@@ -9,7 +9,7 @@ import { GOOGLE_DEFAULTS } from '../connectors/google.js';
 import { receivedGmailBody } from '../tools/live-shape.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailStructure, HEADER_LINE } from './clean.js';
-import { documentResult, failed, readerFailure, failureCategory, rankedResult, type RankedItem, type ToolResult } from './results.js';
+import { documentResult, failed, readerFailure, failureCategory, rankedResult, reasonCodeFor, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
 export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
@@ -89,9 +89,9 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     const shaped = typeof data === 'string';
     const received = !shaped && typeof root['headers'] === 'object' && root['headers'] !== null ? receivedGmailBody(root) : undefined;
     const body = shaped ? data : thread || (received ?? text(root.body ?? root.text ?? root.content));
-    if (!body) return failed('No document body was returned. Search again for a readable identifier; metadata is not a full read.');
+    if (!body) return failed('No document body was returned. Search again for a readable identifier; metadata is not a full read.', 'upstream_error', 'empty_content');
     const document = name === 'read_mail' && !shaped ? cleanMailStructure(body) : body;
-    if (name === 'read_mail' && mailBodyText(document) === '') return failed('The source returned no readable body text for this message. Do not claim the mail is empty without it.');
+    if (name === 'read_mail' && mailBodyText(document) === '') return failed('The source returned no readable body text for this message. Do not claim the mail is empty without it.', 'upstream_error', 'empty_content');
     if (name === 'read_company') {
       const cursor = text(root.next_cursor) || null;
       const complete = record(root.coverage).complete;
@@ -106,7 +106,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     return { ...result, status: 'partial', coverage: `${result.coverage} ${note}`, repair: `${note} Open the message in the mail app for the rest.` };
   }
   const list = Array.isArray(data) ? data : [root.items, root.results, root.hits, root.messages, root.files, root.events, root.posts].find(Array.isArray) ?? (name === 'search_chat' ? posts(root) : undefined);
-  if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.');
+  if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.', 'upstream_error', 'invalid_result');
   const items: RankedItem[] = list.flatMap(raw => {
     const item = record(raw), itemId = String((name === 'search_company' ? item.ref ?? item.id : item.id ?? item.ref) ?? item.file_id ?? '');
     if (!itemId) return [];
@@ -141,9 +141,9 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
   return async (name, args, signal, outsideTextSeen = false, identity) => {
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
-    if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.');
+    if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.', 'upstream_error', 'not_configured');
     const binding = bindings.find(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool) && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
-    if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.');
+    if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return readerFailure(name, 'invalid_argument');
@@ -151,7 +151,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     try {
       return await scope.run(async () => {
         const result = await binding.reader.call(mapping.tool, mapped, signal);
-        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); const shaped = readerFailure(name, failureCategory('reason' in result ? result.reason : code)); return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair }; };
+        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); const shaped = readerFailure(name, failureCategory('reason' in result ? result.reason : code), reasonCodeFor('reason' in result ? result.reason : code)); return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair }; };
         if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode, mapping.tool);
         const hostRepair = connectorFailures.get(result);
         if (hostRepair) {
@@ -175,6 +175,6 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
         }
         return projectTaskPayload(name, result.decodedResult, args);
       });
-    } catch { return readerFailure(name, signal.aborted ? 'cancelled' : 'upstream_error'); } finally { scope.release(); }
+    } catch { return readerFailure(name, signal.aborted ? 'cancelled' : 'upstream_error', signal.aborted ? 'cancelled' : 'source_down'); } finally { scope.release(); }
   };
 }

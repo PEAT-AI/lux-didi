@@ -70,7 +70,7 @@ const definitions: Definition[] = [
   ...['mail', 'knowledge', 'drive'].map(source => ({ outside: source !== 'memory', name: `read_${source}`, description: `Read ${source} using the exact id returned by search_${source}. ${source === 'knowledge' ? 'Knowledge is authoritative for retained insights, not current company records.' : source === 'mail' ? 'Mail is authoritative for the retrieved message.' : 'Drive is authoritative for the retrieved document.'} Use returned cursor to continue.`, fields: { id: string, cursor: optionalString } })),
   ...['thread', 'company', 'memory'].map(source => ({ outside: source !== 'memory', name: `read_${source}`, description: `Read ${source} using the exact ${source === 'company' ? 'ref from search_company' : source === 'memory' ? 'entry id from search_memory, passed as ref' : 'thread ref from search_chat'}. ${source === 'company' ? 'Company is authoritative for current connected company records; pass ref verbatim, never substitute a numeric id.' : source === 'memory' ? 'Memory is authoritative for retained local entries.' : 'Chat is authoritative for the retrieved thread.'} Use returned cursor to continue.`, fields: { ref: string, cursor: optionalString, ...(source === 'company' ? { depth: { type: ['string', 'null'], enum: ['summary', 'full', 'all', null] } } : {}) } })),
   { outside: false, name: 'calendar_events', description: 'List events in the owner time window.', fields: { start: string, end: string } },
-  { outside: false, name: 'people_lookup', description: 'Look up configured people.', fields: { query: string } },
+  { outside: false, name: 'people_lookup', description: 'Look up a configured person by the spoken name, alias or handle.', fields: { name: string } },
   { outside: true, name: 'search_web', description: 'Search the web.', fields: { query: string } },
   { name: 'remember_note', description: 'Remember a local note.', fields: { text: string }, effect: 'local', outside: false },
   { name: 'save_to_vault', description: 'Save a note to the configured Lux vault and return its real connector receipt.', fields: { title: string, text: string }, effect: 'local', outside: false },
@@ -104,11 +104,11 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
         if (!validation.ok) {
           if (tool.name === 'alarm_create' && !signal.aborted) {
             const active = await ports.execute('alarm_list', {}, signal, outsideTextSeen, identity);
-            return failed(`${validation.repair} Already armed alarms: ${active.text}`);
+            return failed(`${validation.repair} Already armed alarms: ${active.text}`, 'invalid_argument');
           }
-          return failed(validation.repair);
+          return failed(validation.repair, 'invalid_argument');
         }
-        if (signal.aborted) return failed('Use the current task revision. This call was not admitted.');
+        if (signal.aborted) return failed('Use the current task revision. This call was not admitted.', 'cancelled');
         const execute = async (): Promise<ToolResult> => {
           if (tool.name === OPEN_SCHEMA.name) {
             const result = await executeOpen(nativeActions, ports.nativeSessionId ?? '', validation.args);
@@ -116,7 +116,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
           }
           if (tool.name === FIND_FILE_SCHEMA.name) {
             const result = await findFile(validation.args);
-            if (result.code === 'unavailable' || result.code === 'invalid_arguments') return failed(`File search: ${result.code}.`);
+            if (result.code === 'unavailable' || result.code === 'invalid_arguments') return failed(`File search: ${result.code}.`, result.code === 'unavailable' ? 'unavailable' : 'invalid_argument');
             return { status: result.code === 'empty' ? 'empty' : 'ok', text: JSON.stringify(result.files),
               references: result.files.map(file => ({ id: file.path, title: file.name })), next_cursor: null,
               coverage: 'At most 20 local file metadata matches, no file bodies.', repair: null,

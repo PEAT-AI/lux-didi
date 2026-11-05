@@ -45,7 +45,7 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
 const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
-assert.ok(worker.length <= 4103);
+assert.ok(worker.length <= 4267);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assertNoRecitation(text);
@@ -70,6 +70,7 @@ for (const rule of [
   'Use a returned reference only with its own reader',
   'give all of it now',
   'answered only from verified host status and task evidence',
+  'say what it reported in plain words and what can be done next',
 ]) assert.ok(worker.includes(rule), `the new helper rule is stated: ${rule}`);
 assert.doesNotMatch(voice, /"/, 'the voice conduct hands her no quoted line to say');
 const backchannel = persona.NAYA_VOICE_SURFACE.slice(persona.NAYA_VOICE_SURFACE.indexOf('# Backchannel policy'),

@@ -285,28 +285,30 @@ proves the whole declared tool set of this build is one the provider accepts. It
 10.12 shipped `read_knowledge.ids` with `uniqueItems` under `strict: true`, and OpenAI answered HTTP 400
 for every helper request until 10.13.
 
-The request goes through the packaged model port (`server/dist`, rebuilt when a source file is newer),
-the installed role from `loadTaskModels(configDir)` and the real credential resolver, with the FULL
-registry the helper really offers, configured company tools included. The owner's configuration is
-copied to a private temporary directory and the host is given that copy, so no host ever journals or
-seeds beside the owner's config. The ask is a fixed harmless calendar read; no tool is executed. The
-check prints status, tool count, tokens and wall time and nothing else: never the key, never owner
-content.
+The declared set is the static declarations plus the company tools of every configured endpoint, built
+from the app's cached discovery (`server/test/fixtures/mongoose-tools-list-literal.json`, the committed
+capture of the published tool lists) read-only. The request goes through the packaged model port
+(`server/dist`, rebuilt when a source file is newer), the installed role from `loadTaskModels(configDir)`
+and the real credential resolver for the provider key. The check never connects a connector, never
+resolves a sign-in material, never refreshes an OAuth grant and never copies or writes the owner's
+configuration: connector liveness and sign-in state are `check-installed-connectors.sh`'s job, so this
+check proves the schemas whatever the token state. It prints closed states, counts and timings only:
+never the key, never owner content.
 
-- `HELPER-PROVIDER PASS` requires the full set to be proved: the expected set is every static
-  declaration plus every company tool the configured bindings must publish, and PASS is printed only
-  when the observed registry equals it. Every run prints `expected=<static>+<company> observed=<n>`.
-- A registry smaller than the configuration requires is refused before the request, after one bounded
-  `recover()` through the host's own reconnect: exit 2 names `reason=company_bindings_unavailable` and
-  prints one line per configured endpoint with the connector's own reason, for example
-  `endpoint=knowledge state=error tools=0 reason=credential-refresh-failed`. A discovery or credential
-  failure can therefore never green the gate on a partial registry. These lines carry closed states
-  and codes, never owner content.
+- `HELPER-PROVIDER PASS` requires the observed registry to equal the expected one: every run prints
+  `expected=<static>+<company> observed=<n>`, and PASS also needs a `completed` response that names a
+  registered tool.
+- A configured endpoint with no cached discovery is exit 2 `reason=discovery_missing`, naming the
+  endpoint: it is never skipped and never passes, because its declarations would ship unproved.
+- A registry smaller than the configuration requires is exit 2 `reason=company_bindings_unavailable`.
 - exit 2 also prints the redacted provider error body (bounded to 2 KB) when the provider rejected the
   schema.
 - exit 3 prints SKIP when the machine has no provider configuration, or configures a provider that
   does not take the OpenAI strict shape. A machine with nothing configured has nothing to prove.
 - A run costs well under USD 0.01. Do not loop it.
+
+The cached capture is a dated artifact: a company tool the live endpoint publishes but the capture does
+not carry is not sent, so the capture has to be refreshed when the endpoints gain tools.
 
 It runs in `scripts/run-installed-checks.sh`, so `scripts/install-macos-app.sh` restores the prior app
 when it fails, and it is a local check of `scripts/ci-gauntlet.sh` (`check-helper-provider:local`). It is

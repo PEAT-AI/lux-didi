@@ -78,3 +78,17 @@ test('read_knowledge refuses duplicate ids without a schema keyword the provider
   assert.equal(validateArguments(tool, { ids: [4, 4], include_links: false, cursor: null }).ok, false);
   assert.equal(validateArguments(tool, { ids: [4, 5], include_links: false, cursor: null }).ok, true);
 });
+
+// The paid smoke must be fail-closed: a configuration that declares company endpoints and a run that
+// publishes none of them is a refusal, never a PASS on the static set alone (review finding P1).
+const smoke = (await import(new URL('../../scripts/lib/helper-provider-smoke.mjs', import.meta.url).href)) as {
+  providerShapeRefusal(input: { expected: number; published: number; company: number; tools: number; static: number }): string;
+};
+
+test('the provider smoke refuses a configured company set that did not publish', () => {
+  assert.equal(smoke.providerShapeRefusal({ expected: 3, published: 0, company: 0, tools: 39, static: 39 }), 'company-unpublished');
+  assert.equal(smoke.providerShapeRefusal({ expected: 3, published: 3, company: 0, tools: 39, static: 39 }), 'company-unpublished');
+  assert.equal(smoke.providerShapeRefusal({ expected: 3, published: 3, company: 3, tools: 39, static: 39 }), 'company-unpublished');
+  assert.equal(smoke.providerShapeRefusal({ expected: 3, published: 3, company: 3, tools: 42, static: 39 }), '');
+  assert.equal(smoke.providerShapeRefusal({ expected: 0, published: 0, company: 0, tools: 39, static: 39 }), '');
+});

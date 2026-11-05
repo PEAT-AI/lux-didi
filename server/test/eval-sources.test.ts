@@ -142,3 +142,27 @@ test('missing provider usage remains fatal outside the real workers exception bo
   await assert.rejects(evaluate(question, context, usage, 800000), /usage.*unavailable|missing.*usage/i);
   assert.equal(requests, 1);
 });
+
+
+test('CLI reports dated private prices only for the configured model', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'eval-sources-test-'));
+  try {
+    const input = join(dir, 'questions.json'), prices = join(dir, 'prices.json');
+    writeFileSync(input, JSON.stringify([question]));
+    for (const model of ['synthetic', 'unknown']) {
+      writeFileSync(prices, JSON.stringify({ effective_date: '2026-11-05', models: { [model]: { input_per_million: 2, output_per_million: 8 } } }));
+      const output = join(dir, model + '.json');
+      const result = spawnSync(process.execPath, [runner, '--questions', input, '--out', output, '--fake', '--prices', prices], { encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(readFileSync(output, 'utf8'));
+      if (model === 'synthetic') {
+        assert.equal(report.estimated_usd, 0.00018);
+        assert.equal(report.results[0].prices_effective_date, '2026-11-05');
+        assert.match(result.stdout, /First question.*estimated_usd=/);
+      } else {
+        assert.equal(report.estimated_usd, undefined);
+        assert.doesNotMatch(result.stdout, /estimated_usd/);
+      }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

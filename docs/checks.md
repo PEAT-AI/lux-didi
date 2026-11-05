@@ -415,16 +415,22 @@ A locked store or missing credentials is a failed run, not a successful score.
 Run privately, with fresh output paths outside **every** git checkout:
 
 ```sh
-node scripts/eval-sources.mjs --questions /private/path/questions.json --out /private/path/before.json --data-dir /private/path/eval-copy --runs 1 --max-tokens 100000
+node scripts/eval-sources.mjs --questions /private/path/questions.json --out /private/path/before.json --data-dir /private/path/eval-copy --runs 1 --max-tokens 800000
 node scripts/eval-sources.mjs --questions /private/path/questions.json --out /private/path/after.json --data-dir /private/path/eval-copy --only case1,case2
 ```
 
 EVAL-R1: the ceiling is **tokens, not dollars**. `--max-tokens` defaults to
-100000 combined input/output tokens. Usage comes from provider responses,
+800000 combined input/output tokens. Usage comes from provider responses,
 including reasoning output when reported. It stops before the next helper turn
 or question after the ceiling is observed. An in-flight response may exceed
-the ceiling; this is not a provider-side hard billing cap. No invented dollar
-estimate or fixed model price is reported. The first question prints measured
+the ceiling; this is not a provider-side hard billing cap. Without a private price table, or for a model absent from it, only tokens are
+reported. Optional `--prices /private/path/prices.json` enables estimates from
+owner-supplied rates, never invented prices. The private JSON schema is
+`{"effective_date":"2026-11-05","models":{"model-id":{"input_per_million":2,"output_per_million":8}}}`.
+Rates are nonnegative USD per million tokens; the date is required. The table
+and effective date stay in the private report. Console prints estimates, not
+the table. A missing, malformed or nonnumeric provider usage record stops the
+run with an explicit usage error, even if the worker catches inference errors. The first question prints measured
 tokens so the owner can decide whether to continue at a different ceiling.
 Use the same questions, models, grants, runs and ceiling for before/after runs.
 The private output stores complete questions, scoring, tool arguments/results,
@@ -441,8 +447,11 @@ never occur), and `kind` (`fact`, `abstain`, `restricted`, `capability`). Empty
 expectation lists are allowed. Fact checks are case-insensitive substring
 checks, not a semantic judge. Review private traces for paraphrases. A retrieved
 search hit alone does not count as opened. Empty/no-match or restricted connector
-outcomes can justify abstention; unavailable capability is reported separately
-from a miss. Incomplete coverage plus an exhaustive claim, forbidden facts and
+outcomes can justify abstention only when the answer itself is an explicit,
+conservative no-match/restricted response, not an unsupported factual answer; unavailable capability is reported separately
+from a miss. Structured job status determines incomplete coverage wherever supplied,
+including a running/failed job inside a successful tool response; source prose
+is not parsed for job state. Incomplete coverage plus an exhaustive claim, forbidden facts and
 writes are hard failures. Three separate rates report source, opened hit and
 facts, with median/p90 latency, turns, per-tool counts and token usage.
 

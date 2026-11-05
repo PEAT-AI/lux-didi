@@ -721,3 +721,14 @@ test('rebuild owed metadata is closed and never a content channel', () => {
   }
   assert.equal(safeEvent({ ...base, owed: 'Synthetic arbitrary text.' }), undefined);
 });
+
+test('connector_failure permits only closed refresh classes and integer HTTP statuses', () => {
+  const base = { event: 'connector_failure', connector: 'mongoose', stage: 'credential' };
+  for (const exceptionClass of ['refresh_rejected_4xx', 'refresh_rejected_5xx', 'refresh_network', 'refresh_malformed', 'storage', 'lock', 'unknown']) {
+    const event = { ...base, exceptionClass, httpStatus: 400 };
+    assert.deepEqual(safeEvent(event), event);
+  }
+  assert.equal(safeEvent({ ...base, exceptionClass: 'private issuer detail' }), undefined);
+  for (const httpStatus of [99, 600, 400.5, '400', NaN]) assert.equal(safeEvent({ ...base, httpStatus }), undefined);
+  assert.equal(safeEvent({ ...base, httpStatus: 400, body: 'PRIVATE' }), undefined);
+});

@@ -122,8 +122,9 @@ export function mongooseCredentialPresent(configDir: string, reference: string):
 }
 
 /** Whether this endpoint needs the unnamed sign-in flow. */
-export async function mongooseCredentialNeedsSignIn(configDir: string, reference: string, _binding: MongooseBinding | undefined, _options: MongooseAuthOptions = {}): Promise<boolean> {
-  return !mongooseCredentialPresent(configDir, reference);
+export async function mongooseCredentialNeedsSignIn(configDir: string, reference: string, binding: MongooseBinding | undefined, options: MongooseAuthOptions = {}): Promise<boolean> {
+  try { await mongooseAccessToken(configDir, reference, binding, options); return false; }
+  catch { return true; }
 }
 
 export interface MongooseAuthOptions extends OAuthTokenOptions {

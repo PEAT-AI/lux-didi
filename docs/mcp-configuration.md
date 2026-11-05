@@ -97,3 +97,7 @@ Its commands are `init`, `catalog`, `approve` and `disable`. `catalog` needs exp
 ## Diagnosis
 
 Settings distinguishes configuration, connection and authentication failures. A connection contributes usable acceptance authority only after credential validation, discovery and host reconciliation; a visible status row is not proof of a usable grant. See [mcp-adapter.md](mcp-adapter.md) for protocol/evidence handling and [debugging.md](debugging.md) for safe diagnostics.
+
+### Which Mongoose endpoints a sign-in covers
+
+Each of knowledge, data and CRM has its own grant. `--mongoose-login crm` signs in CRM even if a stored session exists; substitute `knowledge` or `data` for those endpoints. Unnamed `--mongoose-login` checks each configured credential through the shared OAuth resolver and signs in endpoints whose check fails. A healthy refresh rotates its grant in place, not in a copied configuration. Settings offers a separate sign-in action for each failing endpoint and names the observed refresh cause. CRM team authorization is unchanged: a new sign-in does not grant team access.

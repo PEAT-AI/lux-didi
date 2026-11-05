@@ -604,15 +604,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasException = Object.prototype.hasOwnProperty.call(value, 'exceptionCode');
     const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
     const hasAttempt = Object.prototype.hasOwnProperty.call(value, 'attempt');
-    const allowed = ['connector', 'event', 'stage', ...(hasExceptionClass ? ['exceptionClass'] : []), ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
+    const hasHttpStatus = 'httpStatus' in value;
+    if (hasHttpStatus && (!Number.isInteger(value.httpStatus) || (value.httpStatus as number) < 100 || (value.httpStatus as number) > 599)) return;
+    const allowed = ['connector', 'event', 'stage', ...(hasHttpStatus ? ['httpStatus'] : []), ...(hasExceptionClass ? ['exceptionClass'] : []), ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
-    if (hasExceptionClass && !['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown'].includes(String(value.exceptionClass))) return;
+    if (hasExceptionClass && !['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown', 'refresh_rejected_4xx', 'refresh_rejected_5xx', 'refresh_network', 'refresh_malformed', 'storage', 'lock'].includes(String(value.exceptionClass))) return;
     if (hasReason && !token(value.reason)) return;
     if (hasException && !token(value.exceptionCode)) return;
     if (hasEndpoint && !isSafeId(value.endpointId)) return;
     if (hasAttempt && (typeof value.attempt !== 'string' || !attempts.includes(value.attempt))) return;
-    return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasExceptionClass ? { exceptionClass: value.exceptionClass } : {}), ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
+    return { event: 'connector_failure', ...(hasHttpStatus ? { httpStatus: value.httpStatus } : {}), connector: value.connector, stage: value.stage, ...(hasExceptionClass ? { exceptionClass: value.exceptionClass } : {}), ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'tool_classified_failure') {
     // W14 (LOGS.md L-08): one row per call the connector itself refused with a typed code, so host.log

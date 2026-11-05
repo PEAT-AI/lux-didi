@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mongooseAccessToken, mongooseBinding, writeMongooseOAuth, MongooseCredentialError, type MongooseOAuthRecord } from '../host/mongoose-auth.js';
 import { MongooseLoginError, runMongooseLogin, type MongooseLoginOptions, type MongooseSignInHop } from '../host/mongoose-login.js';
+import { createMongooseSignIn } from '../host/runtime.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/schema.js';
@@ -293,6 +294,7 @@ function syncCatalogue(origin: string): Record<string, unknown>[] {
 async function syntheticMongoose(): Promise<{ origin: string; close(): Promise<void> }> {
   const endpoint = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    if (req.url === '/oauth/token') { res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid_grant', error_description: 'PRIVATE-ISSUER-DETAIL' })); return; }
     if (!/^Bearer .+$/.test(String(req.headers.authorization ?? ''))) { res.writeHead(401).end(); return; }
     const raw = Buffer.concat(chunks).toString();
     if (raw.length === 0) { res.writeHead(202).end(); return; }
@@ -318,16 +320,18 @@ function mintedToken(endpoint: MongooseEndpoint, email: string): string {
   return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ email, aud: MONGOOSE_ENDPOINT_AUDIENCES[endpoint] })}.c2ln`;
 }
 
-test('a completed CRM sign-in connects crm in place, logging connector_connected with no host restart', async t => {
+test('a present stale CRM grant reports HTTP 400 while knowledge and data stay connected, then explicit sign-in repairs it in place', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-inplace-'));
   const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
   const fake = await syntheticMongoose();
   const store = new Store(join(dir, 'state'), toolsMigrations);
   const lifecycle: Record<string, unknown>[] = [];
+  const failures: Record<string, unknown>[] = [];
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER_EMAIL, endpoints: syncCatalogue(fake.origin) }), { mode: 0o600 });
   const mcp = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, deferConnectors: true,
     lifecycleLog: event => lifecycle.push(event as unknown as Record<string, unknown>),
+    connectorLog: (connector, stage, detail) => failures.push({ connector, stage, ...detail }),
   });
   t.after(async () => { await mcp.close(); await fake.close(); rmSync(dir, { recursive: true, force: true }); });
   const record = (endpoint: MongooseEndpoint): Record<string, unknown> => {
@@ -338,13 +342,32 @@ test('a completed CRM sign-in connects crm in place, logging connector_connected
   writeFileSync(join(configDir, 'mongoose-knowledge.json'), JSON.stringify(record('knowledge')), { mode: 0o600 });
   writeFileSync(join(configDir, 'mongoose-data.json'), JSON.stringify(record('data')), { mode: 0o600 });
 
+  writeFileSync(join(configDir, 'mongoose-crm.json'), JSON.stringify({ ...record('crm'), expiresAt: Date.now() - 1 }), { mode: 0o600 });
   await mcp.start();
   assert.equal(mcp.status().endpoints.find(row => row.id === 'mongoose-crm')?.state, 'error', 'crm is not connected before the sign-in');
   assert.equal(lifecycle.some(event => event['event'] === 'connector_connected' && event['endpointId'] === 'mongoose-crm'), false);
 
-  // The sign-in lands: the record appears exactly as runMongooseLogin writes it.
-  writeFileSync(join(configDir, 'mongoose-crm.json'), JSON.stringify(record('crm')), { mode: 0o600 });
-  await mcp.recover();
+  for (const endpoint of ['knowledge', 'data']) assert.equal(mcp.status().endpoints.find(row => row.id === `mongoose-${endpoint}`)?.state, 'connected');
+  const failure = failures.find(row => row.endpointId === 'mongoose-crm');
+  assert.equal(failure?.exceptionClass, 'refresh_rejected_4xx');
+  assert.equal(failure?.httpStatus, 400);
+  assert.equal(JSON.stringify(failures).includes('PRIVATE-ISSUER-DETAIL'), false);
+  assert.equal(JSON.stringify(failures).includes('refresh-crm'), false);
+
+  // Exercise the real explicit service with a fake login, not just a file appearing.
+  let finishRecovery!: () => void;
+  let failRecovery!: (error: unknown) => void;
+  const recovered = new Promise<void>((resolve, reject) => { finishRecovery = resolve; failRecovery = reject; });
+  const signIn = createMongooseSignIn({ configDir, status: () => mcp.status().endpoints,
+    login: async options => {
+      assert.equal(options.endpoint, 'crm');
+      assert.equal(options.reference, 'mongoose-crm');
+      writeFileSync(join(configDir, 'mongoose-crm.json'), JSON.stringify(record('crm')), { mode: 0o600 });
+    },
+    recover: async () => { try { await mcp.recover(); finishRecovery(); } catch (error) { failRecovery(error); } },
+  });
+  assert.equal((await signIn('crm')).status, 'started');
+  await recovered;
 
   assert.equal(mcp.status().endpoints.find(row => row.id === 'mongoose-crm')?.state, 'connected', 'crm connected in place, no restart');
   assert.deepEqual(lifecycle.filter(event => event['event'] === 'connector_connected' && event['endpointId'] === 'mongoose-crm').length, 1);

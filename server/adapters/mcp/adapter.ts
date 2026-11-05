@@ -462,7 +462,9 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
         }
         const code = error instanceof PolicyError ? error.reason
           : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';
-        return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception: { class: discoveryExceptionClass(error), code } };
+        const status = error && typeof error === 'object' && 'status' in error ? error.status : undefined;
+        const exception = { class: discoveryExceptionClass(error), code, ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}) };
+        return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception };
       } finally { releaseExclusive(); }
     },
     visibleTools(endpointId: string) { return options.registry.visibleTools(endpointId); },
@@ -581,7 +583,8 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
 /** C-CONNWAIT: closed diagnostics only; never inspect or publish exception messages. */
 export function discoveryExceptionClass(error: unknown): string {
   for (let depth = 0; depth < 3 && error && typeof error === 'object'; depth++) {
-    const value = error as { code?: unknown; status?: unknown; cause?: unknown; name?: unknown };
+    const value = error as { code?: unknown; status?: unknown; cause?: unknown; name?: unknown; causeClass?: unknown };
+    if (typeof value.causeClass === 'string' && ['refresh_rejected_4xx', 'refresh_rejected_5xx', 'refresh_network', 'refresh_malformed', 'storage', 'lock'].includes(value.causeClass)) return value.causeClass;
     if (value.code === 'ECONNREFUSED') return 'refused';
     if (value.code === 'ENOTFOUND' || value.code === 'EAI_AGAIN') return 'dns';
     if (typeof value.code === 'string' && /^(ERR_TLS_|CERT_|DEPTH_ZERO_|UNABLE_TO_VERIFY_)/.test(value.code)) return 'tls';

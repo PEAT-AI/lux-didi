@@ -300,3 +300,14 @@ test('C-OPEN 6: a Google helper under the reports folder shows a notice that nam
   assert.equal(html.split('reports folder').length - 1, 1, 'one notice, on the gmail row');
   assert.match(html, /<strong>gmail<\/strong>: Connected\.[^<]*<span class="notice" role="status">This Google helper/);
 });
+
+test('a present CRM grant with an observed refresh refusal has its own sign-in action and closed cause', () => {
+  const row = connectorState({ id: 'mongoose-crm', state: 'error', reasonCode: 'needs_sign_in', exception: { class: 'refresh_rejected_4xx', code: 'credential-refresh-failed' } });
+  assert.equal(row?.state, 'Sign-in needed');
+  assert.equal(row?.signIn, true);
+  assert.equal(row?.signInEndpoint, 'crm');
+  assert.match(row!.next, /CRM/);
+  assert.match(row!.next, /refresh_rejected_4xx/);
+  const unknown = connectorState({ id: 'mongoose-crm', state: 'error', exception: { class: 'PRIVATE ISSUER MESSAGE' } });
+  assert.equal(JSON.stringify(unknown).includes('PRIVATE ISSUER MESSAGE'), false);
+});

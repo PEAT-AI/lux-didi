@@ -6,7 +6,7 @@ import { ServiceError } from '../contracts/errors.js';
 import { MongooseLoginError, runMongooseLogin, type MongooseLoginCode } from './mongoose-login.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { MONGOOSE_ENDPOINTS, mongooseEndpointName, type MongooseEndpoint } from '../connectors/mongoose.js';
-import { mongooseCredentialPresent } from './mongoose-auth.js';
+import { mongooseCredentialNeedsSignIn, mongooseEntryBinding } from './mongoose-auth.js';
 
 /** One owner line per login failure: a closed code and a plain sentence, never a URL or a token. */
 const LOGIN_LINES: Record<MongooseLoginCode, string> = {
@@ -134,12 +134,15 @@ async function runOwnerLogin(config: HostConfig, noBrowser: boolean, requested?:
       return endpoint === undefined ? [] : [{ entry: candidate, endpoint }];
     })
     : [];
+  const needsSignIn = requested === undefined
+    ? await Promise.all(configured.map(candidate => mongooseCredentialNeedsSignIn(configDir, candidate.entry.credentialRef!, mongooseEntryBinding(candidate.entry), { ownerIdentity: selection.state === 'configured' ? selection.catalog.ownerIdentity : null })))
+    : [];
   const targets = requested !== undefined
     ? configured.filter(candidate => candidate.endpoint === requested)
-    : configured.filter(candidate => !mongooseCredentialPresent(configDir, candidate.entry.credentialRef!));
+    : configured.filter((_candidate, index) => needsSignIn[index]);
   if (targets.length === 0) {
     if (requested !== undefined) throw new Error(`Mongoose sign-in needs the configured ${requested} endpoint with a credential reference`);
-    process.stdout.write('Mongoose sign-in: every endpoint already has a session, so nothing was signed in.\n');
+    process.stdout.write('Mongoose sign-in: every endpoint has a usable session, so nothing was signed in.\n');
     return;
   }
   for (const { entry, endpoint } of targets) {

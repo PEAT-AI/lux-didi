@@ -199,3 +199,11 @@ test('F1 real projected follow-up retains all admitted native pages', async () =
   ])])('search_company', { query: 'synthetic' }, new AbortController().signal);
   assert.match(result.text, /Admitted follow-up one/); assert.match(result.text, /Admitted follow-up two/); assert.equal(result.next_cursor, null); assert.equal(result.references.length, 2);
 });
+
+test('a company CRM ask with no available CRM binding names its endpoint and sign-in repair', async () => {
+  const result = await connectorExecutor([])('get_company', { company: 'synthetic' }, new AbortController().signal);
+  const text = JSON.stringify(result);
+  assert.match(text, /not_configured/);
+  assert.match(text, /Mongoose CRM endpoint is unavailable/);
+  assert.match(text, /Sign-in is needed for that endpoint in Settings/);
+});

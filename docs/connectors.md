@@ -137,3 +137,16 @@ existing classes. No owner configuration or account is used by repository checks
 Synthetic checks establish shaping, bounded arguments, disclosure classes, replacement
 links and refusal behavior. They do not establish production ranking quality, real
 private visibility, provider latency or search discoverability after a real save.
+
+### Search completion and references
+
+Ranked connector searches preserve native ids and completeness. A finished mail search is `ok`
+with the returned ids and no cursor; a paged search is `partial` with the native continuation
+cursor, and the same query plus that cursor reads the next page. Source-reported cuts also remain
+`partial`. Structured evidence retains the same approved outside-text disclosure provenance.
+A native reader's malformed reference refusal returns `wrong_id`; an upstream reference lookup
+that reports no match returns `not_found`. Both ask the helper to search again and read an id the
+search returned, and neither means `source_down`. Empty public arguments remain `bad_argument`.
+Connection failures and upstream outages remain `source_down`.
+Tool-failure diagnostics may include a closed, content-free `connectorCode`, never a source id,
+account, subject or connector error message.

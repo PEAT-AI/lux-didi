@@ -761,6 +761,10 @@ for (const [name, args] of [
     const before = f.calls().length;
     const result = await task.call(name, { ...args, from_date: '2026-09-01', to_date: '2026-10-26' });
     assert.notEqual(result.status, 'failed', JSON.stringify(result));
+    if (name === 'chat_person') {
+      assert.equal(result.status, 'ok');
+      assert.ok(result.references.length, 'finished person search retains native ids');
+    }
     assert.ok(result.text);
     assert.equal(task.tools.get(name)?.outside_text, true);
     assert.ok(f.calls().length > before, 'the Native SDK actually read, not an invented local response');

@@ -734,3 +734,11 @@ test('inference diagnostics accept only bounded provider metadata', () => {
   assert.equal(safeEvent({ ...failure, request_id: 'unsafe token' }), undefined);
   assert.equal(safeEvent({ ...failure, http_status: 429.5 }), undefined);
 });
+
+test('tool failure connector diagnostics accept only the closed content-free vocabulary', () => {
+  const event = { event: 'tool_failure', code: 'connector_error', tool: 'read_mail', connector: 'google', errorClass: 'Error', messageHead: 'connector_error' };
+  for (const connectorCode of ['grant_missing', 'bad_reference', 'not_found', 'upstream_unavailable', 'upstream_rejected', 'unknown']) {
+    assert.deepEqual(safeEvent({ ...event, connectorCode }), { ...event, connectorCode });
+  }
+  assert.equal(safeEvent({ ...event, connectorCode: 'synthetic-private-text' }), undefined);
+});

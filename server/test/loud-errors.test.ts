@@ -186,7 +186,8 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     const nextIntent = { ...intent, executionId: 'run:1:1', callId: 'success-call' };
     assert.equal(owner.journal.intent(nextIntent), 'fresh');
     await definition.execute!(callArgs, { ...nextIntent, signal: new AbortController().signal });
-    assert.equal(task.results[1]?.status, 'partial', 'the later real mail page is retained, not poisoned by the transient failure');
+    assert.equal(task.results[1]?.status, 'ok', 'the later finished mail search is retained, not poisoned by the transient failure');
+    assert.deepEqual(task.results[1]?.references.map(item => item.id), ['m1', 'm2']);
     assert.ok(task.results[1]?.text);
     assert.equal(task.results[1]?.next_cursor, null, JSON.stringify(task.results[1]));
     const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_classified_failure');

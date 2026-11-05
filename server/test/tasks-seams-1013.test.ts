@@ -36,3 +36,28 @@ test('10.13: a JSON final answer ends as a COMMENTARY header carrying the model 
   const spokenParts = sent.slice(1).map(sent => commentaryPart(sent.text)).filter(part => part.section === 'content').map(part => part.content).join(' ');
   assert.equal(spokenParts, spoken);
 });
+
+test('superseded inference is cancelled without a provider failure', async () => {
+  const { attachHostLogSink } = await import('../tools/host-events.js');
+  const rows: any[] = [];
+  const detach = attachHostLogSink({ event: row => rows.push(row) });
+  const abort = new AbortController();
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  try {
+    const pending = runWorker({ registry: new Map(),
+      identity: { task_id: 'synthetic-superseded', task_revision: 1, connection_generation: 1 },
+      input: 'synthetic request', signal: abort.signal,
+      infer: async () => { entered(); return new Promise(() => {}); },
+      profile: { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic', profileVersion: '1', displayName: 'Synthetic',
+        style: { text: '', dataClass: 'ordinary' }, lore: { text: '', dataClass: 'ordinary' } } });
+    await started;
+    abort.abort();
+    const result = await pending;
+    assert.equal(result.status, 'cancelled');
+    assert.equal(result.failure, undefined);
+    assert.deepEqual(result.failures, []);
+    assert.equal(rows.filter(row => row.event === 'task_inference_failed').length, 0);
+    assert.equal(rows.filter(row => row.event === 'task_inference_superseded').length, 1);
+  } finally { detach(); }
+});

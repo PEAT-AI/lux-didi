@@ -23,10 +23,10 @@ set -euo pipefail
 export CI=1
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 
-# Second phase, invoked by the installer lane only after it relaunches this target.
+# Final phase, after the installer lane relaunches and runs the canary separately.
 if [ "${1:-}" = --verify-canary ]; then
   [ "$#" -eq 2 ] || { echo 'usage: install-macos-app.sh --verify-canary <installed-target>' >&2; exit 2; }
-  bash "$script_dir/run-installed-canary.sh" "$2"
+  node "$script_dir/lib/check-installed-canary.mjs" --verify-receipt "$2"
   printf 'INSTALL-MACOS-APP PASS target=%s canary=task_tool_and_task_settled\n' "$2"
   exit 0
 fi

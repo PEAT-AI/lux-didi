@@ -1,4 +1,4 @@
-import { readFile, lstat, mkdir, open, unlink } from 'node:fs/promises';
+import { readFile, lstat, mkdir, open, unlink, writeFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -40,12 +40,43 @@ export function canaryReceipt(text, callId) {
   return { ok: !code, code: safe(code ?? 'ok'), lines };
 }
 
+export async function installedBuild(target) {
+  const manifest = JSON.parse(await readFile(join(target, 'Contents/Resources/didi-runtime.json'), 'utf8'));
+  if (typeof manifest.installId !== 'string' || !manifest.installId || !/^[a-f0-9]{40}$/.test(manifest.releaseCommit)) throw new Error('invalid_installed_build');
+  return { target: resolve(target), installId: manifest.installId, releaseCommit: manifest.releaseCommit };
+}
+export function validateInstalledReceipt(receipt, build) {
+  if (!receipt) return 'canary_receipt_missing';
+  if (receipt.schemaVersion !== 1 || ['target', 'installId', 'releaseCommit'].some(key => receipt[key] !== build[key])) return 'canary_receipt_stale';
+  if (receipt.ok !== true || receipt.code !== 'ok' || typeof receipt.callId !== 'string' || !receipt.callId || !['clean_close', 'canary_shutdown_timer'].includes(receipt.terminalReason)) return 'canary_red';
+  return 'ok';
+}
+export async function verifyInstalledReceipt(target, env = process.env, output = line => process.stdout.write(`${line}\n`)) {
+  let receipt;
+  try { receipt = JSON.parse(await readFile(join(env.HOME || homedir(), '.lux/didi-canary/receipt.json'), 'utf8')); }
+  catch (error) { if (error.code !== 'ENOENT') { output('CANARY FAIL code=canary_red'); return 1; } }
+  const code = validateInstalledReceipt(receipt, await installedBuild(resolve(target)));
+  output(`CANARY ${code === 'ok' ? 'PASS' : 'FAIL'} code=${code}`);
+  return code === 'ok' ? 0 : 1;
+}
+
 export async function installedCanary(argv, env = process.env, output = line => process.stdout.write(`${line}\n`)) {
   if (argv.length !== 1) throw new Error('expected_installed_target');
   const target = resolve(argv[0]);
   const home = env.HOME || homedir();
   const directory = join(home, '.lux/didi-canary');
   const asksPath = join(directory, 'asks.json');
+  const build = await installedBuild(target);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const persist = async fields => {
+    const temporary = join(directory, `${randomUUID()}.receipt.tmp`);
+    try {
+      await writeFile(temporary, JSON.stringify({ schemaVersion: 1, ...build, ...fields }), { mode: 0o600, flag: 'wx' });
+      await rename(temporary, join(directory, 'receipt.json'));
+    } finally { await unlink(temporary).catch(() => {}); }
+  };
+  // Invalidate an earlier green receipt before any new attempt can fail preflight.
+  await persist({ ok: false, code: 'canary_pending' });
   const logPath = join(env.LUX_DIDI_DATA_DIR || join(home, 'Library/Application Support/ai.peat.lux-didi'), 'logs/host.log');
   let absent = false;
   try { const stat = await lstat(asksPath); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 131072) throw new Error('invalid_ask_file'); }
@@ -83,12 +114,15 @@ export async function installedCanary(argv, env = process.env, output = line => 
         for (const line of report.lines) output(line);
         const callId = report.lines.map(line => / callId=([a-zA-Z0-9_-]+)/.exec(line)?.[1]).find(Boolean);
         if (!callId) { output('CANARY FAIL id=receipt tool=none code=call_identity_missing ms=0'); return 1; }
-        const shutdownReason = report.lines.map(line => / shutdownReason=([a-z_]+)/.exec(line)?.[1]).find(Boolean);
-        if (shutdownReason) output(`CANARY FINDING code=${shutdownReason}`);
+        const terminalReason = report.lines.map(line => / terminalReason=([a-z0-9_]+)/.exec(line)?.[1]).find(Boolean);
+        if (terminalReason) output(`CANARY FINDING code=${terminalReason}`);
         const receipt = canaryReceipt(await readFile(logPath, 'utf8'), callId);
         for (const line of receipt.lines) output(line);
-        output(`CANARY ${receipt.ok ? 'PASS' : 'FAIL'} id=receipt tool=none code=${receipt.code} ms=0`);
-        return receipt.ok ? 0 : 1;
+        const ok = receipt.ok && report.failed === 0 && ['clean_close', 'canary_shutdown_timer'].includes(terminalReason);
+        const code = ok ? 'ok' : receipt.ok ? 'canary_red' : receipt.code;
+        output(`CANARY ${ok ? 'PASS' : 'FAIL'} id=receipt tool=none code=${code} ms=0`);
+        await persist({ ok, code, callId, terminalReason });
+        return ok ? 0 : 1;
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       await pause(100);
     }
@@ -103,7 +137,9 @@ export async function installedCanary(argv, env = process.env, output = line => 
   }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try { process.exitCode = await installedCanary(process.argv.slice(2)); }
+  try { process.exitCode = process.argv[2] === '--verify-receipt'
+    ? await verifyInstalledReceipt(process.argv[3])
+    : await installedCanary(process.argv.slice(2)); }
   catch (error) {
     const code = typeof error.message === 'string' && /^[a-zA-Z0-9_]+$/.test(error.message) ? error.message : 'canary_preflight_failed';
     process.stdout.write(`CANARY FAIL id=preflight tool=none code=${code} ms=0\nCANARY SUMMARY pass=0 fail=1 providerTurns=0\n`);

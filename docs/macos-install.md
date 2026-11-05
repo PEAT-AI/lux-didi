@@ -83,23 +83,30 @@ That command is an owner or installer action, not permission for a worker to lau
 
 ### Required real-call receipt
 
-A green install requires the installed canary's `CANARY PASS id=receipt` in
-addition to the helper-provider smoke. See [checks.md](checks.md#installed-real-provider-canary-paid-receipt-required).
-The operator must opt into the paid check and have the exact installed app running.
-The canary makes one fixed, read-only public web request. It reports metadata only.
-Lifecycle completion without a successful task tool and complete task findings is
-red. `task_inference_failed` and incomplete settlement print the underlying reason
-code. An absent private opt-in file is not a successful installation receipt.
+A green install requires the real-call receipt in addition to the helper-provider
+smoke. See [checks.md](checks.md#installed-real-provider-canary-paid-receipt-required).
 Installed checks still run with the app down and report `canary=pending_after_relaunch`.
 The initial installer phase emits PENDING, not final PASS. The installer lane then
-relaunches the exact installed bundle and runs:
+relaunches the exact installed bundle and runs these two steps:
 
 ```bash
+bash scripts/run-installed-canary.sh "$HOME/Applications/Lux Didi.app"
 bash scripts/install-macos-app.sh --verify-canary "$HOME/Applications/Lux Didi.app"
 ```
 
-Only this second phase emits the final `INSTALL-MACOS-APP PASS`, naming
-`canary=task_tool_and_task_settled`, after verifying the receipt. Neither script
-launches the app for this check. An expired canary explicitly reports
-`canary_shutdown_timer`, the reason for its own cleanup revoke, rather than
-attributing it to missing connectors.
+The first step makes one real call, using only the owner's read-only opt-in asks
+from `~/.lux/didi-canary/asks.json`. No hard-coded replacement ask is used. It writes
+`~/.lux/didi-canary/receipt.json` atomically with metadata only. The artifact binds
+the exact resolved bundle path plus `installId` and `releaseCommit` from that app's
+`Contents/Resources/didi-runtime.json`; it cannot approve a different installed
+build. A new canary attempt invalidates the old receipt before preflight.
+
+The second step reads and verifies the artifact; it does not make another call.
+Missing, stale and red receipts fail with `canary_receipt_missing`,
+`canary_receipt_stale` and `canary_red`, respectively. Only a matching green receipt
+allows `INSTALL-MACOS-APP PASS ... canary=task_tool_and_task_settled`. Neither script
+launches the app. A provider turn or lifecycle completion without a task tool and
+complete findings is red. Output is tool, outcome, reason code and milliseconds,
+never owner words. The receipt names `canary_shutdown_timer` for expiry caused by
+the canary's own timer, or `clean_close` for normal cleanup; revocation behavior is
+unchanged.

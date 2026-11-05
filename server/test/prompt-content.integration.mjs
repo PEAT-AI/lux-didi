@@ -142,3 +142,10 @@ for (const retired of ['Actually, the bicycle is balancing itself only', 'See, t
   'This is the thing, no?']) {
   assert.equal(accented.text.includes(retired), false, `the live instruction never recites the retired example: ${retired}`);
 }
+
+assert.match(prompt.NAYA_LIVE_BASE, /Open from OPENING_FACTS/);
+assert.match(prompt.NAYA_LIVE_BASE, /Never open on a subject in exclude_topics/);
+assert.doesNotMatch(prompt.NAYA_LIVE_BASE, /Pick one of these|Never invent beyond these options/);
+const openingFacts = prompt.buildOpeningFacts({ now: Date.UTC(2026, 10, 5), timeZone: 'UTC', familyNames: [], floorSubjects: [] });
+assert.match(openingFacts.section, /OPENING_FACTS/);
+assert.deepEqual(openingFacts.facts.day, []);

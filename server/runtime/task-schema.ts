@@ -47,3 +47,16 @@ export interface OperationRecord extends TaskRecord {
   operation_id: string; tool: string; effect: string;
   state: 'pending' | 'committed' | 'failed' | 'unknown'; args: unknown; result: unknown;
 }
+
+/** Owner-local diagnostics for delivered first assistant turns, never offered candidates. */
+export const openingMigrations: readonly SchemaMigration[] = [{ owner: 'opening-topics', version: 1, statements: [
+  `CREATE TABLE delivered_opening_topics (
+    call_id TEXT PRIMARY KEY REFERENCES live_sessions(live_session_id) ON DELETE CASCADE,
+    utc INTEGER NOT NULL, topics TEXT NOT NULL
+  )`,
+  'CREATE INDEX delivered_opening_topics_utc ON delivered_opening_topics(utc)',
+] }];
+export function pruneOpeningTopics(tx: Transaction, now: number): void {
+  tx.run('DELETE FROM delivered_opening_topics WHERE utc < ?', [now - 30 * 86400000]);
+  tx.run('DELETE FROM delivered_opening_topics WHERE call_id NOT IN (SELECT call_id FROM delivered_opening_topics ORDER BY utc DESC, rowid DESC LIMIT 100)');
+}

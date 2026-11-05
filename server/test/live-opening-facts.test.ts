@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOpeningFacts, deliveredOpeningTopics } from '../prompt/live-persona.js';
+import { buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics } from '../prompt/live-persona.js';
 
 const now = Date.parse('2026-11-05T09:00:00Z');
 const base = { now, timeZone: 'Europe/London', familyNames: ['Alice'], floorSubjects: ['Freya', 'boat'] };
@@ -49,4 +49,11 @@ test('delivered topics describe the spoken first turn rather than every offered 
   assert.ok(topics.includes('marathon'));
   assert.ok(!topics.includes('architecture'));
   assert.ok(deliveredOpeningTopics('Did you get any sleep?', facts).includes('sleep'));
+});
+
+test('only the last three delivered calls contribute excluded semantic topics', () => {
+  const excludeTopics = excludedOpeningTopics([{ topics: ['sleep'] }, { topics: ['marathon'] }, { topics: ['architecture'] }, { topics: ['older'] }]);
+  const opening = buildOpeningFacts({ ...base, excludeTopics });
+  assert.deepEqual(opening.facts.exclude_topics, ['sleep', 'marathon', 'architecture']);
+  assert.ok(!opening.section.includes('older'));
 });

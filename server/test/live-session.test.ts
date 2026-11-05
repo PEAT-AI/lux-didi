@@ -5193,7 +5193,7 @@ test('actual InstalledCanary never-ready close releases production session and l
   let clock = 0;
   const host = new InstalledCanary(h.store, live, async () => { clock += 5000; }, () => clock);
   t.after(() => host.shutdown());
-  const asks = [{ id: 'synthetic-ready', finals: ['synthetic owner text'], expect: { tool: 'search', codeClass: 'success' as const, nonEmpty: true } }];
+  const asks = [{ id: 'synthetic-ready', finals: ['synthetic owner text'], expect: { task: 'complete' as const, readOnly: true as const } }];
   const session = host.open(asks, h.ctx);
   const attachment = live.attach(session.liveSessionId, h.ctx);
   await h.f.frame(1);
@@ -5522,7 +5522,7 @@ test('real OpenAI wire: finalized owner speech starts the helper and client comm
   await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='outputTranscription'")?.n)) > 0, 'heard answer on real wire');
 });
 
-for (const gap of [600, 1_000, 1_600, 8_000]) test(`review F2: adapter and host share one 1200 ms transcript quiet, gap=${gap}`, async t => {
+for (const gap of [600, 1_000, 1_600, 8_000]) test(`review F2: the adapter 700 ms episode final starts the task and the host adds no wait, gap=${gap}`, async t => {
   const scheduler = new DeadlineClock(), start = scheduler.now;
   const starts: number[] = [], inputs: string[] = [];
   const clock = { now: () => scheduler.now,
@@ -5552,15 +5552,17 @@ for (const gap of [600, 1_000, 1_600, 8_000]) test(`review F2: adapter and host 
     h.f.send({ type: 'session.input_transcript.delta', delta: text });
     await fixtureUntil(() => h.owner.current().entries.filter(entry => entry.kind === 'inputTranscription').length > before, 'synthetic transcript delta reached host');
   };
+  // The adapter credits its whole 700 ms episode quiet to the host, so the 600 ms OWNER_QUIET_MS
+  // ceiling leaves no residual: work starts at the episode final, never a window later. A fragment
+  // inside that quiet restarts the episode and merges; one after it revises the running task.
+  const episodeQuiet = 700;
   await fragment('Synthetic first fragment.');
-  if (gap >= 1_200) {
-    await advanceTo(1_199); assert.equal(starts.length, 0);
-    await advanceTo(1_200); assert.deepEqual(starts, [1_200], '700 ms adapter finalization must not stack another full 1200 ms');
-  }
-  await advanceTo(gap); assert.equal(starts.length, gap < 1_200 ? 0 : 1);
+  await advanceTo(gap); assert.equal(starts.length, gap < episodeQuiet ? 0 : 1, 'no work before the adapter finishes the ask');
+  if (gap >= episodeQuiet) assert.deepEqual(starts, [episodeQuiet], 'the host adds no wait once the adapter credited the quiet');
   await fragment('Synthetic second fragment.');
-  await advanceTo(gap + 1_199); assert.equal(starts.length, gap < 1_200 ? 0 : 1);
-  await advanceTo(gap + 1_200); assert.equal(starts.length, gap < 1_200 ? 1 : 2);
-  assert.equal(starts.at(-1), gap + 1_200); assert.match(inputs.at(-1)!, /Synthetic second fragment/);
-  if (gap < 1_200) assert.match(inputs[0]!, /Synthetic first fragment/);
+  const final = gap + episodeQuiet;
+  await advanceTo(final - 1); assert.equal(starts.length, gap < episodeQuiet ? 0 : 1, 'a later fragment never stacks another full window');
+  await advanceTo(final); assert.equal(starts.length, gap < episodeQuiet ? 1 : 2);
+  assert.equal(starts.at(-1), final); assert.match(inputs.at(-1)!, /Synthetic second fragment/);
+  assert.match(inputs[0]!, /Synthetic first fragment/);
 });

@@ -80,3 +80,33 @@ That command is an owner or installer action, not permission for a worker to lau
 ## Verification limits
 
 [Checks](checks.md) documents the native and installer checks. Those checks exercise synthetic configuration and packaging boundaries; they do not prove real provider keys, microphone hardware, Google consent or a healthy installed account. A source release is not an assertion that every existing installation has already been upgraded.
+
+### Required real-call receipt
+
+A green install requires the real-call receipt in addition to the helper-provider
+smoke. See [checks.md](checks.md#installed-real-provider-canary-paid-receipt-required).
+Installed checks still run with the app down and report `canary=pending_after_relaunch`.
+The initial installer phase emits PENDING, not final PASS. The installer lane then
+relaunches the exact installed bundle and runs these two steps:
+
+```bash
+bash scripts/run-installed-canary.sh "$HOME/Applications/Lux Didi.app"
+bash scripts/install-macos-app.sh --verify-canary "$HOME/Applications/Lux Didi.app"
+```
+
+The first step makes one real call, using only the owner's read-only opt-in asks
+from `~/.lux/didi-canary/asks.json`. No hard-coded replacement ask is used. It writes
+`~/.lux/didi-canary/receipt.json` atomically with metadata only. The artifact binds
+the exact resolved bundle path plus `installId` and `releaseCommit` from that app's
+`Contents/Resources/didi-runtime.json`; it cannot approve a different installed
+build. A new canary attempt invalidates the old receipt before preflight.
+
+The second step reads and verifies the artifact; it does not make another call.
+Missing, stale and red receipts fail with `canary_receipt_missing`,
+`canary_receipt_stale` and `canary_red`, respectively. Only a matching green receipt
+allows `INSTALL-MACOS-APP PASS ... canary=task_tool_and_task_settled`. Neither script
+launches the app. A provider turn or lifecycle completion without a task tool and
+complete findings is red. Output is tool, outcome, reason code and milliseconds,
+never owner words. The receipt names `canary_shutdown_timer` for expiry caused by
+the canary's own timer, or `clean_close` for normal cleanup; revocation behavior is
+unchanged.

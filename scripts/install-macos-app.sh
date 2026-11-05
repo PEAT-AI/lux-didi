@@ -12,6 +12,7 @@
 # dropped on every install (issue #382).
 #
 # Usage: scripts/install-macos-app.sh <built-app> [--to DIR]
+# Finalize after installer-lane relaunch: scripts/install-macos-app.sh --verify-canary <installed-target>
 #   --to DIR   user-local Applications directory (default: $HOME/Applications)
 #
 # Environment:
@@ -21,6 +22,14 @@
 set -euo pipefail
 export CI=1
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+
+# Final phase, after the installer lane relaunches and runs the canary separately.
+if [ "${1:-}" = --verify-canary ]; then
+  [ "$#" -eq 2 ] || { echo 'usage: install-macos-app.sh --verify-canary <installed-target>' >&2; exit 2; }
+  node "$script_dir/lib/check-installed-canary.mjs" --verify-receipt "$2"
+  printf 'INSTALL-MACOS-APP PASS target=%s canary=task_tool_and_task_settled\n' "$2"
+  exit 0
+fi
 
 built="${1:?install-macos-app.sh needs a built .app path}"
 shift
@@ -136,4 +145,4 @@ if is_adhoc_requirement "$installed_requirement"; then
 fi
 
 timing_total "$((SECONDS - started))" macos-install
-printf 'INSTALL-MACOS-APP PASS target=%s rollback=%s\n' "$target" "${rollback:-none}"
+printf 'INSTALL-MACOS-APP PENDING target=%s rollback=%s canary=required_after_relaunch\n' "$target" "${rollback:-none}"

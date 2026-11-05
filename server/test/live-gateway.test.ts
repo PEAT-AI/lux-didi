@@ -1,4 +1,5 @@
 import { hostTaskFactory } from '../tasks/host.js';
+import { OWNER_QUIET_MS } from '../tasks/call.js';
 import { resolveTaskModels } from '../config/tasks.js';
 import type { Infer } from '../tasks/worker.js';
 import { fixtureUntil, fixtureSettled } from './live-voice-fixture.js';
@@ -130,8 +131,9 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     tools = { owner: runtime.owner, connectionIds: () => runtime.connectionIds(), registerAuthoritySource: source => { sources.push(source); } };
   }
   const { service: live } = composeLive(store, config, { ...(options.infer ? { schedule: (callback: () => void, ms: number) => {
-    // Drive helper quiet-window completion without waiting out the real debounce.
-    if (ms === 1_200) { const timer = setImmediate(callback); return { cancel: () => clearImmediate(timer), unref: () => { timer.unref(); } }; }
+    // Drive helper quiet-window completion without waiting out the real debounce. The host waits
+    // only a residual inside OWNER_QUIET_MS, so any request past that ceiling fails here.
+    if (ms <= OWNER_QUIET_MS) { const timer = setImmediate(callback); return { cancel: () => clearImmediate(timer), unref: () => { timer.unref(); } }; }
     const timer = setTimeout(callback, ms); return { cancel: () => clearTimeout(timer), unref: () => { timer.unref(); } };
   } } : {}), createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], timeZone: 'UTC', infer: options.infer ?? (async () => ({ text: '', calls: [], no_action: true })), effectCheck: async () => true }), socketFactory: f.socketFactory, ...(options.profile ? { profile: options.profile } : {}), ...(options.credentials ? { credentials: options.credentials } : {}) }, options.now, undefined, tools);
   const running = await listenService({ store, live, port: 0 });

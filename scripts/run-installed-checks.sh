@@ -53,4 +53,5 @@ if [ "$ran" -eq 0 ]; then
   echo "INSTALLED-CHECKS FAIL ran=0: no $checks_dir/check-installed-*.sh to prove the installed release" >&2
   exit 1
 fi
-printf 'INSTALLED-CHECKS PASS ran=%d failed=0\n' "$ran"
+# The app is down here. The installer lane runs the real-call receipt after relaunch.
+printf 'INSTALLED-CHECKS PASS ran=%d failed=0 canary=pending_after_relaunch\n' "$ran"

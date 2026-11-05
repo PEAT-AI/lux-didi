@@ -30,6 +30,12 @@ export const taskMigrations: readonly SchemaMigration[] = [{ owner: 'tasks', ver
   `CREATE TABLE task_effect_journal (identity_hash TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('pending','succeeded','failed')), value TEXT, updated_at INTEGER NOT NULL)`,
 ] }, { owner: 'tasks', version: 3, statements: [
   'ALTER TABLE tasks ADD COLUMN failure TEXT',
+] }, { owner: 'tasks', version: 4, statements: [
+  `CREATE TABLE delivered_opening_topics (
+    call_id TEXT PRIMARY KEY,
+    utc INTEGER NOT NULL, topics TEXT NOT NULL
+  )`,
+  'CREATE INDEX delivered_opening_topics_utc ON delivered_opening_topics(utc)',
 ] }];
 /** Same 30-day content / 90-day metadata policy as trace. Identities and outcome survive content. */
 export function pruneTaskContent(tx: Transaction, now: number): void {
@@ -48,14 +54,6 @@ export interface OperationRecord extends TaskRecord {
   state: 'pending' | 'committed' | 'failed' | 'unknown'; args: unknown; result: unknown;
 }
 
-/** Owner-local diagnostics for delivered first assistant turns, never offered candidates. */
-export const openingMigrations: readonly SchemaMigration[] = [{ owner: 'opening-topics', version: 1, statements: [
-  `CREATE TABLE delivered_opening_topics (
-    call_id TEXT PRIMARY KEY,
-    utc INTEGER NOT NULL, topics TEXT NOT NULL
-  )`,
-  'CREATE INDEX delivered_opening_topics_utc ON delivered_opening_topics(utc)',
-] }];
 export function pruneOpeningTopics(tx: Transaction, now: number): void {
   tx.run('DELETE FROM delivered_opening_topics WHERE utc < ?', [now - 30 * 86400000]);
   tx.run('DELETE FROM delivered_opening_topics WHERE call_id NOT IN (SELECT call_id FROM delivered_opening_topics ORDER BY utc DESC, rowid DESC LIMIT 100)');

@@ -1,5 +1,5 @@
 import { FAILURE_CATEGORIES, REASON_CODES } from '../tasks/results.js';
-import { taskMigrations, openingMigrations, pruneOpeningTopics, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
+import { taskMigrations, pruneOpeningTopics, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
 import { backfillHistoryTurns } from '../domain/history-turns.js';
 import { DatabaseSync, constants } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
@@ -129,7 +129,7 @@ export class Store {
         for (const sql of runtimeSchema) this.#db.exec(sql);
         // Trace tables are owned by the same Store and applied on every host: a debugger reads
         // one state.sqlite, never a second database with its own connection.
-        this.applyMigrations([...migrations, ...traceMigrations, ...taskMigrations, ...openingMigrations]);
+        this.applyMigrations([...migrations, ...traceMigrations, ...taskMigrations]);
         // Trace content retention: 30 days for owner content, nulled in place; 90 days for the
         // metadata rows that may be deleted. The run happens at host start, never inside a live call.
         const traceExec: TraceExec = {

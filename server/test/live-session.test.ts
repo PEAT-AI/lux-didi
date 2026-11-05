@@ -66,7 +66,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, fixtureUntil, fixtureSettled, options, pcm } from './live-voice-fixture.js';
 import { commentaryPart, commentaryResults } from './commentary-test.js';
 import { fixture as openAiFixture, options as openAiOptions, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
@@ -3497,13 +3497,17 @@ test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn
 
 // --- Q5-R4: a fresh call never repeats the last calls' openers --------------------------------
 
-test('C-CONVO9: earlier openers carry only closed topic classes, never sentences or free text', () => {
-  assert.equal(openersNote([]), undefined);
-  const note = openersNote(['Morning. The synthetic branch merged.', 'My tools failed again.'], ['the synthetic branch merge', 'tool_failure']);
-  assert.ok(note);
-  assert.doesNotMatch(note, /Morning|synthetic|My tools|branch merge/);
-  assert.match(note, /tool_failure/);
-  assert.ok(note.length <= OPENER_CONTEXT_CHARS);
+test('opening facts are present without a kind list, template or suggested opening sentence', async t => {
+  const h = await harness(t);
+  const session = h.owner.create({ idempotencyKey: 'opening-facts-shape', inputClass: 'ordinary' }, h.ctx);
+  const snapshot = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]));
+  const system = (JSON.parse(String(snapshot?.['accepted_prompt_snapshot'])) as { system: string }).system;
+  const encoded = /^OPENING_FACTS (.+)$/mu.exec(system)?.[1];
+  assert.ok(encoded);
+  assert.deepEqual(Object.keys(JSON.parse(encoded) as object), ['now', 'day', 'open_thread', 'commitments', 'saved_for_him', 'exclude_topics']);
+  assert.match(system, /Never open on a subject in exclude_topics/);
+  assert.match(system, /You choose the angle and every word/);
+  assert.doesNotMatch(system, /Opening options|Pick one of these|Never invent beyond these options|Earlier opener topic classes|^- (?:calendar|open loop|recent thread):/mu);
 });
 
 test('3u: consecutive starts offer different stored open loops and record the plan as metadata', async t => {
@@ -5341,26 +5345,36 @@ test('F2 widening: a canary turn never seeds an owner call, even inside one conv
 
 // --- OP-R3: the thirty-minute opening memory reaches past the newest three calls ---------------------
 
-test('C-OPENER: a used opener stays remembered after three calls that opened plainly', async t => {
-  const h = await harness(t);
-  h.store.transaction(tx => seedSummary(tx, 'synthetic-recent-loop', 'The owner said the deposit is still to be paid.',
-    NOW - 3_600_000, h.store.assistantId, NOW, 'The owner said the deposit is still to be paid.'));
-  const snapshotOf = (liveSessionId: string): string => {
-    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
-    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
-  };
-  const spoke = (liveSessionId: string, text: string): void => { h.store.transaction(tx => tx.run(
-    'INSERT INTO live_journal(live_session_id,kind,text,payload_bytes,arrived_at) VALUES(?,?,?,0,?)',
-    [liveSessionId, 'outputTranscription', text, NOW])); };
-  const used = h.owner.create({ idempotencyKey: 'recent-used-1', inputClass: 'ordinary' }, h.ctx);
-  const loop = /^- open loop: (.+)$/mu.exec(snapshotOf(used.liveSessionId))?.[1];
-  assert.ok(loop !== undefined, 'the first call opens on the stored loop');
-  spoke(used.liveSessionId, `You mentioned ${loop}`);
-  const plainly = [1, 2, 3].map(index => h.owner.create({ idempotencyKey: `recent-plain-${index}`, inputClass: 'ordinary' }, h.ctx));
-  for (const session of plainly) spoke(session.liveSessionId, 'Morning.');
-  const history = h.store.transaction(tx => previousOpeners(tx, h.store.assistantId, ['ordinary'], NOW - 30 * 60 * 1000));
-  assert.equal(history.previous.length, 3, 'the note still carries the three newest openers');
-  assert.equal(history.recent.length, 1, 'and the opening used four calls ago is still inside the window');
+test('delivered opening topics persist once and only the last three calls seed exclusions', async t => {
+  const p = progressPort();
+  const h = await harness(t, { port: p.port, provider: 'openai' });
+  const subjects = ['sleep', 'marathon', 'architecture', 'holiday'];
+  for (const [index, subject] of subjects.entries()) {
+    const { session, attachment } = await openPort(h, `delivered-opening-${index}`);
+    p.emit({ type: 'outputTranscription', text: `How is the ${subject}`, finished: true, finalOrigin: 'provider' });
+    p.emit({ type: 'outputTranscription', text: ' going?', finished: true, finalOrigin: 'provider' });
+    p.emit({ type: 'turnComplete' });
+    await settlePort();
+    const first = h.store.transaction(tx => tx.get('SELECT topics FROM delivered_opening_topics WHERE call_id=?', [session.liveSessionId]));
+    assert.ok(first, 'a real first-turn completion creates the diagnostic row');
+    assert.ok((JSON.parse(String(first['topics'])) as string[]).includes(subject));
+    p.emit({ type: 'outputTranscription', text: 'Unrelated later answer', finished: true, finalOrigin: 'provider' });
+    p.emit({ type: 'turnComplete' });
+    await settlePort();
+    assert.deepEqual(h.store.transaction(tx => tx.get('SELECT topics FROM delivered_opening_topics WHERE call_id=?', [session.liveSessionId])), first, 'later turns cannot overwrite opening topics');
+    attachment.close(); await attachment.done;
+  }
+  const history = h.store.transaction(tx => previousOpeners(tx, h.store.assistantId, ['ordinary']));
+  assert.equal(history.previous.length, 3);
+  assert.deepEqual(history.previous.map(call => call.topics.find(topic => subjects.includes(topic))), ['holiday', 'architecture', 'marathon']);
+  const next = h.owner.create({ idempotencyKey: 'delivered-opening-next', inputClass: 'ordinary' }, h.ctx);
+  const snapshot = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [next.liveSessionId]));
+  const system = (JSON.parse(String(snapshot?.['accepted_prompt_snapshot'])) as { system: string }).system;
+  const facts = JSON.parse(/^OPENING_FACTS (.+)$/mu.exec(system)![1]!) as { exclude_topics: string[] };
+  assert.ok(!facts.exclude_topics.includes('sleep'), 'the fourth-oldest call no longer excludes its topic');
+  for (const subject of subjects.slice(1)) assert.ok(facts.exclude_topics.includes(subject));
+  assert.match(system, /Never open on a subject in exclude_topics/);
+  assert.doesNotMatch(system, /Opening options|Pick one of these|Earlier opener topic classes/);
 });
 
 

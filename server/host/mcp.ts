@@ -733,6 +733,10 @@ export async function composeMcpRuntime(options: {
         mongoosePublishCatalogue(entry.id, discovery.tools, tool => options.lifecycleLog?.({
           event: 'mongoose_tool_schema_refused', endpointId: entry.id, tool,
         }));
+        // W9: the declarations just published are what the helper really sends, so the host keeps them
+        // for the paid smoke. A set past the bound is dropped rather than recorded, and the smoke then
+        // falls back to its capture and says so.
+        recordPublishedCatalogue(store, { endpointId: entry.id, resource: entry.resource }, discovery.tools);
       }
       const accepts = readClassifiers[entry.connector] ?? (() => true);
       const names = grantMode === 'owner-trusted-reads'
@@ -1053,4 +1057,44 @@ export async function composeMcpRuntime(options: {
   };
   if (options.deferConnectors !== true) await composition.start();
   return composition;
+}
+
+/** W9: one published declaration, as the planner and the provider see it. */
+export interface PublishedDeclaration { name: string; description: string; parameters: Record<string, unknown> }
+
+/** W9: one endpoint's published set above this size is not recorded, so the store stays bounded. */
+const MAX_PUBLISHED_BYTES = 512 * 1024;
+
+/**
+ * W9: the declarations published at this connect, read back from the catalogue the connector just
+ * published so the record is exactly what the app sends. A refused schema is absent, never recorded.
+ */
+export function publishedDeclarations(endpointId: string, tools: readonly ToolDefinition[]): PublishedDeclaration[] {
+  const declarations: PublishedDeclaration[] = [];
+  for (const tool of tools) {
+    const published = mongoosePublishedTool(endpointId, tool.name);
+    if (published) declarations.push({ name: tool.name, description: published.description, parameters: published.parameters });
+  }
+  return declarations;
+}
+
+/**
+ * W9: keep one endpoint's published declarations for the paid helper smoke, replacing its previous
+ * record. Returns whether the set was recorded: an empty or oversized set clears the row instead, so a
+ * stale record can never stand in for what this connect published.
+ */
+export function recordPublishedCatalogue(
+  store: Store, endpoint: { endpointId: string; resource: string }, tools: readonly ToolDefinition[], now = Date.now(),
+): boolean {
+  const declarations = publishedDeclarations(endpoint.endpointId, tools);
+  const serialized = JSON.stringify(declarations);
+  if (!declarations.length || Buffer.byteLength(serialized, 'utf8') > MAX_PUBLISHED_BYTES) {
+    store.clearPublishedCatalogue(endpoint.endpointId);
+    return false;
+  }
+  store.savePublishedCatalogue({
+    endpointId: endpoint.endpointId, resource: endpoint.resource, discoveredAt: now,
+    schemaDigest: sha256(canonicalJSON(declarations)), declarations: serialized,
+  });
+  return true;
 }

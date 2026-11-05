@@ -286,14 +286,17 @@ proves the whole declared tool set of this build is one the provider accepts. It
 for every helper request until 10.13.
 
 The declared set is the static declarations plus the company tools of every configured endpoint. The
-product keeps no offline cache of published company declarations: `tool_connections.policy_json` carries
-`toolNames` and `schemaDigest` only, and `mongoosePublishCatalogue` has no persisted form, so an
-endpoint's schemas exist only inside a live connection. For 10.13 the source is therefore the committed
-capture `server/test/fixtures/mongoose-tools-list-literal.json`, and **live-discovery parity is not
-claimed**: every run prints
-`HELPER-PROVIDER WARN source=committed-capture path=... captured=YYYY-MM-DD live-parity=not-claimed`.
-Persisting the discovered declarations in the store is a wave-2 wagon; when it lands, `--capture` names
-a source explicitly and a missing capture for a configured endpoint is `reason=discovery_missing`. The request goes through the packaged model port
+host keeps the declarations it published at its last live connect: one row per configured company
+endpoint in `published_catalogues` in `<dataDir>/state.sqlite`, holding each tool's name, description
+and parameters with the discovery time and a schema digest. The row is replaced at every connect and a
+set past 512 KiB is dropped rather than recorded, so the table stays one bounded row per endpoint. The
+smoke reads that record first and prints `HELPER-PROVIDER source=store discovered_at=<utc>`, so the
+paid request proves the set the app really sends.
+
+`server/test/fixtures/mongoose-tools-list-literal.json` stays the fallback, used only when the host
+kept no record (a data dir that has never connected): the run then prints
+`HELPER-PROVIDER WARN source=capture file=... captured=YYYY-MM-DD live-parity=not-claimed` and claims
+no live-discovery parity. The two sources are never mixed. The request goes through the packaged model port
 (`server/dist`, rebuilt when a source file is newer), the installed role from `loadTaskModels(configDir)`
 and the real credential resolver for the provider key. The check never connects a connector, never
 resolves a sign-in material, never refreshes an OAuth grant and never copies or writes the owner's
@@ -304,8 +307,9 @@ never the key, never owner content.
 - `HELPER-PROVIDER PASS` requires the observed registry to equal the expected one: every run prints
   `expected=<static>+<company> observed=<n>`, and PASS also needs a `completed` response that names a
   registered tool.
-- A configured endpoint with no cached discovery is exit 2 `reason=discovery_missing`, naming the
-  endpoint: it is never skipped and never passes, because its declarations would ship unproved.
+- A configured endpoint covered by neither the store record nor the capture is exit 2
+  `reason=discovery_missing`, naming the endpoint: it is never skipped and never passes, because its
+  declarations would ship unproved.
 - A registry smaller than the configuration requires is exit 2 `reason=company_bindings_unavailable`.
 - exit 2 also prints the redacted provider error body (bounded to 2 KB) when the provider rejected the
   schema.
@@ -314,7 +318,8 @@ never the key, never owner content.
 - A run costs well under USD 0.01. Do not loop it.
 
 A catalogue source is a dated artifact: a company tool the endpoint publishes but the source does not
-carry is not sent, so the source has to be refreshed when the endpoints gain tools.
+carry is not sent. The store record is refreshed at every connect, so it follows the endpoint; the
+committed capture is refreshed by hand when a machine has never connected the endpoints.
 
 It runs in `scripts/run-installed-checks.sh`, so `scripts/install-macos-app.sh` restores the prior app
 when it fails, and it is a local check of `scripts/ci-gauntlet.sh` (`check-helper-provider:local`). It is

@@ -76,12 +76,17 @@ export class TaskRuntime {
     const event = safeEvent({ event: 'task_lifecycle', phase, taskId: identity?.task_id, generation: identity?.connection_generation, revision, count, ms });
     if (event) this.options.log?.(event);
   }
+  // #1013: the runtime's own native session names the call a task belongs to, so the row carries it.
+  #liveSessionId(): string | undefined {
+    const id = this.options.nativeSessionId;
+    return typeof id === 'string' && id !== '' ? id : undefined;
+  }
   begin(words: string, generation: number, ownerTurn = 0, overlapped = false): Revision {
     const revision = this.controller.finalize(words, generation, ownerTurn, overlapped), { identity } = revision;
     revision.askAtUtc = (this.options.now ?? Date.now)();
     this.#started.set(`${identity.task_id}:${identity.task_revision}`, revision.askAtUtc);
     for (const evidence of revision.evidence) this.#capture(identity.task_id, evidence);
-    this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence });
+    this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence }, Date.now(), this.#liveSessionId());
     this.log(identity.task_revision === 1 ? 'start' : 'revision', identity.task_revision);
     return revision;
   }

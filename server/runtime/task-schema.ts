@@ -30,6 +30,23 @@ export const taskMigrations: readonly SchemaMigration[] = [{ owner: 'tasks', ver
   `CREATE TABLE task_effect_journal (identity_hash TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('pending','succeeded','failed')), value TEXT, updated_at INTEGER NOT NULL)`,
 ] }, { owner: 'tasks', version: 3, statements: [
   'ALTER TABLE tasks ADD COLUMN failure TEXT',
+] }, { owner: 'tasks', version: 4, statements: [
+  // #1013: the task row names the live session that created it, so a call's tasks join without the log.
+  // Nullable: every row written before this migration joins through the host log's own identity.
+  'ALTER TABLE tasks ADD COLUMN live_session_id TEXT',
+] }, { owner: 'discovery', version: 1, statements: [
+  // W9: the declarations the host published at its last live connect, one row per configured company
+  // endpoint and replaced in place, so the paid helper smoke proves the set the app really sends.
+  `CREATE TABLE published_catalogues (
+    endpoint_id TEXT PRIMARY KEY, resource TEXT NOT NULL, discovered_at INTEGER NOT NULL,
+    schema_digest TEXT NOT NULL, declarations TEXT NOT NULL
+  )`,
+] }, { owner: 'tasks', version: 5, statements: [
+  `CREATE TABLE delivered_opening_topics (
+    call_id TEXT PRIMARY KEY,
+    utc INTEGER NOT NULL, topics TEXT NOT NULL
+  )`,
+  'CREATE INDEX delivered_opening_topics_utc ON delivered_opening_topics(utc)',
 ] }];
 /** Same 30-day content / 90-day metadata policy as trace. Identities and outcome survive content. */
 export function pruneTaskContent(tx: Transaction, now: number): void {
@@ -46,4 +63,9 @@ export interface TaskRecord { task_id: string; task_revision: number; connection
 export interface OperationRecord extends TaskRecord {
   operation_id: string; tool: string; effect: string;
   state: 'pending' | 'committed' | 'failed' | 'unknown'; args: unknown; result: unknown;
+}
+
+export function pruneOpeningTopics(tx: Pick<Transaction, 'run'>, now: number): void {
+  tx.run('DELETE FROM delivered_opening_topics WHERE utc < ?', [now - 30 * 86400000]);
+  tx.run('DELETE FROM delivered_opening_topics WHERE call_id NOT IN (SELECT call_id FROM delivered_opening_topics ORDER BY utc DESC, rowid DESC LIMIT 100)');
 }

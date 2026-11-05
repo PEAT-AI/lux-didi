@@ -55,7 +55,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, buildOpeningFacts, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -66,7 +66,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, lateFindingsText, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, recordDeliveredOpening, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, fixtureUntil, fixtureSettled, options, pcm } from './live-voice-fixture.js';
 import { commentaryPart, commentaryResults } from './commentary-test.js';
 import { fixture as openAiFixture, options as openAiOptions, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
@@ -727,7 +727,7 @@ test('both declared-tool and client-delegated sessions carry the exact master ha
   const withoutTools = await harness(t, {});
   const { attachment: withoutAttachment } = await attached(withoutTools);
   assert.equal(withoutTools.requests.length, 1);
-  assert.equal(withoutTools.requests[0]!.system.text, `Synthetic system\n\n${NAYA_WORK_DELIVERY}`, 'client delegation needs the same authored handoff even without direct voice tools');
+  assert.equal(withoutTools.requests[0]!.system.text, composeLiveSessionInstruction({ text: 'Synthetic system', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section }).text, 'client delegation needs the same authored handoff even without direct voice tools');
   assert.ok(!withoutTools.requests[0]!.system.text.includes('# Tools'));
   withoutAttachment.close(); await withoutAttachment.done;
 });
@@ -1425,7 +1425,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
-  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
     // W4: the runtime context now names the live connector state, so the expectation carries the
     // one endpoint this harness publishes.
 
@@ -1630,8 +1630,13 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
     assert.throws(() => tx.run("INSERT INTO live_journal(live_session_id,kind,payload_bytes,arrived_at) VALUES (?,'unknown_kind',0,?)", [id, NOW]));
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
+  // W9 on 10.15: one owner can now span two tables in one array (tasks and discovery), so the
+  // expected table is every owner named anywhere, at that owner's highest version.
+  const allMigrations = [...chatMigrations, ...domainMigrations, ...liveMigrations, ...luxNoteMigrations, ...notesExportMigrations, ...taskMigrations, ...traceMigrations];
+  const expectedOwners = [...new Set(allMigrations.map(migration => migration.owner))].map(owner =>
+    [owner, Math.max(...allMigrations.filter(migration => migration.owner === owner).map(migration => migration.version))]);
   assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]),
-    [chatMigrations, domainMigrations, liveMigrations, luxNoteMigrations, notesExportMigrations, taskMigrations, traceMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
+    expectedOwners.sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
 });
 
 test('U1-R2: the v7 live migration preserves every v6 journal row, its index and its foreign key, and admits a researchProgress row', async t => {
@@ -2010,9 +2015,9 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
   assert.equal(row.dispatch_intent, 0);
-  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, system: `SYNTHETIC exact accepted A\n\n${NAYA_WORK_DELIVERY}`, memory: { status: 'empty', selectedIds: [], omitted: [] } });
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, system: composeLiveSessionInstruction({ text: 'SYNTHETIC exact accepted A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text, memory: { status: 'empty', selectedIds: [], omitted: [] } });
   acceptedPrompt.system = 'SYNTHETIC B';
-  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, `SYNTHETIC exact accepted A\n\n${NAYA_WORK_DELIVERY}`);
+  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, composeLiveSessionInstruction({ text: 'SYNTHETIC exact accepted A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
   h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
   assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
   assert.equal(calls, 0);
@@ -2048,7 +2053,7 @@ test('Live emits exact accepted A setup, not a changed caller B instruction', as
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, `SYNTHETIC exact wire A\n\n${NAYA_WORK_DELIVERY}`);
+  assert.equal(frame.setup.systemInstruction.parts[0].text, composeLiveSessionInstruction({ text: 'SYNTHETIC exact wire A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
   attachment.close();
 });
 
@@ -2178,7 +2183,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  const expectedWithRuntime = composeLiveSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+  const expectedWithRuntime = composeLiveSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
@@ -2264,7 +2269,7 @@ test('configured owner system survives CREATE and attach open byte for byte befo
   const first = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, profile: status.config.profile, voice: adapter(), now: () => NOW, timeZone: 'Asia/Kolkata' });
   const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
   const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
-  const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+  const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(persisted.system, expectedWithRuntime); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
   const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
@@ -3497,100 +3502,70 @@ test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn
 
 // --- Q5-R4: a fresh call never repeats the last calls' openers --------------------------------
 
-test('C-CONVO9: earlier openers carry only closed topic classes, never sentences or free text', () => {
-  assert.equal(openersNote([]), undefined);
-  const note = openersNote(['Morning. The synthetic branch merged.', 'My tools failed again.'], ['the synthetic branch merge', 'tool_failure']);
-  assert.ok(note);
-  assert.doesNotMatch(note, /Morning|synthetic|My tools|branch merge/);
-  assert.match(note, /tool_failure/);
-  assert.ok(note.length <= OPENER_CONTEXT_CHARS);
+test('opening facts are present without a kind list, template or suggested opening sentence', async t => {
+  const h = await harness(t);
+  const session = h.owner.create({ idempotencyKey: 'opening-facts-shape', inputClass: 'ordinary' }, h.ctx);
+  const snapshot = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId]));
+  const system = (JSON.parse(String(snapshot?.['accepted_prompt_snapshot'])) as { system: string }).system;
+  const encoded = /^OPENING_FACTS (.+)$/mu.exec(system)?.[1];
+  assert.ok(encoded);
+  assert.deepEqual(Object.keys(JSON.parse(encoded) as object), ['now', 'day', 'open_thread', 'commitments', 'saved_for_him', 'exclude_topics']);
+  assert.match(system, /Never open on a subject in exclude_topics/);
+  assert.match(system, /You choose the angle and every word/);
+  assert.doesNotMatch(system, /Opening options|Pick one of these|Never invent beyond these options|Earlier opener topic classes|^- (?:calendar|open loop|recent thread):/mu);
 });
 
-test('3u: consecutive starts offer different stored open loops and record the plan as metadata', async t => {
+test('opening facts preserve available commitments across starts and log counts only', async t => {
   const h = await harness(t);
-  // O1b-A removed the debug journal, so the plan receipt is a host log line, one per start, and the
-  // sink keeps them in start order.
-  const plans: Record<string, unknown>[] = [];
-  const detachPlanSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'opener_plan') plans.push(record); } });
-  t.after(() => detachPlanSink());
-  h.store.transaction(tx => {
-    seedSummary(tx, 'synthetic-shared-loop', 'The owner said the tax form is still to be filed.', NOW - 3_600_000, h.store.assistantId, NOW,
-      'The owner said the tax form is still to be filed.');
-    seedSummary(tx, 'synthetic-accountant-loop', 'The owner said he still has to call the accountant.', NOW - 7_200_000, h.store.assistantId, NOW,
-      'The owner said he still has to call the accountant.');
-  });
-  const snapshot = (liveSessionId: string): string => {
-    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
-    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
-  };
-  const first = h.owner.create({ idempotencyKey: 'opener-rotation-1', inputClass: 'ordinary' }, h.ctx);
-  // W5-R2: a start inside the 12 h cooldown after an offered open loop offers the kind not at all, so the second
-  // start is placed past it; the rotation still walks the stored loops, which is what this test is about.
-  h.advance(13 * 3_600_000);
-  const second = h.owner.create({ idempotencyKey: 'opener-rotation-2', inputClass: 'ordinary' }, h.ctx);
-  const loops = [first, second].map(session => /^- open loop: (.+)$/mu.exec(snapshot(session.liveSessionId))?.[1]);
-  assert.ok(loops[0] !== undefined && loops[1] !== undefined, 'both starts compose an open loop from the stored column');
-  assert.notEqual(loops[0], loops[1], `consecutive starts offer different loops (${loops.join(' / ')})`);
-  assert.ok(snapshot(first.liveSessionId).includes('# Opening options'), 'the plan is one section of the instruction');
-  assert.equal(plans.length, 2, 'each start records its own plan');
-  assert.deepEqual(plans.map(plan => Object.keys(plan).sort().join(',')), ['event,kinds,rotation', 'event,kinds,rotation'], 'the receipt carries kinds and rotation only');
-  assert.deepEqual(plans.map(plan => plan['kinds']), [['recent-thread', 'open-loop'], ['recent-thread', 'open-loop']],
-    'the newest call leads, the empty calendar offers no calendar kind');
-  assert.equal((plans[0]!['rotation'] as number) + 1, plans[1]!['rotation'], 'the persisted start counter advances by one');
+  const logs: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const event = raw as Record<string, unknown>; if (event['event'] === 'opener_facts') logs.push(event); } });
+  t.after(detach);
+  h.store.transaction(tx => seedSummary(tx, 'facts-loop', 'The architecture proposal is unfinished.', NOW - 3_600_000, h.store.assistantId, NOW, 'Send the architecture proposal'));
+  const first = h.owner.create({ idempotencyKey: 'facts-first', inputClass: 'ordinary' }, h.ctx);
+  const second = h.owner.create({ idempotencyKey: 'facts-second', inputClass: 'ordinary' }, h.ctx);
+  const factsOf = (id: string): { commitments: string[]; exclude_topics: string[] } => JSON.parse(/^OPENING_FACTS (.+)$/mu.exec(accepted(h, id).system)![1]!) as { commitments: string[]; exclude_topics: string[] };
+  assert.deepEqual(factsOf(first.liveSessionId).commitments, factsOf(second.liveSessionId).commitments, 'offering a fact does not consume or rotate it');
+  assert.ok(factsOf(first.liveSessionId).commitments.some(fact => fact.includes('architecture proposal')));
+  assert.deepEqual(factsOf(second.liveSessionId).exclude_topics, [], 'only delivered openings contribute exclusions');
+  assert.equal(logs.length, 2);
+  for (const event of logs) {
+    assert.deepEqual(Object.keys(event).sort(), ['event', 'day', 'commitments', 'saved_for_him', 'open_thread', 'exclude_topics'].sort());
+    for (const [key, count] of Object.entries(event)) if (key !== 'event') assert.ok(Number.isInteger(count) && Number(count) >= 0);
+  }
 });
 
 // Release 7 W5: the loop renewal. A call that opens on a stored loop gets a summary that stores the same loop
 // again, so before this rule the next call opened on it once more, call after call. The plan each start recorded is
 // the record, so a loop a previous plan offered is not offered as an opener again; it stays in the earlier
 // conversations as context and only the owner raises it.
-test('W5: a stored open loop a previous call opened on is not offered again', async t => {
+test('unspoken commitments remain facts rather than being suppressed by an offered plan', async t => {
   const h = await harness(t);
   const loop = 'The owner said the company website lookup is still to be done.';
-  h.store.transaction(tx => seedSummary(tx, 'synthetic-loop-source', loop, NOW - 3_600_000, h.store.assistantId, NOW, loop));
-  const snapshot = (liveSessionId: string): string => {
-    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
-    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
-  };
-  const first = h.owner.create({ idempotencyKey: 'opener-once-1', inputClass: 'ordinary' }, h.ctx);
-  assert.match(snapshot(first.liveSessionId), /^- open loop: the company website lookup is still to be done /mu,
-    'the first call opens on the stored loop');
-  // The call that opened on it ends and its own summary stores the same loop again: the renewal.
-  h.store.transaction(tx => {
-    tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [first.liveSessionId]);
-    summaries.insertSummary(tx, { liveSessionId: first.liveSessionId, status: 'complete', summary: loop, endedAt: NOW - 60_000, now: NOW, openLoop: loop });
-  });
-  const second = h.owner.create({ idempotencyKey: 'opener-once-2', inputClass: 'ordinary' }, h.ctx);
-  assert.equal(/^- open loop:/mu.test(snapshot(second.liveSessionId)), false, 'the loop a previous call opened on is not offered again');
+  h.store.transaction(tx => seedSummary(tx, 'facts-unspoken', loop, NOW - 3_600_000, h.store.assistantId, NOW, loop));
+  const first = h.owner.create({ idempotencyKey: 'facts-unspoken-1', inputClass: 'ordinary' }, h.ctx);
+  const second = h.owner.create({ idempotencyKey: 'facts-unspoken-2', inputClass: 'ordinary' }, h.ctx);
+  for (const session of [first, second]) {
+    const facts = JSON.parse(/^OPENING_FACTS (.+)$/mu.exec(accepted(h, session.liveSessionId).system)![1]!) as { commitments: string[]; exclude_topics: string[] };
+    assert.ok(facts.commitments.some(fact => fact.includes('company website lookup')));
+    assert.deepEqual(facts.exclude_topics, []);
+  }
 });
 
 // W5-R2 (master review): the distillation re-words the loop between calls, so "website lookup for Acmeworks" comes
 // back as "find the Acmeworks homepage" and the exact-topic rule alone cannot see the same loop twice. A call whose
 // plan offered any open-loop option therefore starts no other call on one for 12 hours; other kinds are untouched.
-test('W5-R2: a call that offered an open loop cools every open-loop opener for 12 hours', async t => {
+test('commitment facts carry source dates without a kind cooldown or prescribed question', async t => {
   const h = await harness(t);
-  const first = 'The owner said the Acmeworks website lookup is still to be done.';
-  h.store.transaction(tx => seedSummary(tx, 'synthetic-cooldown-source', first, NOW - 3_600_000, h.store.assistantId, NOW, first));
-  const snapshot = (liveSessionId: string): string => {
-    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
-    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
-  };
-  const call1 = h.owner.create({ idempotencyKey: 'cooldown-1', inputClass: 'ordinary' }, h.ctx);
-  assert.match(snapshot(call1.liveSessionId), /^- open loop: /mu, 'the first call offers the stored loop');
-  // t = 20 min: the call that opened on it ends and its summary stores the same loop in other words.
+  const sourceAt = NOW - 3_600_000;
+  h.store.transaction(tx => seedSummary(tx, 'facts-dated', 'The owner plans the Acmeworks review.', sourceAt, h.store.assistantId, NOW, 'Prepare the Acmeworks review'));
+  const factsOf = (id: string): { commitments: string[] } => JSON.parse(/^OPENING_FACTS (.+)$/mu.exec(accepted(h, id).system)![1]!) as { commitments: string[] };
+  const first = h.owner.create({ idempotencyKey: 'facts-dated-1', inputClass: 'ordinary' }, h.ctx);
   h.advance(20 * 60_000);
-  const reworded = 'The owner said he still has to find the Acmeworks homepage.';
-  h.store.transaction(tx => {
-    tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [call1.liveSessionId]);
-    summaries.insertSummary(tx, { liveSessionId: call1.liveSessionId, status: 'complete', summary: reworded, endedAt: NOW + 20 * 60_000 - 60_000, now: NOW + 20 * 60_000, openLoop: reworded });
-  });
-  const call2 = h.owner.create({ idempotencyKey: 'cooldown-2', inputClass: 'ordinary' }, h.ctx);
-  assert.equal(/^- open loop:/mu.test(snapshot(call2.liveSessionId)), false, 'inside the cooldown the re-worded loop is not offered');
-  // t = 13 h: the cooldown is over, so a stored loop is an opener again.
-  h.advance(13 * 3_600_000 - 20 * 60_000);
-  h.store.transaction(tx => seedSummary(tx, 'synthetic-cooldown-later', 'The owner said the Acmeworks invoice is still to be sent.',
-    NOW + 13 * 3_600_000 - 3_600_000, h.store.assistantId, NOW + 13 * 3_600_000));
-  const call3 = h.owner.create({ idempotencyKey: 'cooldown-3', inputClass: 'ordinary' }, h.ctx);
-  assert.match(snapshot(call3.liveSessionId), /^- open loop: /mu, 'past the cooldown a stored loop is offered again');
+  const second = h.owner.create({ idempotencyKey: 'facts-dated-2', inputClass: 'ordinary' }, h.ctx);
+  for (const session of [first, second]) {
+    assert.ok(factsOf(session.liveSessionId).commitments.some(fact => fact.startsWith(new Date(sourceAt).toISOString()) && fact.includes('Prepare the Acmeworks review')));
+    assert.doesNotMatch(accepted(h, session.liveSessionId).system, /Opening options|^- open loop:|is it done:/mu);
+  }
 });
 
 test('1023-N8: a start right after a call that just ended names his last topic while the summary is pending', async t => {
@@ -3609,8 +3584,9 @@ test('1023-N8: a start right after a call that just ended names his last topic w
   const second = h.owner.create({ idempotencyKey: 'pending-summary-2', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [second.liveSessionId]))!;
   const system = (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
-  assert.match(system, /^- recent thread: The Mongoose mint delivery window moves to Friday$/mu,
-    'the call that just ended supplies the subject, so the next line does not fall back to the calendar');
+  const facts = JSON.parse(/^OPENING_FACTS (.+)$/mu.exec(system)![1]!) as { open_thread: string };
+  assert.match(facts.open_thread, /The Mongoose mint delivery window moves to Friday/);
+  assert.match(facts.open_thread, /As of/);
 });
 
 test('S4b: an opener is assembled from its ordered fragments up to the first finished fragment or turn boundary', () => {
@@ -3623,7 +3599,7 @@ test('S4b: an opener is assembled from its ordered fragments up to the first fin
     'Morning.', 'a boundary before the first speech does not hide the opener');
 });
 
-test('Q5-R4: a fresh call carries the previous opener assembled from its fragments, and the first call carries none', async t => {
+test('a fresh call excludes semantic keys from the completed first opening, not the full utterance', async t => {
   const h = await harness(t);
   const first = h.owner.create({ idempotencyKey: 'opener-first', inputClass: 'ordinary' }, h.ctx);
   assert.equal(accepted(h, first.liveSessionId).system.includes('earlier openers'), false, 'the first call has no earlier opener to avoid');
@@ -3633,11 +3609,15 @@ test('Q5-R4: a fresh call carries the previous opener assembled from its fragmen
       tx.run("INSERT INTO live_journal(live_session_id,kind,text,finished,payload_bytes,arrived_at) VALUES (?, 'outputTranscription', ?, ?, ?, 0)", [first.liveSessionId, text, finished, text.length]);
     }
   });
+  h.store.transaction(tx => {
+    tx.run("INSERT INTO live_journal(live_session_id,kind,payload_bytes,arrived_at) VALUES (?, 'turnComplete', 0, ?)", [first.liveSessionId, NOW]);
+    recordDeliveredOpening(tx, first.liveSessionId, NOW);
+  });
   const second = h.owner.create({ idempotencyKey: 'opener-second', inputClass: 'ordinary' }, h.ctx);
-  const text = accepted(h, second.liveSessionId).system;
-  assert.equal(text.includes('Morning. The release branch merged cleanly last night.'), false, 'earlier sentences never enter the instruction');
-  assert.equal(text.includes('A trailing line'), false, 'a fragment after the finished fragment is not carried');
-  assert.equal(text.split('Earlier opener topic classes').length - 1, 1, 'the context appears once');
+  const facts = JSON.parse(/^OPENING_FACTS (.+)$/mu.exec(accepted(h, second.liveSessionId).system)![1]!) as { exclude_topics: string[] };
+  assert.ok(facts.exclude_topics.includes('release'));
+  assert.ok(facts.exclude_topics.includes('branch'));
+  assert.ok(!facts.exclude_topics.includes('Morning. The release branch merged cleanly last night.'));
 });
 
 test('composeLive uses client delegation and keeps worker procedure out of both voice sessions', async t => {
@@ -5341,26 +5321,36 @@ test('F2 widening: a canary turn never seeds an owner call, even inside one conv
 
 // --- OP-R3: the thirty-minute opening memory reaches past the newest three calls ---------------------
 
-test('C-OPENER: a used opener stays remembered after three calls that opened plainly', async t => {
-  const h = await harness(t);
-  h.store.transaction(tx => seedSummary(tx, 'synthetic-recent-loop', 'The owner said the deposit is still to be paid.',
-    NOW - 3_600_000, h.store.assistantId, NOW, 'The owner said the deposit is still to be paid.'));
-  const snapshotOf = (liveSessionId: string): string => {
-    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
-    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
-  };
-  const spoke = (liveSessionId: string, text: string): void => { h.store.transaction(tx => tx.run(
-    'INSERT INTO live_journal(live_session_id,kind,text,payload_bytes,arrived_at) VALUES(?,?,?,0,?)',
-    [liveSessionId, 'outputTranscription', text, NOW])); };
-  const used = h.owner.create({ idempotencyKey: 'recent-used-1', inputClass: 'ordinary' }, h.ctx);
-  const loop = /^- open loop: (.+)$/mu.exec(snapshotOf(used.liveSessionId))?.[1];
-  assert.ok(loop !== undefined, 'the first call opens on the stored loop');
-  spoke(used.liveSessionId, `You mentioned ${loop}`);
-  const plainly = [1, 2, 3].map(index => h.owner.create({ idempotencyKey: `recent-plain-${index}`, inputClass: 'ordinary' }, h.ctx));
-  for (const session of plainly) spoke(session.liveSessionId, 'Morning.');
-  const history = h.store.transaction(tx => previousOpeners(tx, h.store.assistantId, ['ordinary'], NOW - 30 * 60 * 1000));
-  assert.equal(history.previous.length, 3, 'the note still carries the three newest openers');
-  assert.equal(history.recent.length, 1, 'and the opening used four calls ago is still inside the window');
+test('delivered opening topics persist once and only the last three calls seed exclusions', async t => {
+  const p = progressPort();
+  const h = await harness(t, { port: p.port, provider: 'openai' });
+  const subjects = ['sleep', 'marathon', 'architecture', 'holiday'];
+  for (const [index, subject] of subjects.entries()) {
+    const { session, attachment } = await openPort(h, `delivered-opening-${index}`);
+    p.emit({ type: 'outputTranscription', text: `How is the ${subject}`, finished: true, finalOrigin: 'provider' });
+    p.emit({ type: 'outputTranscription', text: ' going?', finished: true, finalOrigin: 'provider' });
+    p.emit({ type: 'turnComplete' });
+    await settlePort();
+    const first = h.store.transaction(tx => tx.get('SELECT topics FROM delivered_opening_topics WHERE call_id=?', [session.liveSessionId]));
+    assert.ok(first, 'a real first-turn completion creates the diagnostic row');
+    assert.ok((JSON.parse(String(first['topics'])) as string[]).includes(subject));
+    p.emit({ type: 'outputTranscription', text: 'Unrelated later answer', finished: true, finalOrigin: 'provider' });
+    p.emit({ type: 'turnComplete' });
+    await settlePort();
+    assert.deepEqual(h.store.transaction(tx => tx.get('SELECT topics FROM delivered_opening_topics WHERE call_id=?', [session.liveSessionId])), first, 'later turns cannot overwrite opening topics');
+    attachment.close(); await attachment.done;
+  }
+  const history = h.store.transaction(tx => previousOpeners(tx, h.store.assistantId, ['ordinary']));
+  assert.equal(history.previous.length, 3);
+  assert.deepEqual(history.previous.map(call => call.topics.find(topic => subjects.includes(topic))), ['holiday', 'architecture', 'marathon']);
+  const next = h.owner.create({ idempotencyKey: 'delivered-opening-next', inputClass: 'ordinary' }, h.ctx);
+  const snapshot = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [next.liveSessionId]));
+  const system = (JSON.parse(String(snapshot?.['accepted_prompt_snapshot'])) as { system: string }).system;
+  const facts = JSON.parse(/^OPENING_FACTS (.+)$/mu.exec(system)![1]!) as { exclude_topics: string[] };
+  assert.ok(!facts.exclude_topics.includes('sleep'), 'the fourth-oldest call no longer excludes its topic');
+  for (const subject of subjects.slice(1)) assert.ok(facts.exclude_topics.includes(subject));
+  assert.match(system, /Never open on a subject in exclude_topics/);
+  assert.doesNotMatch(system, /Opening options|Pick one of these|Earlier opener topic classes/);
 });
 
 

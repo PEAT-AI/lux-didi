@@ -19,7 +19,7 @@ for (const boundary of ['before input', 'pending without a binding', 'pending wi
     const answer = await f.answer();
     assert.equal(answer.delegationId, 'fresh-binding'); assert.equal(answer.text, 'The retained synthetic boundary result.');
     assert.equal(inferences, 1, 'rebuilding transport must not repeat the worker');
-    assert.equal(f.voice.taskAnswers.length, 1, 'no stale-socket append');
+    assert.equal(f.voice.taskAnswers.length, 2, 'no stale-socket append');
   });
 }
 
@@ -52,7 +52,7 @@ test('task rebuild boundary: a heard result is conversation history, not a secon
   f.voice.emit({ type: 'outputTranscription', text: answer.text, finished: true }); f.voice.emit({ type: 'turnComplete' }); await f.flush();
   f.voice.emit({ type: 'goAway', timeLeftMs: 10_000 }); await fixtureUntil(() => f.voice.sessionsOpened === 2, 'post-heard socket');
   f.bind('fresh-binding'); await f.flush();
-  assert.equal(f.voice.taskAnswers.length, 1); assert.equal(inferences, 1);
+  assert.equal(f.voice.taskAnswers.length, 2); assert.equal(inferences, 1);
   assert.match(JSON.stringify(f.voice.requests[1]?.history), /synthetic result is already heard/);
 });
 

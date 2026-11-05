@@ -1,3 +1,4 @@
+import { commentaryItems, resultCommentary } from '../tasks/delivery.js';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -60,7 +61,7 @@ test('the helper is told what she already said, and how far its chunks got', asy
   f.call.delivery.accepted('c1');
   assert.equal(f.sent.length, 2, 'the second chunk is offered once the first is accepted');
   await f.call.input('Second synthetic ask', 1);
-  assert.deepEqual(said(captured, 1), { text: answer, accepted: 1, total: 2, truncated: false },
+  assert.deepEqual(said(captured, 1), { text: answer, accepted: 1, total: commentaryItems(resultCommentary({ status: 'complete', text: answer, findings: [] })).length, truncated: false },
     'a cut answer is distinguishable from a finished one by accepted chunks of total');
 });
 
@@ -68,9 +69,9 @@ test('a finished delivery is told as fully accepted', async t => {
   const captured: Captured[] = [];
   const f = fixture(t, capture(() => ({ text: 'The only synthetic sentence.', calls: [] }), captured));
   await f.call.input('First synthetic ask', 1);
-  f.call.delivery.accepted('c1');
+  f.call.delivery.accepted('c1'); f.call.delivery.accepted('c2');
   await f.call.input('Second synthetic ask', 1);
-  assert.deepEqual(said(captured, 1), { text: 'The only synthetic sentence.', accepted: 1, total: 1, truncated: false });
+  assert.deepEqual(said(captured, 1), { text: 'The only synthetic sentence.', accepted: 2, total: 2, truncated: false });
 });
 
 test('said stays across a revision and across a provider socket rebuild', async t => {

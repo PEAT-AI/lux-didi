@@ -21,15 +21,15 @@ test('helper source text stays out of voice context across an in-flight ordinary
   });
   await f.emit({ type: 'inputTranscription', text: 'Find the syntheticcontext note.', finished: true, finalOrigin: 'provider' });
   assert.equal(calls, 2); assert.ok(outputs[0]?.includes(marker), 'the helper actually read the populated source');
-  assert.deepEqual(f.appended, []);
+  assert.deepEqual((await f.answers()), []);
   await f.emit({ type: 'goAway', timeLeftMs: 10000 });
   assert.equal(f.requests.length, 2, 'the transport rebuilt while the same helper work remained pending');
   assert.equal(JSON.stringify(f.requests).includes(marker), false, 'raw tool evidence never becomes voice startup context');
   await f.emit({ type: 'delegation', delegationId: 'synthetic-rebuilt-delegation' });
   finish!({ text: 'Synthetic concise answer.', calls: [] }); await flushTaskLive();
   assert.equal(calls, 2, 'a transport rebuild does not restart helper inference');
-  assert.deepEqual(f.appended, ['Synthetic concise answer.']);
-  await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
+  assert.deepEqual((await f.answers()), ['Synthetic concise answer.']);
+  await f.emit({ type: 'commentaryAccepted', commandId: `synthetic-command-${f.appended.length}` });
   await f.emit({ type: 'outputTranscription', text: 'Synthetic concise answer.', finished: true });
   assert.ok(f.receipts.some(row => row.event === 'task_delivery' && row.state === 'accepted'));
   assert.equal(JSON.stringify(f.receipts).includes(marker), false, 'source bytes never enter the closed audit');
@@ -46,7 +46,7 @@ test('each finalized helper ask receives a fresh host clock and the owner time z
   await f.emit({ type: 'inputTranscription', text: 'What is today in my time zone?', finished: true, finalOrigin: 'provider' });
   assert.equal(inputs.length, 1);
   assert.deepEqual(inputs[0]!.time_context, { now_utc: '2031-01-02T23:45:00.000Z', owner_time_zone: 'Asia/Tokyo' });
-  await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
+  await f.emit({ type: 'commentaryAccepted', commandId: `synthetic-command-${f.appended.length}` });
   await f.emit({ type: 'outputTranscription', text: 'Synthetic clock answer.', finished: true });
   await f.emit({ type: 'goAway', timeLeftMs: 10000 });
   assert.equal(f.requests.length, 2);
@@ -78,7 +78,7 @@ test('verified helper status reports only a real in-call rebuild and its closed 
   });
   await f.emit({ type: 'inputTranscription', text: 'Synthetic first status ask.', finished: true, finalOrigin: 'provider' });
   assert.equal(statuses[0]!.rebuilt, false); assert.equal(statuses[0]!.rebuild_cause, null);
-  await f.emit({ type: 'commentaryAccepted', commandId: 'synthetic-command-1' });
+  await f.emit({ type: 'commentaryAccepted', commandId: `synthetic-command-${f.appended.length}` });
   await f.emit({ type: 'goAway', timeLeftMs: 10_000 });
   await f.emit({ type: 'inputTranscription', text: 'Synthetic next status ask.', finished: true, finalOrigin: 'provider' });
   assert.equal(statuses[1]!.rebuilt, true); assert.ok(['host', 'network', 'provider'].includes(statuses[1]!.rebuild_cause!));

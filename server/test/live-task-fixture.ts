@@ -1,3 +1,4 @@
+import { commentaryPart, commentaryResults } from './commentary-test.js';
 import type { TestContext } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,6 +54,15 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
     finalize(text: string) { pendingQuiet = true; voice.emit({ type: 'inputTranscription', text, finished: true, finalOrigin: 'provider' }); void flush(); },
     bind(id = 'synthetic-binding') { voice.emit({ type: 'delegation', delegationId: id }); },
     flush,
-    async answer() { await flush(); await fixtureUntil(() => voice.taskAnswers.length > 0, 'current task answer'); return voice.taskAnswers.at(-1)!; },
+    async answer() {
+      await flush(); await fixtureUntil(() => voice.taskAnswers.length > 0, 'current task answer');
+      const id = commentaryPart(voice.taskAnswers.at(-1)!.text).id;
+      while (!commentaryPart(voice.taskAnswers.at(-1)!.text).final) {
+        const count = voice.taskAnswers.length;
+        voice.emit({ type: 'commentaryAccepted', commandId: voice.taskAnswers.at(-1)!.commandId }); await flush();
+        await fixtureUntil(() => voice.taskAnswers.length > count, 'next commentary part');
+      }
+      return commentaryResults(voice.taskAnswers.filter(item => commentaryPart(item.text).id === id))[0]!;
+    },
   };
 }

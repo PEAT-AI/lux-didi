@@ -540,14 +540,11 @@ test('the earlier-conversations section sits right after # Memory and yields bef
   assert.ok(huge.text.includes('SYNTHETIC retained memory'));
 });
 
-test('the recovery pickup line is the exact fixed text of release 3g-c', () => {
-  assert.equal(LIVE_RECOVERY_PICKUP, "The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner's last words.");
+test('the recovery pickup is typed connection data, not an opening sentence', () => {
+  assert.equal(LIVE_RECOVERY_PICKUP, '```COMMENTARY\n' + JSON.stringify({ kind: 'recovery', cause: 'connection_dropped', mid_answer: false }) + '\n```');
 });
-test('C-PICKUP: the mute pickup names the silence, never a dropped connection', () => {
-  assert.equal(LIVE_MUTE_PICKUP, "You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a result reports a failure, say in one short sentence that it failed; otherwise answer the owner's last words.");
-  for (const word of ['dropped', 'back', 'connection']) {
-    assert.equal(LIVE_MUTE_PICKUP.toLowerCase().includes(word), false, `the mute pickup never says ${word}`);
-  }
+test('C-PICKUP: mute pickup names provider silence without inventing a dropped connection', () => {
+  assert.equal(LIVE_MUTE_PICKUP, '```COMMENTARY\n' + JSON.stringify({ kind: 'recovery', cause: 'provider_silent', mid_answer: false }) + '\n```');
 });
 test('the voice surface asks for varied phrasing, never the same framing phrase twice', () => {
   assert.ok(NAYA_VOICE_SURFACE.includes('Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.'), 'the phrasing rule is stated verbatim');
@@ -1412,7 +1409,7 @@ const HONESTY_CONTRADICTIONS = [
 test('C-PROMPT 10.11: she answers from herself and speaks of a lookup only in the turn she hands one off', () => {
   assert.match(NAYA_WORK_DELIVERY, /Everything else is yours and you answer it yourself, at once/);
   assert.match(NAYA_WORK_DELIVERY, /Speak of looking something up only in the turn you hand it off/);
-  assert.match(NAYA_WORK_DELIVERY, /Word may also be that nothing needs looking up/);
+  assert.match(NAYA_WORK_DELIVERY, /A no_action means answer from this conversation and your own mind/);
   assert.match(NAYA_WORK_DELIVERY, /You cannot see work in progress/);
   assert.match(NAYA_WORK_DELIVERY, /give what is there rather than only that it is incomplete/);
   assert.match(NAYA_VOICE_SURFACE, /that includes his pauses, his hesitations and any sentence he has not finished/);

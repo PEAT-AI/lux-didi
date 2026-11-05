@@ -1,4 +1,4 @@
-import { commentaryEnvelope } from '../tasks/delivery.js';
+import { commentaryEnvelope, commentaryItems, resultCommentary } from '../tasks/delivery.js';
 import { TaskCall } from '../tasks/call.js';
 import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
@@ -733,7 +733,7 @@ const CONSUMER_CLOSED_MS = 1_000;
 export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
 /** #660: the bounded one item a fresh session accepts where a retired call's tool output cannot go. */
 /** #660: the host's own answer to a status question while nothing runs, paraphrased aloud by the voice model. */
-export const NO_LOOKUP_RUNNING_NOTE = commentaryEnvelope({ kind: 'no_action', exact: [], content: '', cause: '', what_failed: '', next_step: '' });
+export const NO_LOOKUP_RUNNING_NOTE = commentaryItems(resultCommentary({ status: 'no_action', text: '', findings: [] }))[0]!;
 /** G7: a reply that refused the call instead of answering it: a closed error code or an explicit refusal. */
 export const refusedResponse = (response: JsonObject): boolean => {
   if (typeof response['error'] === 'string' && response['error'] !== '') return true;

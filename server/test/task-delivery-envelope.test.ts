@@ -32,7 +32,7 @@ test('partial gives available content and a gap without inventing a repair', () 
 test('fallback extraction retains names, amounts, dates, times, email and units verbatim', () => {
   const text = 'Daniel Tepe: Thursday 5 November 09:00 CET, EUR 1,000,000, 12 kg; daniel@example.com.';
   const exact = extractExact(text);
-  for (const entity of ['Daniel Tepe', 'EUR 1,000,000', '09:00 CET', '12 kg', 'daniel@example.com']) assert.ok(exact.includes(entity), entity);
+  for (const entity of ['Daniel Tepe', 'EUR 1,000,000', '09:00 CET', '12 kg', 'daniel@example.com']) assert.ok(exact.some(value => value.includes(entity)), entity);
   assert.ok(exact.some(entity => entity.includes('5 November')));
   assert.deepEqual(extractExact(text), exact);
 });

@@ -84,7 +84,7 @@ test('C-CHAT: source identity, time window and count survive the typed tool resu
   const evidence = documentResult('Source: #fixture-room. Window: 2026-09-25 to 2026-10-01. Count: 2. Synthetic messages.', 'synthetic-chat');
   const { returned } = await searchChat('#fixture-room after:2026-09-25 before:2026-10-01', evidence);
   assert.deepEqual(returned, evidence);
-  assert.match(WORKER_INSTRUCTIONS, /Keep names, numbers and dates exact/);
+  assert.match(WORKER_INSTRUCTIONS, /exact \(every name, number, date, time, amount and qualification used, verbatim\)/);
   assert.match(NAYA_WORK_DELIVERY, /Reproduce every exact entity verbatim/);
 });
 
@@ -118,5 +118,5 @@ test('C-PROMPT 10.11: the helper picks the source that answers and stops, and le
   assert.doesNotMatch(WORKER_INSTRUCTIONS, /Start wide, then narrow/);
   assert.doesNotMatch(WORKER_INSTRUCTIONS, /read aloud to him word for word/);
   // Neither public text hands her a quoted line to repeat.
-  assert.doesNotMatch(WORKER_INSTRUCTIONS, /"/);
+  assert.doesNotMatch(WORKER_INSTRUCTIONS.replace('{"status":"no_action"}', ''), /"/);
 });

@@ -154,5 +154,5 @@ test('the follow-up rules are judgments the helper applies, never lines to say',
     'when the status says nothing is running, say that nothing is running and give the real outcome',
   ]) assert.ok(WORKER_INSTRUCTIONS.includes(rule), rule);
   assert.doesNotMatch(WORKER_INSTRUCTIONS, /A short follow-up refers to the task before it/);
-  assert.doesNotMatch(WORKER_INSTRUCTIONS, /"/, 'no quoted line for her to say');
+  assert.doesNotMatch(WORKER_INSTRUCTIONS.replace('{"status":"no_action"}', ''), /"/, 'no quoted line for her to say');
 });

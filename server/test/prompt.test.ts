@@ -347,7 +347,7 @@ test('public voice and worker policies contain judgments, not lines to recite', 
   assert.ok(WORKER_INSTRUCTIONS.length <= 6214);
   for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
     assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);
-    assert.doesNotMatch(text, /["“][^"”]+[.!?]["”]/, 'no example sentence to recite');
+    assert.doesNotMatch(text.replace('{"status":"no_action"}', ''), /["“][^"”]+["”]/, 'no quoted prose to recite outside the required JSON schema');
   }
   assert.deepEqual([...new Set(NAYA_WORK_DELIVERY.match(/\b[a-z]+_[a-z_]+\b/g))].sort(), ['connection_dropped', 'mid_answer', 'next_step', 'no_action', 'provider_silent', 'what_failed']);
   assert.match(NAYA_WORK_DELIVERY, /MUST be handed off in the same turn/);

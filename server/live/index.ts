@@ -92,8 +92,22 @@ interface ActiveSession {
   /** LAT-1022: when the capture path declared the owner's speech over, on this host's own clock, so the final's
    *  own line can say how long after it the transcript landed. Cleared when the turn's input starts again. */
   speechEndAt?: number | undefined;
-  /** First model audio of the current turn; reset at each model turn start. */
+  /** First model audio of the current response; reset at each model turn start. */
   firstAudioAt: number | undefined;
+  /** C-TRACE: the first audible moment of the whole turn. A later response inside the same turn never
+   *  clears it, so a turn answered in two responses still says she spoke. */
+  turnFirstAudibleAt: number | undefined;
+  /** C-TRACE: the turn that owns the owner's latest words, so a provider final that lands after the
+   *  turn closed still attaches to the turn he said them in. */
+  ownerUtteranceTurnId: string | undefined;
+  /** C-TRACE: the last journal row already recorded as an owner final, so a sentence finalized from
+   *  its own deltas is never written twice. */
+  ownerFinalJournalId: number | undefined;
+  /** C-TRACE: the words written when a cut utterance was finalized, so the adapter's own final for the
+   *  same sentence is recognized instead of appended again. */
+  ownerFinalText: string | undefined;
+  /** C-TRACE: the turn just closed, waiting for the boundary journal write that finalizes his cut sentence. */
+  cutOwnerTurnId: string | undefined;
   audioResponseId?: string | undefined;
   traceOutputTurnId?: string | undefined;
   /** C-LOGS11: the turn whose first audible native receipt is already logged, so one turn logs one
@@ -2129,7 +2143,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()), contextToolChars: 0,
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnTelugu: 0, turnKannada: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnFirstAudibleAt: undefined, ownerUtteranceTurnId: undefined, ownerFinalJournalId: undefined, ownerFinalText: undefined, cutOwnerTurnId: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnTelugu: 0, turnKannada: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -2909,6 +2923,8 @@ export class LiveSessionOwner {
     handle.turnToolCalls = 0; handle.turnResponseCreated = false;
     // L-04: her own words restart the silence, so no earlier model frame of this turn anchors the debt clock.
     handle.turnAudioAt = undefined;
+    // C-TRACE: audibility is the turn's own fact and starts over with it.
+    handle.turnFirstAudibleAt = undefined;
     this.#cancelTimers(handle);
     // C-TURN8: a new owner turn is a fresh correction budget.
     handle.answeredWords = undefined;
@@ -2928,7 +2944,9 @@ export class LiveSessionOwner {
     this.#receipt(handle, 'turn.opened', { turnId }, {
       origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: hostMonotonicMs(),
       ...(supersedes === undefined ? {} : { supersedesTurnId: supersedes }),
-      ...(connection.turnIndex > 1 ? { attributionUncertain: true } : {}),
+      // C-TRACE: attribution is uncertain only where this turn replaced one that was still open, because
+      // then the provider's untagged transcripts may belong to either. A turn number is not uncertainty.
+      ...(supersedes === undefined ? {} : { attributionUncertain: true }),
     });
   }
 
@@ -2965,6 +2983,10 @@ export class LiveSessionOwner {
   #closeTurn(handle: ActiveSession, closeReason: TurnCloseReason, outcome?: TurnOutcome): void {
     const turnId = handle.connection.turnId;
     if (turnId === undefined) return;
+    // C-TRACE: his cut sentence is finalized by the next journal write of this turn's boundary, inside that
+    // write's own transaction, so a closed turn costs the store no extra commit.
+    handle.cutOwnerTurnId = turnId;
+    if (handle.turnFirstAudibleAt !== undefined) this.#receipt(handle, 'turn.summary', { turnId }, { firstAudibleAt: handle.turnFirstAudibleAt });
     handle.connection.turnId = undefined;
     // C-LOGS11: the turn's last line is its own, so the context ends with it.
     setLogContext({ turnId: null });
@@ -2973,7 +2995,34 @@ export class LiveSessionOwner {
     });
   }
 
-  /** The words Naya had produced but the owner never heard: kept apart, so a later turn can offer to finish. */
+  /**
+   * C-TRACE: the owner's words when her own speech cut them off. The provider never sends the finished
+   * segment of a sentence the answer interrupted, so the deltas he did say are the record. Nothing is
+   * invented: the segments are joined in the order he said them, and only the trailing unfinished run is
+   * taken, so an earlier sentence is never repeated. The adapter's own final, when it does arrive, is
+   * recognized by `ownerFinalText` and never appended twice.
+   */
+  #finalizeOwnerUtterance(tx: Transaction, handle: ActiveSession, turnId: string): void {
+    try {
+      if (handle.ownerFinalJournalId === undefined) {
+        const lastFinal = tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1",
+          [handle.liveSessionId]);
+        handle.ownerFinalJournalId = Number(lastFinal?.['id'] ?? 0);
+      }
+      const rows = tx.all("SELECT journal_id,text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND journal_id>? ORDER BY journal_id",
+        [handle.liveSessionId, handle.ownerFinalJournalId]);
+      if (!rows.length) return;
+      const last = Number(rows[rows.length - 1]!['journal_id']);
+      const text = rows.map(row => String(row['text'] ?? '')).join('');
+      handle.ownerFinalJournalId = last;
+      if (!text.trim().length) return;
+      handle.ownerFinalText = text.trim();
+      tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)',
+        [turnId, 'owner', this.#now(), 1, text, last]);
+    } catch { this.#diagnosticFailure(handle, 'trace_write_failed'); }
+  }
+
+/** The words Naya had produced but the owner never heard: kept apart, so a later turn can offer to finish. */
   #keepUnheard(handle: ActiveSession, tx: Transaction): void {
     const row = tx.get(
       "SELECT group_concat(text,'') AS text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND journal_id > COALESCE((SELECT MAX(journal_id) FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND finished=1),0)",
@@ -3867,7 +3916,9 @@ export class LiveSessionOwner {
           this.#noteState(handle, 'turn_complete');
           // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the
           // fact the timeline reads instead of inferring one from a missing receipt (D12-3).
-          this.#closeTurn(handle, 'completed', handle.firstAudioAt === undefined ? 'no_response' : 'answered');
+          // C-TRACE: the turn's own audible clock, not the last response's, so a turn answered by a later
+          // response says it was answered.
+          this.#closeTurn(handle, 'completed', handle.turnFirstAudibleAt === undefined ? 'no_response' : 'answered');
         }
         if (event.type === 'waitingForInput') { handle.thinking = !event.value; if (event.value) this.#holdSpeaking(handle); this.#noteState(handle, event.value ? 'silence' : 'input'); }
         if (event.type === 'audio') {
@@ -3896,6 +3947,8 @@ export class LiveSessionOwner {
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
             handle.firstAudioAt = this.#now();
+            // C-TRACE: the turn's first audible moment outlives the response that produced it.
+            handle.turnFirstAudibleAt ??= handle.firstAudioAt;
             // #451: the first audible frame of a turn, measured from the provider open and its ready event.
             const sinceOpen = handle.openedAt === undefined ? 0 : Math.max(0, handle.firstAudioAt - handle.openedAt);
             const sinceReady = handle.readyAt === undefined ? 0 : Math.max(0, handle.firstAudioAt - handle.readyAt);
@@ -4132,15 +4185,29 @@ export class LiveSessionOwner {
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
       const journalId = Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
+      // C-TRACE: the boundary of a closed turn is where his cut sentence is written as the turn he said, inside
+      // this write's own transaction, so a closed turn costs the store no extra commit.
+      if (kind === 'turnComplete' || kind === 'interrupted' || kind === 'terminal') {
+        const cutTurn = handle.cutOwnerTurnId;
+        if (cutTurn !== undefined) { handle.cutOwnerTurnId = undefined; this.#finalizeOwnerUtterance(tx, handle, cutTurn); }
+      }
       if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
       if (transcription) {
-        const turnId = handle.connection.turnId ?? (transcription.type === 'outputTranscription' ? handle.traceOutputTurnId : undefined);
+        const owner = transcription.type === 'inputTranscription';
+        // C-TRACE: the turn that owns his words, so a provider final that lands after the turn closed is
+        // still attached to the turn he said them in rather than to the next one.
+        if (owner && handle.connection.turnId !== undefined) handle.ownerUtteranceTurnId = handle.connection.turnId;
+        const turnId = handle.connection.turnId ?? (owner ? handle.ownerUtteranceTurnId : handle.traceOutputTurnId);
         if (turnId !== undefined) {
           // L2-R1: live_journal keeps its fragments and its empty closing row; the audit row is where the
           // assembled utterance belongs, so trace_utterance final=1 answers "what was said".
           const said = finished === 1 && !text?.length ? finishedUtterance(tx, handle.liveSessionId, transcription.type) : text ?? '';
-          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,said,journalId]); }
+          // C-TRACE: this is the adapter's own final for a sentence already finalized from its deltas.
+          const repeated = owner && finished === 1 && said.trim().length > 0 && said.trim() === handle.ownerFinalText;
+          if (repeated) handle.ownerFinalText = undefined;
+          else try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,owner ? 'owner' : 'model',now,finished === 1 ? 1 : 0,said,journalId]); }
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
+          if (owner && finished === 1) handle.ownerFinalJournalId = journalId;
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }
       if (kind === 'inputTranscription' && finished === 1) {

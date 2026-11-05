@@ -8,29 +8,49 @@ export function persistHistoryTurns(tx: Transaction, liveSessionId: string): num
   if (session?.lifecycle !== 'terminal') return 0;
   const pending = new Map<string, SQLRow[]>();
   let inserted = 0;
-  for (const row of tx.all(`SELECT journal_id,kind,text,finished,arrived_at FROM live_journal
-    WHERE live_session_id=? ORDER BY journal_id`, [liveSessionId])) {
-    const kind = String(row.kind);
-    if (kind !== 'inputTranscription' && kind !== 'outputTranscription') {
-      if (kind === 'turnComplete' || kind === 'interrupted' || kind === 'terminal') pending.clear();
-      continue;
-    }
-    const fragments = pending.get(kind) ?? [];
-    fragments.push(row); pending.set(kind, fragments);
-    if (row.finished !== 1) continue;
-    pending.delete(kind);
+  // C-TRACE: one group of fragments becomes one row. A group the provider never finished is still what he
+  // said before her speech cut it, so it is written as the turn it was instead of being dropped.
+  // F3: the sentence a boundary flushed, so a provider final that lands afterwards for the same sentence is not
+  // written a second time. `trace_utterance` dedupes the same way through the session's own final text.
+  const cutTail = new Map<string, string>();
+  const flush = (kind: string, fragments: SQLRow[], atBoundary = false): void => {
     // A pruned fragment must not silently become an apparently complete quote.
-    if (fragments.some(fragment => fragment.text === null)) continue;
+    if (fragments.some(fragment => fragment.text === null)) return;
     const text = fragments.map(fragment => String(fragment.text)).join('');
-    if (!text.trim()) continue;
+    if (!text.trim()) return;
     const first = fragments[0]!;
+    const last = fragments[fragments.length - 1]!;
+    if (!atBoundary && fragments.length === 1 && Number(last.finished) === 1 && cutTail.get(kind) === text.trim()) {
+      cutTail.delete(kind);
+      return;
+    }
+    if (atBoundary) cutTail.set(kind, text.trim()); else cutTail.delete(kind);
     const count = tx.run(`INSERT OR IGNORE INTO history_turns(live_session_id,journal_first,journal_last,role,text,at)
-      VALUES(?,?,?,?,?,?)`, [liveSessionId, first.journal_id!, row.journal_id!, kind === 'inputTranscription' ? 'owner' : 'assistant', text, first.arrived_at!]);
+      VALUES(?,?,?,?,?,?)`, [liveSessionId, first.journal_id!, last.journal_id!, kind === 'inputTranscription' ? 'owner' : 'assistant', text, first.arrived_at!]);
     if (count) {
       const turn = tx.get('SELECT id FROM history_turns WHERE live_session_id=? AND journal_first=?', [liveSessionId, first.journal_id!])!;
       tx.run('INSERT INTO history_turns_fts(rowid,text) VALUES(?,?)', [turn.id!, text]);
       inserted += count;
     }
+  };
+  for (const row of tx.all(`SELECT journal_id,kind,text,finished,arrived_at FROM live_journal
+    WHERE live_session_id=? ORDER BY journal_id`, [liveSessionId])) {
+    const kind = String(row.kind);
+    if (kind !== 'inputTranscription' && kind !== 'outputTranscription') {
+      if (kind === 'turnComplete' || kind === 'interrupted' || kind === 'terminal') {
+        for (const [grouped, fragments] of pending) flush(grouped, fragments, true);
+        pending.clear();
+      }
+      continue;
+    }
+    const fragments = pending.get(kind) ?? [];
+    fragments.push(row); pending.set(kind, fragments);
+    if (row.finished !== 1) continue;
+    // C-TRACE: a group the provider never finished is still what he said before her speech cut it, and the
+    // boundary that ended it is the evidence that the utterance was over. A fragment with no boundary after it
+    // is not a finished utterance, so it is left out.
+    pending.delete(kind);
+    flush(kind, fragments);
   }
   return inserted;
 }

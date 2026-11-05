@@ -160,7 +160,7 @@ The runtime context carries one compact line of live connector state per family,
 
 The Live voice receives speech-ready results from the host-owned helper rather than calling source tools itself. The helper performs the typed tool work; the voice reads its result completely, retaining names, numbers, dates and qualifications. A partial result, a gap or a failure must remain explicit rather than becoming a claim that the work succeeded.
 
-The 4,103-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
+The 5,090-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
 
 Fresh session recovery uses the call transcript seed built by `LiveSessionOwner.#rebuildSeed` and `#seedHistory`. The current seed contains transcript turns only; it adds no separate helper-result ledger. Session recovery and a helper's follow-up tool reads are distinct operations, and recovery does not grant authority to replay an uncertain remote write.
 

@@ -13,6 +13,7 @@ import { Outbox } from '../runtime/outbox.js';
 import { chatMigrations } from '../chat/index.js';
 import { liveMigrations, validateLiveProfile } from '../live/index.js';
 import { composeLive } from '../host/live.js';
+import { HostLog } from '../host/log.js';
 import { listenService } from '../http/server.js';
 import { attachHostLogSink, hostLogEvent } from '../tools/host-events.js';
 import { fixture, CANARY } from './openai-live-voice-fixture.js';
@@ -32,8 +33,9 @@ test('installed canary HTTP/socket/run sequence reaches a real task after provid
   }).service;
   const service = await listenService({ store, live, port: 0 });
   t.diagnostic(`CANARY SEQUENCE port=${new URL(service.origin).port} pid=${process.pid}`);
+  const hostLog = new HostLog(dir);
   const events: Record<string, unknown>[] = [];
-  const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object') events.push(raw as Record<string, unknown>); } });
+  const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object') events.push(raw as Record<string, unknown>); hostLog.event(raw); } });
   let socket: WebSocket | undefined;
   t.after(async () => {
     detach(); socket?.terminate(); await live.shutdown(); await service.close(); store.close(); rmSync(dir, { recursive: true, force: true });
@@ -58,4 +60,13 @@ test('installed canary HTTP/socket/run sequence reaches a real task after provid
   assert.match(report.lines.join('\n'), new RegExp(`callId=${snapshot.liveSessionId}`));
   // No real task_tool receipt in this fixture: it must remain red.
   assert.ok(report.failed > 0);
+  const steps = events.filter(event => event['event'] === 'canary_step');
+  assert.deepEqual(steps.map(event => event['step']), ['ready_wait', 'ready_waited', 'ask_injected', 'settled', 'terminal']);
+  const persisted = readFileSync(hostLog.path, 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>).filter(event => event['event'] === 'canary_step');
+  assert.equal(persisted.length, steps.length, 'no actual step emitter is dropped before host.log');
+  for (const [index, event] of steps.entries()) {
+    assert.deepEqual(Object.keys(event).sort(), ['callId', 'code', 'event', 'ms', 'step']);
+    assert.equal(event['callId'], snapshot.liveSessionId);
+    for (const key of Object.keys(event)) assert.equal(persisted[index]![key], event[key]);
+  }
 });

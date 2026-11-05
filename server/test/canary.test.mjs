@@ -398,3 +398,44 @@ test('canary host-log events accept only closed metadata keys', async () => {
     assert.equal(safeEvent({ ...raw, ms: -1 }), undefined);
   }
 });
+
+
+test('real canary route refusals persist complete emitted metadata before a run starts', async t => {
+  const { Store } = await import(built('runtime/store.js'));
+  const { listenService } = await import(built('http/server.js'));
+  const { HostLog } = await import(built('host/log.js'));
+  const { attachHostLogSink } = await import(built('tools/host-events.js'));
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'canary-route-cause-'));
+  const store = new Store(dir);
+  const log = new HostLog(dir);
+  const emitted = [];
+  const detach = attachHostLogSink({ event: raw => { if (raw?.event === 'canary_route_error') emitted.push(raw); log.event(raw); } });
+  const service = await listenService({ store, live: { shutdown: async () => {} }, port: 0 });
+  t.diagnostic(`CANARY ROUTE FIXTURE port=${new URL(service.origin).port} pid=${process.pid}`);
+  t.after(async () => { detach(); await service.close(); store.close(); await rm(dir, { recursive: true, force: true }); });
+  const headers = { authorization: `Bearer ${store.adminCredential}`, 'x-didi-authority-epoch': store.authorityEpoch, 'content-type': 'application/json' };
+  const post = (step, body) => fetch(`${service.origin}/api/v1/live-canary/${step}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const open = await post('open', { asks: [taskAsk], deadline: 0 });
+  assert.equal(open.status, 500);
+  await open.arrayBuffer();
+  const id = '11111111-1111-4111-8111-111111111111';
+  const run = await post('run', { sessionId: id });
+  assert.equal(run.status, 500);
+  await run.arrayBuffer();
+  const privateRun = await post('run', { sessionId: 'private request text must not appear' });
+  assert.equal(privateRun.status, 500);
+  await privateRun.arrayBuffer();
+  assert.deepEqual(emitted, [
+    { event: 'canary_route_error', step: 'open', code: 'invalid_canary_deadline', ms: 0, callId: 'none' },
+    { event: 'canary_route_error', step: 'run', code: 'invalid_canary_session', ms: 0, callId: id },
+    { event: 'canary_route_error', step: 'run', code: 'invalid_canary_session', ms: 0, callId: 'none' },
+  ]);
+  const content = await readFile(log.path, 'utf8');
+  const persisted = content.trim().split('\n').map(line => JSON.parse(line)).filter(row => row.event === 'canary_route_error');
+  assert.equal(persisted.length, emitted.length, 'every actual route refusal survives the real host log sink');
+  for (const [index, event] of emitted.entries()) for (const key of Object.keys(event)) assert.equal(persisted[index][key], event[key]);
+  assert.doesNotMatch(content, /private request text/);
+});

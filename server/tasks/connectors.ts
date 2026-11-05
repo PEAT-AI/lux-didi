@@ -156,7 +156,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
         if (binding.project) {
           try {
             const snapshot = binding.project(result);
-            const shaped = projectTaskPayload(name, (binding.connector === 'mattermost' && name === 'search_chat' || binding.connector === 'lux-knowledge') ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
+            const shaped = projectTaskPayload(name, binding.connector === 'lux-knowledge' ? (record(result.decodedResult).content as unknown[]).map(part => text(record(part).text)).join('\n') : binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
             if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
             return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
           } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }

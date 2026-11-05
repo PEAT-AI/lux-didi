@@ -62,7 +62,7 @@ const { mkdtemp, mkdir, writeFile, readFile, rm } = await import('node:fs/promis
 const { tmpdir } = await import('node:os');
 const { join } = await import('node:path');
 const { spawnSync } = await import('node:child_process');
-const { liveCallInLog } = await import('../../scripts/lib/check-installed-canary.mjs');
+const { canaryReceipt, liveCallInLog } = await import('../../scripts/lib/check-installed-canary.mjs');
 
 for (const [label, recorded, effect, expected] of [
   ['pass', result, undefined, 'PASS'],
@@ -189,6 +189,35 @@ test('installed opener injects owner task finals and observes task settlement, n
 
 // W18 (#1016): the summary reported pass=0 whatever the asks did. A run whose asks all settled cleanly is two
 // verified asks, and providerTurns stays the provider's own turn count.
+// W18 (#1016): the identity census counted every anonymous row in the log, so another call's crash rows were
+// charged to this canary. Only this call's own task ids are in scope; the rest are reported as unknown_scope.
+const receiptLine = (event, fields) => JSON.stringify({ event, liveSessionId: 'call', taskId: 'task', ...fields });
+test('W18: the identity census charges only the target call and names anonymous rows separately', () => {
+  const anonymous = (event, fields) => JSON.stringify({ event, taskId: 'crash-task', ...fields });
+  const receipt = canaryReceipt([
+    receiptLine('task_lifecycle', { phase: 'start' }),
+    receiptLine('task_tool', { tool: 'web_search', category: 'ok', durationMs: 3 }),
+    receiptLine('task_settled', { status: 'complete', findings: 1 }),
+    anonymous('task_lifecycle', { phase: 'stale' }),
+    anonymous('task_tool', { tool: 'web_search', category: 'cancelled', durationMs: 1 }),
+    anonymous('task_tool', { tool: 'web_search', category: 'cancelled', durationMs: 1 }),
+  ].join('\n'), 'call');
+  assert.equal(receipt.ok, true);
+  assert.doesNotMatch(receipt.lines.join('\n'), /task_call_identity_missing/);
+  assert.match(receipt.lines.join('\n'), /CANARY FINDING code=task_call_unknown_scope count=3/);
+});
+test('W18: one of this call\u2019s own rows without a session is still the identity finding', () => {
+  const orphan = JSON.stringify({ event: 'task_tool', taskId: 'task', tool: 'web_search', category: 'ok', durationMs: 3 });
+  const receipt = canaryReceipt([
+    receiptLine('task_lifecycle', { phase: 'start' }),
+    receiptLine('task_tool', { tool: 'web_search', category: 'ok', durationMs: 3 }),
+    receiptLine('task_settled', { status: 'complete', findings: 1 }),
+    orphan,
+  ].join('\n'), 'call');
+  assert.equal(receipt.ok, true);
+  assert.match(receipt.lines.join('\n'), /CANARY FINDING code=task_call_identity_missing count=1/);
+  assert.doesNotMatch(receipt.lines.join('\n'), /unknown_scope/);
+});
 test('W18: the canary summary counts the asks that verified and the ones that failed', async () => {
   const id = '33333333-3333-4333-8333-333333333333';
   let ready = false;

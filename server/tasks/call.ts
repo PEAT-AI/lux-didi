@@ -13,10 +13,10 @@ export interface TaskCallPorts {
   working?(active: boolean): void;
   after?(ms: number, callback: () => void): () => void;
 }
-/** The residual wait after the owner's transcript finalizes, so the adapter's credit of quiet already
- *  consumed covers the rest. Measured from host.log (owner_final to task_lifecycle start/revision, 2026-11-05
- *  01:11 and 07:18 calls, n=39): the credit is 693-705 ms and no two finals of one ask landed closer
- *  than 730 ms, so 600 ms is the smallest bound the real fragment data supports. */
+/** 600 ms is the ceiling the contract set, not a measured minimum: on every observed finalization
+ *  (host.log owner_final to task_lifecycle start/revision, 2026-11-05 01:11 and 07:18 calls) the
+ *  adapter had already credited at least 693 ms of the interval, so the residual is zero today and
+ *  the ceiling only guards an adapter that credits less. */
 export const OWNER_QUIET_MS = 600;
 /** A call owns work. A provider socket only owns the current delivery binding. */
 export class TaskCall {

@@ -10,9 +10,9 @@ import { GOOGLE_DEFAULTS } from '../connectors/google.js';
 import { receivedGmailBody } from '../tools/live-shape.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailStructure, HEADER_LINE } from './clean.js';
-import { documentResult, failed, readerFailure, failureCategory, rankedResult, reasonCodeFor, type RankedItem, type ToolResult } from './results.js';
+import { connectorFailureKind, type ConnectorFailureKind, documentResult, failed, readerFailure, failureCategory, rankedResult, reasonCodeFor, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
-export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
+export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode, connectorCode?: ConnectorFailureKind) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
@@ -196,12 +196,19 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
     const mapped = mapping.args(args, declaration.parameters);
-    if (!declaration.validate(mapped)) return readerFailure(name, 'invalid_argument');
+    if (!declaration.validate(mapped)) return readerFailure(name, name === 'read_mail' ? 'wrong_source_id' : 'invalid_argument');
     const scope = createResultScope();
     try {
       return await scope.run(async () => {
         const result = await binding.reader.call(mapping.tool, mapped, signal);
-        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); const shaped = readerFailure(name, failureCategory('reason' in result ? result.reason : code), reasonCodeFor('reason' in result ? result.reason : code)); return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair }; };
+        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => {
+          const nativeCode = 'reason' in result ? result.reason : connectorFailures.get(result)?.nativeCode ?? code;
+          const connectorCode = connectorFailureKind(nativeCode);
+          binding.reportFailure?.(tool, code, connectorCode);
+          const wrongReference = name.startsWith('read_') && ['grant_missing', 'bad_reference', 'not_found'].includes(connectorCode);
+          const shaped = wrongReference ? readerFailure(name, 'wrong_source_id') : readerFailure(name, failureCategory(nativeCode), reasonCodeFor(nativeCode));
+          return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair };
+        };
         if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode, mapping.tool);
         const hostRepair = connectorFailures.get(result);
         if (hostRepair) {
@@ -215,10 +222,9 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
           try {
             snapshot = binding.project(result);
             if (binding.connector !== 'mongoose') {
-            // A mail read and a calendar window are judged on the structured source, never on the
-            // rendered display text: the display drops the quoted chain, trims and carries handles.
-            const payloadSource = binding.connector === 'lux-knowledge' ? (record(result.decodedResult).content as unknown[]).map(part => text(record(part).text)).join('\n') : name === 'read_mail' || name === 'calendar_events' ? result.decodedResult
-              : binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult
+            // Keep native ids, continuation and completeness, while retaining the approved
+            // display snapshot below as the outside-text disclosure provenance.
+            const payloadSource = binding.connector === 'lux-knowledge' ? (record(result.decodedResult).content as unknown[]).map(part => text(record(part).text)).join('\n') : ['read_mail', 'calendar_events', 'search_mail', 'search_drive', 'search_company', 'search_chat', 'chat_person', 'chat_group', 'chat_channel'].includes(name) ? result.decodedResult
               : snapshot.response.text ?? snapshot.response;
             const shaped = projectTaskPayload(name, payloadSource, args);
             if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');

@@ -675,17 +675,17 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (descriptor.status) {
             const status = descriptor.status(evidence, policy.endpoint);
             options.reportToolStatus?.(policy.connectionId, status ?? null);
-            if (status) connectorFailures.set(evidence, { repair: status.reason, code: isToolFailureCode(status.code) ? status.code : 'connector_error' });
+            if (status) connectorFailures.set(evidence, { repair: status.reason, nativeCode: status.code, code: isToolFailureCode(status.code) ? status.code : 'connector_error' });
             if (status?.log) options.log?.(status.log);
           }
           return evidence;
         } };
-        return { connector: policy.connector, reader, policy, reportFailure: (tool: string, code: import('../adapters/model/types.js').ToolFailureCode) => {
+        return { connector: policy.connector, reader, policy, reportFailure: (tool: string, code: import('../adapters/model/types.js').ToolFailureCode, connectorCode: import('../tasks/results.js').ConnectorFailureKind = 'unknown') => {
           if (code === 'result_store_full' || code === 'result_store_oversize' || code === 'result_store_unavailable') {
             const classified = classifiedFailureEvent({ endpointId: policy.endpoint.id, connector: policy.connector, tool, code });
             if (classified) hostLogEvent(classified);
           }
-          const event = { event: 'tool_failure' as const, code, tool, connector: policy.connector, errorClass: 'Error' as const, messageHead: code };
+          const event = { event: 'tool_failure' as const, code, tool, connector: policy.connector, errorClass: 'Error' as const, messageHead: code, connectorCode };
           if (options.log) options.log(event); else hostLogEvent(event);
         }, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
           const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);

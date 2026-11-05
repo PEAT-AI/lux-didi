@@ -721,3 +721,12 @@ test('rebuild owed metadata is closed and never a content channel', () => {
   }
   assert.equal(safeEvent({ ...base, owed: 'Synthetic arbitrary text.' }), undefined);
 });
+
+
+test('tool failure connector diagnostics accept only the closed content-free vocabulary', () => {
+  const event = { event: 'tool_failure', code: 'connector_error', tool: 'read_mail', connector: 'google', errorClass: 'Error', messageHead: 'connector_error' };
+  for (const connectorCode of ['grant_missing', 'bad_reference', 'not_found', 'upstream_unavailable', 'upstream_rejected', 'unknown']) {
+    assert.deepEqual(safeEvent({ ...event, connectorCode }), { ...event, connectorCode });
+  }
+  assert.equal(safeEvent({ ...event, connectorCode: 'synthetic-private-text' }), undefined);
+});

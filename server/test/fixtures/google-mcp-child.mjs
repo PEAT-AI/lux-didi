@@ -60,6 +60,7 @@ const snippet = 'it&#39;s &lt;ready&gt; to read';
 function dataFor(name, args) {
   if (name === 'gmail_get_profile') return { emailAddress: 'owner@example.invalid', messagesTotal: 3, threadsTotal: 2 };
   if (name === 'gmail_search_messages') {
+    if (args.q === 'synthetic-paged') return args.pageToken === 'synthetic-next' ? { messages: [{ id: 'page-two', headers: listHeaders }] } : { messages: [{ id: 'page-one', headers: listHeaders }], nextPageToken: 'synthetic-next' };
     // 'ramp' models the real child: the batched fetch returns one listed message per requested id in
     // a single upstream call, so the listed count equals the maxResults the connector asked for.
     if (mode !== 'ramp') return { messages: [{ id: 'm1', threadId: 't1', snippet, headers: listHeaders }, { id: 'm2', threadId: 't2', snippet, headers: listHeaders }] };
@@ -109,6 +110,7 @@ server.setRequestHandler('tools/call', request => {
     const code = mode.slice(mode.indexOf(':') + 1);
     return { content: [{ type: 'text', text: `${code}: synthetic helper refusal` }], isError: true };
   }
+  if (name === 'gmail_read_message' && ['synthetic-not-found', 'synthetic-outage'].includes(args.id)) return { content: [{ type: 'text', text: `${args.id === 'synthetic-not-found' ? 'not_found' : 'provider-failure'}: synthetic failure` }], isError: true };
   const failsFirst = mode === 'flaky' && name === 'calendar_list_events' && calendarCalls++ === 0;
   if (name === 'calendar_list_events' && (mode === 'credential' || failsFirst)) {
     return { content: [{ type: 'text', text: 'credential-missing: no calendar token is available; run the interactive login once' }], isError: true };

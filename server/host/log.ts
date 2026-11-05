@@ -312,8 +312,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     if (typeof value.code !== 'string' || !codes.includes(value.code) || !token(value.tool) || !token(value.connector)
       || !['Error', 'SyntaxError', 'UnknownThrow', 'McpResultError'].includes(String(value.errorClass))
+      || (value.connectorCode !== undefined && !['grant_missing', 'bad_reference', 'not_found', 'upstream_unavailable', 'upstream_rejected', 'unknown'].includes(String(value.connectorCode)))
       || value.messageHead !== value.code || String(value.messageHead).length > 120) return;
-    return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
+    return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead, ...(value.connectorCode !== undefined ? { connectorCode: value.connectorCode } : {}) };
   }
   if (value.event === 'chat_timing') {
     // Timing receipts: milliseconds and counts only, never text, never a tool argument or result.

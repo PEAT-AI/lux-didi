@@ -7,7 +7,18 @@ export const TASK_DISCLOSURE: unique symbol = Symbol('task-disclosure');
 /** Host-classified connector failures, never raw connector text or a model field. */
 export const TASK_CONNECTOR_FAILURE = Symbol('task-connector-failure');
 export const TASK_CONNECTOR_FAILURE_CODE = Symbol('task-connector-outcome');
-export const connectorFailures = new WeakMap<object, { code: ToolFailureCode; repair: string }>();
+export const connectorFailures = new WeakMap<object, { code: ToolFailureCode; repair: string; nativeCode?: string }>();
+/** Content-free connector diagnostics. Raw reason strings never cross the log boundary. */
+export type ConnectorFailureKind = 'grant_missing' | 'bad_reference' | 'not_found' | 'upstream_unavailable' | 'upstream_rejected' | 'unknown';
+export function connectorFailureKind(reason: unknown): ConnectorFailureKind {
+  const code = typeof reason === 'string' ? reason.replace(/-/g, '_') : '';
+  if (['grant_absent', 'grant_stale', 'grant_not_read', 'tool_not_granted'].includes(code)) return 'grant_missing';
+  if (['invalid_message_id', 'invalid_file_id', 'wrong_source_id', 'bad_reference'].includes(code)) return 'bad_reference';
+  if (['not_found', 'message_not_found', 'file_not_found'].includes(code)) return 'not_found';
+  if (['source_unavailable', 'connector_error', 'provider_failure', 'network_error', 'timeout', 'native_timeout', 'child_exited', 'pipe_closed'].includes(code)) return 'upstream_unavailable';
+  if (['tool_argument', 'tool_unknown', 'upstream_rejected'].includes(code)) return 'upstream_rejected';
+  return 'unknown';
+}
 /** The only model-facing tool result. Text is evidence, never an instruction source. */
 export const FAILURE_CATEGORIES = ['not_found', 'wrong_source_id', 'invalid_argument', 'unauthorized', 'timeout', 'unavailable', 'upstream_error', 'cancelled'] as const;
 export type FailureCategory = typeof FAILURE_CATEGORIES[number];
@@ -78,7 +89,8 @@ export function failureCategory(reason: unknown): FailureCategory {
   }
 }
 export function readerFailure(name: string, category: FailureCategory, reason: ReasonCode = reasonForCategory(category)): ToolResult {
-  const identifier = name === 'read_memory' ? 'Use an entry id returned by search_memory, passed as ref.'
+  const identifier = category === 'wrong_source_id' ? 'Search again and read an id the search returned.'
+    : name === 'read_memory' ? 'Use an entry id returned by search_memory, passed as ref.'
     : name === 'read_knowledge' ? 'Use an insight id returned by search_knowledge, passed as id.'
     : name === 'read_company' ? 'Use the ref returned by search_company and pass that ref verbatim, never a numeric record id.'
     : 'Search this source again and use its returned identifier verbatim.';

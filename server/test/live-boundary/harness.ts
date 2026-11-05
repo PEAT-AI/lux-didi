@@ -59,7 +59,7 @@ function wireParts(sent: readonly { text: string }[]): WirePart[] {
   });
 }
 /** The answer the wire carries: one numbered sequence, header first, the spoken content, its exact facts. */
-function answerSent(sent: readonly { text: string }[]): { id: string; kind: string; content: string; exact: string[]; parts: number } {
+function answerSent(sent: readonly { text: string }[], expectedExact: readonly string[]): { id: string; kind: string; content: string; exact: string[]; parts: number } {
   const all = wireParts(sent);
   assert.ok(all.length > 0, 'no commentary part was sent');
   // A rebuilt answer re-sends its sequence from the first part; every assertion names the answer the
@@ -74,10 +74,17 @@ function answerSent(sent: readonly { text: string }[]): { id: string; kind: stri
   assert.deepEqual(parts.map(part => part.part), parts.map((_, index) => `${index + 1}/${total}`), 'parts are numbered in wire order');
   assert.equal(parts[0]?.section, 'header', 'the first part is the header');
   assert.deepEqual(parts.map(part => part.final), parts.map((_, index) => index + 1 === total), 'only the last part of the sequence is final');
+  // The exact facts are the answer's own data, so their value is asserted, not merely collected: a
+  // header that silently gained a fact is as wrong as a content chunk that silently lost one.
+  const carrying = parts.filter(part => part.exact !== undefined);
+  assert.ok(carrying.length > 0, 'the sequence carries its exact list');
+  for (const part of carrying) assert.ok(Array.isArray(part.exact), 'an exact list is an array of the answer\'s facts');
+  const exact = carrying.flatMap(part => part.exact ?? []);
+  equal(exact, [...expectedExact]);
   return {
     id: parts[0]!.id, kind: parts[0]!.kind ?? '',
     content: parts.filter(part => part.section === 'content').map(part => part.content ?? '').join(' '),
-    exact: parts.flatMap(part => part.exact ?? []), parts: parts.length,
+    exact, parts: parts.length,
   };
 }
 /** Accept every part until the wire has carried the whole sequence, as a device does. */
@@ -131,7 +138,7 @@ export const cases: Record<string, () => Promise<void>> = {
     try { await f.call.input('Synthetic request', 1); equal(f.sent[0]?.id, null);
       const pending = f.call.pendingAnswer()?.text ?? '';
       assert.ok(pending.startsWith('```COMMENTARY\n'), 'the pending answer is a commentary part');
-      drain(f); equal(answerSent(f.sent).kind, 'result'); equal(answerSent(f.sent).content, 'Synthetic answer.'); }
+      drain(f); equal(answerSent(f.sent, []).kind, 'result'); equal(answerSent(f.sent, []).content, 'Synthetic answer.'); }
     finally { f.call.close(); }
   },
   async 'correction-during-wait'() {
@@ -142,7 +149,7 @@ export const cases: Record<string, () => Promise<void>> = {
       await f.call.input('Correction', 2); pending.resolve({ text: 'Stale answer.', calls: [] }); await old;
       equal(runs, 2);
       drain(f);
-      equal(answerSent(f.sent).kind, 'result'); equal(answerSent(f.sent).content, 'Corrected answer.');
+      equal(answerSent(f.sent, []).kind, 'result'); equal(answerSent(f.sent, []).content, 'Corrected answer.');
       assert.equal(JSON.stringify(f.sent).includes('Stale answer.'), false, 'the corrected answer is the only one on the wire');
     } finally { pending.resolve({ text: '', calls: [] }); f.call.close(); }
   },
@@ -153,7 +160,7 @@ export const cases: Record<string, () => Promise<void>> = {
       const running = f.call.input('Synthetic request', 1); f.call.socket(2); f.call.delegation('d2');
       equal(signal?.aborted, false); pending.resolve({ text: 'Rebuilt answer.', calls: [] }); await running;
       assert.deepEqual(f.sent.map(item => [item.generation, item.id]), [[2, 'd2']]);
-      drain(f); equal(answerSent(f.sent).kind, 'result'); equal(answerSent(f.sent).content, 'Rebuilt answer.');
+      drain(f); equal(answerSent(f.sent, []).kind, 'result'); equal(answerSent(f.sent, []).content, 'Rebuilt answer.');
     } finally { pending.resolve({ text: '', calls: [] }); f.call.close(); }
   },
   async 'rebuild-after-finish'() {
@@ -161,7 +168,7 @@ export const cases: Record<string, () => Promise<void>> = {
     try {
       f.call.delegation('d1'); await f.call.input('Synthetic request', 1);
       f.call.socket(2); f.call.delegation('d2');
-      equal(f.sent.at(-1)?.generation, 2); drain(f); equal(answerSent(f.sent).content, 'Finished answer.');
+      equal(f.sent.at(-1)?.generation, 2); drain(f); equal(answerSent(f.sent, []).content, 'Finished answer.');
     } finally { f.call.close(); }
   },
   async 'spoken-answer-chunked'() {
@@ -176,7 +183,9 @@ export const cases: Record<string, () => Promise<void>> = {
       // The answer arrives as numbered parts, each inside the adapter's item limit, and the content
       // parts are the whole spoken text in order.
       assert.ok(f.sent.length > 1, 'a long answer is more than one wire item');
-      equal(answerSent(f.sent).content, text);
+      // The delivery extracts the answer's own exact facts, and this synthetic text's facts are the
+      // sentence numbers, in the order they first appear; the wire must carry exactly those.
+      equal(answerSent(f.sent, Array.from({ length: 20 }, (_, index) => String(index))).content, text);
       for (const item of f.sent) assert.ok(item.text.length <= 450, 'every wire item fits the adapter limit');
       assert.ok(f.states.includes('accepted')); equal(f.call.pendingAnswer(), undefined);
     } finally { f.call.close(); }
@@ -260,8 +269,7 @@ export async function historyScenario(words: string[]): Promise<void> {
     equal(f.revisions.length, words.length);
     assert.deepEqual(f.revisions.at(-1)?.[1], words);
     drain(f);
-    equal(answerSent(f.sent).kind, 'result'); equal(answerSent(f.sent).content, 'Combined synthetic answer.');
-    assert.deepEqual(answerSent(f.sent).exact, [], 'an answer with no exact fact carries an empty list');
+    equal(answerSent(f.sent, []).kind, 'result'); equal(answerSent(f.sent, []).content, 'Combined synthetic answer.');
     assert.equal(JSON.stringify(f.sent).includes('Stale fragment.'), false, 'the stale fragment never reaches the wire');
   } finally { wait.resolve({ text: '', calls: [] }); f.call.close(); }
 }

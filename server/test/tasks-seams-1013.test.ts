@@ -23,14 +23,16 @@ test('10.13: a JSON final answer ends as a COMMENTARY header carrying the model 
       style: { text: 'SYNTHETIC STYLE', dataClass: 'ordinary' }, lore: { text: 'SYNTHETIC SEAM LORE', dataClass: 'ordinary' } } });
   assert.equal(result.status, 'complete');
   assert.equal(result.text, spoken);
-  const sent: string[] = [];
+  const sent: { text: string; command: string }[] = [];
   const delivery = new TaskDelivery({ isCurrent: () => true,
-    append: (_binding, text) => { sent.push(text); return `command${sent.length}`; }, state: () => {} });
+    append: (_binding, text) => { const command = `command${sent.length + 1}`; sent.push({ text, command }); return command; }, state: () => {} });
   delivery.socket(1);
   delivery.deliver({ task_id: 'synthetic-1013-seams', task_revision: 1, connection_generation: 1 }, result);
-  const parts = sent.map(text => commentaryPart(text));
-  assert.equal(parts[0]!.section, 'header');
-  assert.equal(parts[0]!.kind, 'result');
-  assert.deepEqual(parts.filter(part => part.section === 'header').flatMap(part => part.exact), exact);
-  assert.equal(parts.filter(part => part.section === 'content').map(part => part.content).join(' '), spoken);
+  const item = sent.map(sent => commentaryPart(sent.text));
+  assert.equal(item[0]!.section, 'header');
+  assert.equal(item[0]!.kind, 'result');
+  assert.deepEqual(item.filter(part => part.section === 'header').flatMap(part => part.exact), exact);
+  delivery.accepted(sent[0]!.command);
+  const spokenParts = sent.slice(1).map(sent => commentaryPart(sent.text)).filter(part => part.section === 'content').map(part => part.content).join(' ');
+  assert.equal(spokenParts, spoken);
 });

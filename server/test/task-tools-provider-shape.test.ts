@@ -82,13 +82,14 @@ test('read_knowledge refuses duplicate ids without a schema keyword the provider
 // The paid smoke must be fail-closed: a configuration that declares company endpoints and a run that
 // publishes none of them is a refusal, never a PASS on the static set alone (review finding P1).
 const smoke = (await import(resolve(testRoot, '../../scripts/lib/helper-provider-smoke.mjs'))) as {
-  providerShapeRefusal(input: { expected: number; published: number; company: number; tools: number; static: number }): string;
+  providerShapeRefusal(input: { expectedEndpoints: number; published: number; company: number; tools: number; static: number }): string;
 };
 
-test('the provider smoke refuses a configured company set that did not publish', () => {
-  assert.equal(smoke.providerShapeRefusal({ expected: 3, published: 0, company: 0, tools: 39, static: 39 }), 'company-unpublished');
-  assert.equal(smoke.providerShapeRefusal({ expected: 3, published: 3, company: 0, tools: 39, static: 39 }), 'company-unpublished');
-  assert.equal(smoke.providerShapeRefusal({ expected: 3, published: 3, company: 3, tools: 39, static: 39 }), 'company-unpublished');
-  assert.equal(smoke.providerShapeRefusal({ expected: 3, published: 3, company: 3, tools: 42, static: 39 }), '');
-  assert.equal(smoke.providerShapeRefusal({ expected: 0, published: 0, company: 0, tools: 39, static: 39 }), '');
+test('the provider smoke refuses a registry smaller than the configured one', () => {
+  // One configured binding missing is a refusal, never a PASS on a partial registry.
+  assert.equal(smoke.providerShapeRefusal({ expectedEndpoints: 3, published: 2, company: 2, tools: 41, static: 39 }), 'company_bindings_unavailable');
+  assert.equal(smoke.providerShapeRefusal({ expectedEndpoints: 3, published: 0, company: 0, tools: 39, static: 39 }), 'company_bindings_unavailable');
+  assert.equal(smoke.providerShapeRefusal({ expectedEndpoints: 3, published: 3, company: 0, tools: 39, static: 39 }), 'company_bindings_unavailable');
+  assert.equal(smoke.providerShapeRefusal({ expectedEndpoints: 3, published: 3, company: 3, tools: 42, static: 39 }), '');
+  assert.equal(smoke.providerShapeRefusal({ expectedEndpoints: 0, published: 0, company: 0, tools: 39, static: 39 }), '');
 });

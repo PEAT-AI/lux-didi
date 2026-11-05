@@ -83,6 +83,8 @@ export async function installedCanary(argv, env = process.env, output = line => 
         for (const line of report.lines) output(line);
         const callId = report.lines.map(line => / callId=([a-zA-Z0-9_-]+)/.exec(line)?.[1]).find(Boolean);
         if (!callId) { output('CANARY FAIL id=receipt tool=none code=call_identity_missing ms=0'); return 1; }
+        const shutdownReason = report.lines.map(line => / shutdownReason=([a-z_]+)/.exec(line)?.[1]).find(Boolean);
+        if (shutdownReason) output(`CANARY FINDING code=${shutdownReason}`);
         const receipt = canaryReceipt(await readFile(logPath, 'utf8'), callId);
         for (const line of receipt.lines) output(line);
         output(`CANARY ${receipt.ok ? 'PASS' : 'FAIL'} id=receipt tool=none code=${receipt.code} ms=0`);

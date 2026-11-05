@@ -200,7 +200,7 @@ export async function runCanaryAsks(asks: CanaryAsk[], port: CanaryPort, signal:
 type RawCall = { key: string; tool: string; result: Record<string, unknown>; ms: number };
 /** Only called from the bearer-authenticated local canary opener, never a model tool. */
 export class InstalledCanary {
-  #session: { id: string; clientId: string; asks: CanaryAsk[]; timer: ReturnType<typeof setTimeout>; abort: AbortController; running: boolean } | undefined;
+  #session: { id: string; clientId: string; asks: CanaryAsk[]; timer: ReturnType<typeof setTimeout>; abort: AbortController; running: boolean; expired: boolean } | undefined;
   constructor(private readonly store: Store, private readonly live: LiveService, private readonly wait: (signal: AbortSignal) => Promise<void> = async signal => { await pause(50, undefined, { signal }); }, private readonly now: () => number = Date.now, private readonly cancelAlarm?: (id: string) => boolean) {}
   shutdown(): void {
     if (!this.#session) return;
@@ -226,11 +226,12 @@ export class InstalledCanary {
     canarySessions.open(id, () => this.#cancelAlarms(id));
     const abort = new AbortController();
     const timer = setTimeout(() => {
+      if (this.#session?.id === id) this.#session.expired = true;
       this.shutdown();
       if (this.#session?.id === id && !this.#session.running) { canarySessions.close(id); this.#session = undefined; }
     }, remaining);
     timer.unref();
-    this.#session = { id, clientId: context.clientId, asks, timer, abort, running: false };
+    this.#session = { id, clientId: context.clientId, asks, timer, abort, running: false, expired: false };
     return snapshot;
   }
   async run(id: string, clientId: string): Promise<CanaryReport> {
@@ -263,7 +264,7 @@ export class InstalledCanary {
       }
       // This is observation, not receipt acceptance. The external checker requires
       // tool execution and complete findings belonging to this exact call.
-      const lines = [`CANARY SUMMARY pass=0 fail=${settled ? 0 : 1} providerTurns=${canarySessions.progress(id)?.turns ?? 0} callId=${id}`];
+      const lines = [`CANARY SUMMARY pass=0 fail=${settled ? 0 : 1} providerTurns=${canarySessions.progress(id)?.turns ?? 0} callId=${id} shutdownReason=${session.expired ? 'canary_shutdown_timer' : settled ? 'task_observed' : 'observation_timeout'}`];
       return { lines, passed: 0, failed: settled ? 0 : 1, providerTurns: canarySessions.progress(id)?.turns ?? 0 };
     } finally {
       detach();

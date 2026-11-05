@@ -353,10 +353,19 @@ The canary explicitly revokes its own private session after observing task settl
 or timeout. This terminal revoke is cleanup, not evidence that connector discovery
 revoked the call.
 
-`run-installed-checks.sh` retains the independent helper-provider smoke and also
-requires this receipt. Installation cannot be called green from lifecycle health
-alone. The running-app prerequisite must be satisfied by the installer/operator;
-these scripts never impersonate a native socket or start the app themselves.
+`run-installed-checks.sh` retains the independent helper-provider smoke and runs
+with the app down. Its PASS is not a completed installation: it names
+`canary=pending_after_relaunch`. The installer first emits PENDING, then the installer
+lane relaunches the exact target and runs
+`scripts/install-macos-app.sh --verify-canary <installed-target>`.
+Only that second phase can emit the installer's final PASS, after a real-call
+receipt. Neither phase starts or relaunches the app itself.
+
+The receipt includes `shutdownReason`: `canary_shutdown_timer` explicitly identifies
+the canary's own expiry timer; `task_observed` identifies normal observation cleanup;
+`observation_timeout` identifies an observation timeout. This explains revocation
+without changing the existing session-revoke behavior. No missing-group event is
+treated as a reason to revoke.
 
 ## Private source evaluation (manual only)
 

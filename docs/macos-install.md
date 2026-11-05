@@ -90,5 +90,16 @@ The canary makes one fixed, read-only public web request. It reports metadata on
 Lifecycle completion without a successful task tool and complete task findings is
 red. `task_inference_failed` and incomplete settlement print the underlying reason
 code. An absent private opt-in file is not a successful installation receipt.
-The installer final PASS line names `canary=task_tool_and_task_settled` only after
-the installed-checks gate succeeds. Neither script launches the app for this check.
+Installed checks still run with the app down and report `canary=pending_after_relaunch`.
+The initial installer phase emits PENDING, not final PASS. The installer lane then
+relaunches the exact installed bundle and runs:
+
+```bash
+bash scripts/install-macos-app.sh --verify-canary "$HOME/Applications/Lux Didi.app"
+```
+
+Only this second phase emits the final `INSTALL-MACOS-APP PASS`, naming
+`canary=task_tool_and_task_settled`, after verifying the receipt. Neither script
+launches the app for this check. An expired canary explicitly reports
+`canary_shutdown_timer`, the reason for its own cleanup revoke, rather than
+attributing it to missing connectors.

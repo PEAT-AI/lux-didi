@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-// @ts-ignore The installed check is an executable JavaScript module.
-const { canaryReceipt } = await import('../../../scripts/lib/check-installed-canary.mjs');
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const moduleUrl = process.env['DIDI_TEST_SOURCE_ROOT']
+  ? pathToFileURL(resolve(process.env['DIDI_TEST_SOURCE_ROOT'], '../../scripts/lib/check-installed-canary.mjs')).href
+  : new URL('../../../scripts/lib/check-installed-canary.mjs', import.meta.url).href;
+const { canaryReceipt } = await import(moduleUrl);
 const line = (event: string, fields: Record<string, unknown> = {}) => JSON.stringify({ event, liveSessionId: 'call', taskId: 'task', ...fields });
 const start = line('task_lifecycle', { phase: 'start' });
 const tool = line('task_tool', { tool: 'web_search', category: 'ok', durationMs: 3 });

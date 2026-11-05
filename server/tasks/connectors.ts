@@ -98,7 +98,11 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
       return { status: cursor || complete === false ? 'partial' : 'ok', text: body, references: [{ id }], next_cursor: cursor,
         coverage: cursor || complete === false ? 'Remote read is incomplete; continue with the returned native cursor when available.' : 'Remote page returned; only the supplied source content is verified.', repair: cursor ? 'Continue read_company with the same ref and depth and the returned cursor verbatim.' : null };
     }
-    return documentResult(document, id, text(args.cursor) || '0');
+    const result = documentResult(document, id, text(args.cursor) || '0');
+    const sourceComplete = record(root.bodyCoverage)['complete'];
+    if (name !== 'read_mail' || sourceComplete !== false) return result;
+    const note = 'The source reports its inline body was cut; the rest is not in this read.';
+    return { ...result, status: 'partial', coverage: `${result.coverage} ${note}`, repair: `${note} Open the message in the mail app for the rest.` };
   }
   const list = Array.isArray(data) ? data : [root.items, root.results, root.hits, root.messages, root.files, root.events, root.posts].find(Array.isArray) ?? (name === 'search_chat' ? posts(root) : undefined);
   if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.');

@@ -41,6 +41,7 @@ test('no task-path source file writes to the supervised host stdout', () => {
   const files = readdirSync(serverRoot, { recursive: true, encoding: 'utf8' })
     .filter(name => name.endsWith('.ts'))
     .filter(name => !name.startsWith('test/'))
+    .filter(name => !name.split('/').some(segment => segment === 'node_modules' || segment === 'dist'))
     .filter(name => !stdoutOwners.has(name) && !stdoutOwnerDirs.some(dir => name.startsWith(dir)))
     .sort();
   assert.ok(files.length > 100, `the sweep must read the source tree, read ${files.length} files`);

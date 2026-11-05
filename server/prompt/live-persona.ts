@@ -515,6 +515,39 @@ function standingLine(item: StandingMemoryRecord, now: number | undefined, timeZ
 }
 
 /** Verbatim title of the plan section (release 3u). */
+const OPEN_LOOP_FRESH_MS = 24 * 60 * 60 * 1000;
+/** The day a stored loop was last seen, in the owner's zone, as a plain date. */
+function ownerDate(at: number, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone }).format(new Date(at));
+}
+
+/** The owner's calendar day at an instant, as a day number, so an age never reads in the host zone. */
+function ownerDay(at: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone })
+    .formatToParts(new Date(at)).reduce<Record<string, string>>((acc, part) => { acc[part.type] = part.value; return acc; }, {});
+  return Date.UTC(Number(parts['year']), Number(parts['month']) - 1, Number(parts['day']));
+}
+
+/** The age of a stored loop in plain words, from the injected clock and the owner's zone. */
+function ageWords(now: number, at: number, timeZone: string): string {
+  const elapsed = Math.max(0, now - at);
+  if (elapsed < 60 * 60 * 1000) return 'from under an hour ago';
+  if (elapsed <= OPEN_LOOP_FRESH_MS) {
+    const hours = Math.max(1, Math.floor(elapsed / (60 * 60 * 1000)));
+    return `from ${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  }
+  const days = Math.max(1, Math.round((ownerDay(now, timeZone) - ownerDay(at, timeZone)) / 86_400_000));
+  return `from ${days} ${days === 1 ? 'day' : 'days'} ago`;
+}
+
+/** One stored loop as the model reads it: its age, the date it was last seen open, and a question when old. */
+function loopLine(topic: string, lastSeenAt: number, now: number, timeZone: string): string {
+  const bare = topic.replace(/[.?!]+$/u, '').trim();
+  const age = ageWords(now, lastSeenAt, timeZone);
+  if (now - lastSeenAt > OPEN_LOOP_FRESH_MS) return `is it done: ${bare.replace(/\bstill\s+/giu, '')}? (${age}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+  return `${bare} (${age}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+}
+
 /** Bounded owner-local data, never suggested wording or a choice of opening styles. */
 export interface OpeningFacts {
   readonly now: string;

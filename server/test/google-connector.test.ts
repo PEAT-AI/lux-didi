@@ -436,7 +436,9 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
       const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
       const response = JSON.parse(String(row?.result_json)).response;
       assert.match(JSON.stringify(response), /Synthetic subject line/, JSON.stringify(task.results));
-      assert.equal(response.status, 'partial', 'verified native Markdown is not invented ranked ids');
+      assert.equal(response.status, 'ok', 'a finished native search is not partial display text');
+      assert.deepEqual(response.references.map((item: { id: string }) => item.id), ['m1', 'm2']);
+      assert.equal(response.next_cursor, null);
     } finally { task.close(); }
   } finally {
     await adapter.close();

@@ -3692,11 +3692,11 @@ const audibleFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, 
 const portEvent = (event: unknown) => event as never;
 const settlePort = async (): Promise<void> => { for (let i = 0; i < 12; i++) await tick(); };
 /** Accept each envelope part in turn, as the real client does, so the whole answer reaches the wire. */
-const acceptTaskAnswer = async (p: ReturnType<typeof progressPort>): Promise<void> => {
+const acceptTaskAnswer = async (voice: { taskAnswers: { text: string; commandId: string }[]; emit: (event: unknown) => void }): Promise<void> => {
   for (let guard = 0; guard < 8; guard++) {
-    const pending = p.taskAnswers.at(-1);
+    const pending = voice.taskAnswers.at(-1);
     if (!pending || commentaryPart(pending.text).final) return;
-    p.emit({ type: 'commentaryAccepted', commandId: pending.commandId });
+    voice.emit({ type: 'commentaryAccepted', commandId: pending.commandId });
     await settlePort();
   }
 };

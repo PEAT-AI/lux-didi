@@ -13,17 +13,17 @@ import { liveMigrations, validateLiveProfile } from '../live/index.js';
 import { composeLive } from '../host/live.js';
 import { listenService } from '../http/server.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { fixture, fixtureUntil, CANARY } from './live-voice-fixture.js';
+import { fixture, CANARY } from './openai-live-voice-fixture.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 
 // Reject the silent /run failure between provider readiness and the first owner ask.
-// This uses the production owner, HTTP handler, upgrader and Gemini wire adapter.
+// This uses the production owner, HTTP handler, upgrader and OpenAI wire adapter.
 test('installed canary HTTP/socket/run sequence reaches a real task after provider readiness', async t => {
   const provider = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-canary-sequence-'));
   const store = new Store(dir, [...createDomainPort({ outbox: Outbox }).migrations, ...chatMigrations, ...liveMigrations]);
   const live = composeLive(store, dir, {
-    profile: validateLiveProfile({ provider: 'gemini', liveModelId: 'models/live-session-test', voice: 'ExplicitVoice', keyReference: 'test-reference', route: { enabled: true, provider: 'gemini', modelId: 'models/live-session-test', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic system', dataClass: 'ordinary' } }),
+    profile: validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'ExplicitVoice', keyReference: 'test-reference', route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic system', dataClass: 'ordinary' } }),
     credentials: { resolve: async () => CANARY }, socketFactory: provider.socketFactory,
     createTaskRuntime: syntheticTaskFactory(store),
   }).service;
@@ -46,7 +46,7 @@ test('installed canary HTTP/socket/run sequence reaches a real task after provid
   await once(socket, 'open');
   await provider.frame(1);
   const running = post('run', { sessionId: snapshot.liveSessionId });
-  provider.send({ setupComplete: {} });
+  provider.send({ type: 'session.started', session: { id: 'sess_canary' } });
   const response = await running;
   assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
   assert.ok(events.some(event => event['event'] === 'task_lifecycle' && event['phase'] === 'start'), 'real task lifecycle starts');

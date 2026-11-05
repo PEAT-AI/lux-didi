@@ -1274,7 +1274,18 @@ class Session implements LiveVoiceSession {
     }
     this.connectionWeakAt = now;
   }
-  sendText(_input: { text: string }): void { fail('invalid_request'); }
+  sendText(input: { text: string }): void {
+    if (this.draining) return;
+    if (!this.checkpoint()) fail(this.terminal!.code);
+    if (!this.isReady) fail('not_ready');
+    if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
+    if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'), item: {
+      type: 'message', role: 'user', content: [{ type: 'input_text', text: input.text }],
+    } }))) fail(this.terminal!.code);
+    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) fail(this.terminal!.code);
+    // Typed owner input has no microphone transcription to return from the provider.
+    this.emit({ type: 'inputTranscription', text: input.text, finished: true, finalOrigin: 'typed' });
+  }
   sendCommentary(input: { text: string }): boolean {
     return this.latestDelegationId !== undefined && this.sendTaskAnswer({ ...input, delegationId: this.latestDelegationId }) !== undefined;
   }

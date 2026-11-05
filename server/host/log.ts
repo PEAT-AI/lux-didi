@@ -177,6 +177,13 @@ export type AlarmSpeechFailedReason = typeof ALARM_SPEECH_FAILED_REASONS[number]
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
+  if (value.event === 'canary_route_error' || value.event === 'canary_step') {
+    if (!closedKeys(value, ['event', 'step', 'code', 'ms', 'callId']) ||
+      !['open', 'run', 'ready_wait', 'ready_waited', 'ask_injected', 'settled', 'terminal'].includes(String(value.step)) ||
+      !isSafeCount(value.ms) || (value.code !== undefined && !isSafeToken(value.code)) ||
+      (value.callId !== undefined && (typeof value.callId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(value.callId)))) return;
+    return { event: value.event, step: value.step, ms: value.ms, ...(value.code === undefined ? {} : { code: value.code }), ...(value.callId === undefined ? {} : { callId: value.callId }) };
+  }
   if (value.event === 'task_effect_check') {
     if (!closedKeys(value, ['event', 'code'])) return undefined;
     if (typeof value.code !== 'string' || !['effect_check_failed', 'delete_confirmation_check_failed', 'task_failed'].includes(value.code)) return undefined;

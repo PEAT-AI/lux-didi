@@ -475,3 +475,5 @@ responses. It proves plumbing, trace privacy, scoring and budget handling; it
 **does not prove** provider behavior, credential validity, real connector
 permissions, source freshness, retrieval quality or owner-answer correctness.
 Never use its score as a real before/after evaluation.
+
+Canary routes emit `canary_route_error` with the open/run step and thrown code, never request contents. `canary_step` records readiness wait duration, ask injection, task settlement and terminal reason so a failed run can be diagnosed from host.log alone.

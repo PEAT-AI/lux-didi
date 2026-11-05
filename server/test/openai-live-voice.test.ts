@@ -1830,9 +1830,8 @@ for (const rejected of [false, true]) {
 }
 
 for (const opening of ['model_first', 'user_first'] as const) {
-  test(`client mode is audio-only after readiness; opening=${opening}`, async t => {
+  test(`audio input does not create text items after readiness; opening=${opening}`, async t => {
     const { f, session } = await ready(t, {}, { opening });
-    assert.throws(() => session.sendText({ text: 'Synthetic text is not an input carrier.' }), code('invalid_request'));
     session.sendAudio({ pcm: pcm16(), dataClass: 'ordinary' });
     await quiet();
     const frames = f.frames.map(frame => frame as Record<string, unknown>);
@@ -1840,3 +1839,24 @@ for (const opening of ['model_first', 'user_first'] as const) {
     assert.equal(frames.some(frame => frame.type === 'response.create' || frame.type === 'response.item.create'), false);
   });
 }
+
+
+test('typed owner text sends a user input item then response.create on a ready session', async t => {
+  const opened = await fakeReady(t);
+  const before = opened.socket.sent.length;
+  opened.session.sendText({ text: 'Synthetic typed owner request' });
+  const frames = opened.socket.sent.slice(before).map(frame => JSON.parse(frame));
+  assert.deepEqual(frames.map(frame => frame.type), ['response.item.create', 'response.create']);
+  assert.deepEqual(frames[0].item, { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Synthetic typed owner request' }] });
+  await tick();
+  assert.ok(opened.captured.events.some(event => event.type === 'inputTranscription' && event.text === 'Synthetic typed owner request' && event.finished === true && event.finalOrigin === 'typed'));
+});
+
+test('typed owner text is refused before provider readiness without sending items', async t => {
+  const f = await fixture(t);
+  const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+  t.after(() => session.close());
+  await f.frame(1);
+  assert.throws(() => session.sendText({ text: 'Synthetic typed owner request' }), error => (error as { code?: string }).code === 'not_ready');
+  assert.equal(f.frames.length, 1);
+});

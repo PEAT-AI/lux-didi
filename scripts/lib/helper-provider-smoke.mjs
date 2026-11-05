@@ -168,7 +168,9 @@ async function main(argv) {
   }
 }
 
-main(process.argv.slice(2)).then(code => { process.exitCode = code; }).catch(error => {
+// The connector runtime keeps sockets open after close, so the process ends on its own exit code
+// instead of waiting for the event loop to drain.
+main(process.argv.slice(2)).then(code => process.exit(code)).catch(error => {
   process.stderr.write(`HELPER-PROVIDER ERROR ${redacted(error?.message ?? error)}\n`);
-  process.exitCode = 1;
+  process.exit(1);
 });

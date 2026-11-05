@@ -1804,7 +1804,10 @@ export function captureHostDiagnostics(log: HostLog): () => void {
     // Captured only before the wrappers are installed, so unstructured console output can be sent
     // to stderr without recursing through the wrappers or reaching the protocol pipe.
     const toStderr = console.error.bind(console);
-    for (const method of ['log', 'error', 'warn'] as const) {
+    // Every console method that writes to stdout is wrapped, not only log: an unwrapped console.info
+    // in task code reached the protocol pipe and the supervisor ended the call (issue 892).
+    const faults = new Set(['error', 'warn']);
+    for (const method of ['log', 'info', 'debug', 'dir', 'table', 'warn', 'error'] as const) {
       console[method] = (...args: unknown[]) => {
         for (const sink of sinks) {
           try {
@@ -1813,7 +1816,7 @@ export function captureHostDiagnostics(log: HostLog): () => void {
               try { event = JSON.parse(args[0]); } catch { /* not a structured event */ }
             }
             if (event) sink.event(event);
-            else if (method !== 'log') sink.error(undefined);
+            else if (faults.has(method)) sink.error(undefined);
           } catch { toStderr('diagnostics_unavailable'); }
         }
         toStderr(...args);

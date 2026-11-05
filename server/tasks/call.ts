@@ -13,6 +13,11 @@ export interface TaskCallPorts {
   working?(active: boolean): void;
   after?(ms: number, callback: () => void): () => void;
 }
+/** 600 ms is the ceiling the contract set, not a measured minimum: on every observed finalization
+ *  (host.log owner_final to task_lifecycle start/revision, 2026-11-05 01:11 and 07:18 calls) the
+ *  adapter had already credited at least 693 ms of the interval, so the residual is zero today and
+ *  the ceiling only guards an adapter that credits less. */
+export const OWNER_QUIET_MS = 600;
 /** A call owns work. A provider socket only owns the current delivery binding. */
 export class TaskCall {
   readonly runtime: TaskRuntime;
@@ -71,7 +76,7 @@ export class TaskCall {
       this.delivery.activity({ outputQuiet: this.#outputQuiet, ownerSpeaking: false });
       void result.catch(() => { hostLogEvent({ event: 'task_runtime_rejected', reason_code: 'runtime_rejected' }); });
     };
-    const remaining = Math.max(0, 1_200 - quietForMs);
+    const remaining = Math.max(0, OWNER_QUIET_MS - quietForMs);
     // Adapter transcript finalization has already consumed part of this same quiet interval.
     if (remaining === 0) start(); else this.#cancelQuiet = after(remaining, start);
   }

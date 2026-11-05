@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CanarySessions, canarySessions, assertCanaryResult, canaryPreflight, validateCanaryAsks } from '../dist/live/canary.js';
+import { pathToFileURL } from 'node:url';
+const buildRoot = process.env.DIDI_TEST_BUILD_ROOT ? pathToFileURL(process.env.DIDI_TEST_BUILD_ROOT + '/') : new URL('../dist/', import.meta.url);
+const built = path => new URL(path, buildRoot).href;
+const { CanarySessions, canarySessions, assertCanaryResult, canaryPreflight, validateCanaryAsks, validateTaskCanaryAsks } = await import(built('live/canary.js'));
+const { hostLogEvent } = await import(built('tools/host-events.js'));
+const taskAsk = { id: 'synthetic-read', finals: ['Find the synthetic project using read-only tools'], expect: { task: 'complete', readOnly: true } };
 
 const ask = { id: 'synthetic-read', finals: ['Find the synthetic project'], expect: { tool: 'search', codeClass: 'success', nonEmpty: true } };
 const result = { tool: 'search', result: { code: 'ok', items: [{ title: 'Synthetic project' }] }, ms: 4 };
@@ -52,7 +57,7 @@ test('native canary authority comes only from session opener, not frame/model fi
 });
 
 // Recorded sessions drive the exact production runner, not a separate assertion implementation.
-const { runCanaryAsks, InstalledCanary } = await import('../dist/live/canary.js');
+const { runCanaryAsks, InstalledCanary } = await import(built('live/canary.js'));
 const { mkdtemp, mkdir, writeFile, readFile, rm } = await import('node:fs/promises');
 const { tmpdir } = await import('node:os');
 const { join } = await import('node:path');
@@ -114,13 +119,18 @@ test('own refusal status overrides a misleading success code', () => {
 });
 
 for (const [label, options, expected, code] of [
-  ['absent-private-file', {}, 0, 'CANARY SKIP reason=private_ask_file_absent'],
+  ['absent-private-file', {}, 1, 'code=private_ask_file_absent'],
   ['live-call-without-asks', { live: true }, 1, 'code=call_live'],
   ['invalid-present-file', { asks: '{not-json' }, 1, 'CANARY FAIL'],
-  ['missing-target-is-not-skip', { asks: JSON.stringify([ask]) }, 1, 'CANARY FAIL'],
+  ['missing-target-is-not-skip', { missingTarget: true, asks: JSON.stringify([taskAsk]) }, 1, 'CANARY FAIL'],
 ]) test(`actual installed CLI preflight: ${label}`, async () => {
   const home = await mkdtemp(join(tmpdir(), 'didi-canary-preflight-'));
   try {
+    if (!options.missingTarget) {
+      const resources = join(home, 'Synthetic.app/Contents/Resources');
+      await mkdir(resources, { recursive: true });
+      await writeFile(join(resources, 'didi-runtime.json'), JSON.stringify({ installId: 'synthetic-build', releaseCommit: 'a'.repeat(40) }));
+    }
     const data = join(home, 'Library/Application Support/ai.peat.lux-didi');
     await mkdir(join(data, 'logs'), { recursive: true });
     await writeFile(join(data, 'logs/host.log'), JSON.stringify({ event: 'host_started' }) + '\n' + (options.live ? JSON.stringify({ event: 'live_provider_open', liveSessionId: 'real' }) + '\n' : ''));
@@ -143,28 +153,20 @@ test('live log resets only on host restart or a terminal receipt', () => {
 });
 test('synthetic ask example stays inside the public format and paid count cap', async () => {
   const example = JSON.parse(await readFile(new URL('../../scripts/fixtures/canary-asks.example.json', import.meta.url), 'utf8'));
-  assert.equal(validateCanaryAsks(example).length, 13);
+  assert.equal(validateTaskCanaryAsks(example).length, 1);
 });
-test('host opener observes raw Gemini replies without OpenAI trace tables or stored outcomes', async () => {
+test('installed opener injects owner task finals and observes task settlement, not legacy tool names', async () => {
   const finals = [];
   const id = '11111111-1111-4111-8111-111111111111';
-  let tapped;
   let ready = false;
   let waits = 0;
-  const raw = {
-    events: { async *[Symbol.asyncIterator]() {
-      yield { type: 'modelTurnStarted' }; yield { type: 'turnComplete' };
-    } },
-    sendToolResponse: () => 'sent',
-  };
   const live = {
     create: () => ({ liveSessionId: id }),
     snapshot: () => ({ lifecycle: 'active', terminal: null }),
     providerReady: () => ready,
     text: text => {
       finals.push(text);
-      tapped.sendToolResponse({ responses: [{ id: 'call-1', name: 'search', response: { code: 'not_granted', items: ['synthetic'] } }] });
-      void (async () => { for await (const _event of tapped.events) { /* consume real tap */ } })();
+      hostLogEvent({ event: 'task_settled', taskId: 'synthetic-task', status: 'incomplete', reason_code: 'not_granted' });
     },
     revoke: () => {},
   };
@@ -172,22 +174,22 @@ test('host opener observes raw Gemini replies without OpenAI trace tables or sto
   const host = new InstalledCanary(store, live, async () => {
     if (!ready) { assert.equal(finals.length, 0); waits++; ready = true; }
   });
-  host.open([ask], { clientId: 'owner' });
-  tapped = canarySessions.wrapSession(id, raw);
+  host.open([taskAsk], { clientId: 'owner' });
   assert.equal(canarySessions.isCanary(id), true);
   await assert.rejects(() => host.run(id, 'other-client'), /invalid_canary_session/);
   const report = await host.run(id, 'owner');
   assert.equal(report.failed, 1);
-  assert.equal(report.providerTurns, 1);
-  assert.match(report.lines[0], /code=not_granted/);
-  assert.deepEqual(finals, ask.finals);
+  // Task settlement is observed without a voice-provider turn or old tool reply.
+  assert.equal(report.providerTurns, 0);
+  assert.match(report.lines[0], /terminalReason=clean_close/);
+  assert.deepEqual(finals, taskAsk.finals);
   assert.equal(waits, 1);
   assert.equal(canarySessions.isCanary(id), false);
 });
 
 test('actual HTTP canary opener rejects model-shaped/browser requests and marks only native bearer sessions', async t => {
-  const { Store } = await import('../dist/runtime/store.js');
-  const { listenService } = await import('../dist/http/server.js');
+  const { Store } = await import(built('runtime/store.js'));
+  const { listenService } = await import(built('http/server.js'));
   const home = await mkdtemp(join(tmpdir(), 'didi-canary-http-'));
   const store = new Store(home);
   store.transaction(tx => tx.run('CREATE TABLE live_sessions(live_session_id TEXT PRIMARY KEY,lifecycle TEXT NOT NULL)'));
@@ -203,7 +205,7 @@ test('actual HTTP canary opener rejects model-shaped/browser requests and marks 
   t.diagnostic(`CANARY HTTP FIXTURE port=${new URL(service.origin).port} pid=${process.pid}`);
   try {
     const url = `${service.origin}/api/v1/live-canary/open`;
-    const body = JSON.stringify({ asks: [ask], deadline: Date.now() + 300_000 });
+    const body = JSON.stringify({ asks: [taskAsk], deadline: Date.now() + 300_000 });
     const token = (await readFile(join(home, 'admin-credential'), 'utf8')).trim();
     const auth = { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': store.authorityEpoch, 'Content-Type': 'application/json' };
     const anonymous = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
@@ -297,7 +299,7 @@ test('provider readiness bound fails honestly without injecting owner text', asy
   };
   const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
   const host = new InstalledCanary(store, live, async () => { clock += 5000; }, () => clock);
-  host.open([ask], { clientId: 'synthetic-native' });
+  host.open([taskAsk], { clientId: 'synthetic-native' });
   const report = await host.run(id, 'synthetic-native');
   assert.equal(injected, 0);
   assert.match(report.lines[0], /code=provider_not_ready ms=10000/);
@@ -317,17 +319,17 @@ test('C-SAFETY: shutdown cancels every canary alarm, including ringing, before r
     revoke: () => { assert.deepEqual(cancelled, ['synthetic-pending', 'synthetic-ringing']); revoked = true; },
   };
   const host = new InstalledCanary(store, live, undefined, undefined, alarmId => { cancelled.push(alarmId); return true; });
-  host.open([ask], { clientId: 'synthetic-owner' });
+  host.open([taskAsk], { clientId: 'synthetic-owner' });
   host.shutdown();
   assert.equal(revoked, true);
 });
 
 for (const ending of ['shutdown', 'timeout', 'provider-close', 'provider-end', 'provider-failure']) test(`C-SAFETY: real ringing canary alarm is cancelled on ${ending}`, async t => {
-  const { Store } = await import('../dist/runtime/store.js');
-  const { domainMigrations } = await import('../dist/domain/schema.js');
-  const { liveMigrations } = await import('../dist/live/schema.js');
-  const { toolsMigrations } = await import('../dist/tools/schema.js');
-  const { AlarmScheduler } = await import('../dist/host/alarm-scheduler.js');
+  const { Store } = await import(built('runtime/store.js'));
+  const { domainMigrations } = await import(built('domain/schema.js'));
+  const { liveMigrations } = await import(built('live/schema.js'));
+  const { toolsMigrations } = await import(built('tools/schema.js'));
+  const { AlarmScheduler } = await import(built('host/alarm-scheduler.js'));
   const home = await mkdtemp(join(tmpdir(), 'synthetic-canary-alarm-'));
   const store = new Store(home, [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
   let now = 1000;
@@ -337,7 +339,7 @@ for (const ending of ['shutdown', 'timeout', 'provider-close', 'provider-end', '
   const id = `synthetic-canary-${ending}`;
   const host = new InstalledCanary(store, { create: () => ({ liveSessionId: id }), revoke() {} }, undefined, undefined, alarmId => scheduler.cancel(alarmId));
   if (ending === 'timeout') t.mock.timers.enable({ apis: ['setTimeout'] });
-  host.open([ask], { clientId: 'synthetic-owner' }, Date.now() + 1000);
+  host.open([taskAsk], { clientId: 'synthetic-owner' }, Date.now() + 1000);
   t.after(async () => { host.shutdown(); scheduler.stop(); store.close(); await rm(home, { recursive: true, force: true }); });
   const alarm = scheduler.set({ fireAtUtc: 2000, tz: 'UTC', label: '', createdJournalId: 'synthetic-owner' });
   store.transaction(tx => tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,intent_json,state) VALUES(?,?,?,?,'intent')", [store.assistantId, id, alarm.id, JSON.stringify({ toolName: 'set_alarm' })]));

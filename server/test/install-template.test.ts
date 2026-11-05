@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, existsSync, symlinkSync, readlinkSync, copyFileSync, chmodSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -13,6 +13,10 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'didi-install-portable-'));
   const home = join(root, 'home'), app = join(root, 'build/Lux Didi.app');
   mkdirSync(join(app, 'Contents/MacOS'), { recursive: true });
+  const build = { installId: 'synthetic-install', releaseCommit: 'a'.repeat(40) };
+  // The canary receipt is bound to this installed build, so the bundle carries its manifest.
+  mkdirSync(join(app, 'Contents/Resources'), { recursive: true });
+  writeFileSync(join(app, 'Contents/Resources/didi-runtime.json'), JSON.stringify(build));
   mkdirSync(home);
   writeFileSync(join(app, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.example.synthetic-didi</string><key>CFBundleExecutable</key><string>LuxDidi</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>');
   copyFileSync('/usr/bin/true', join(app, 'Contents/MacOS/LuxDidi'));
@@ -26,13 +30,21 @@ function fixture() {
   // DESK-R6: the CI timing instrumentation is part of the portable installer fixture.
   mkdirSync(join(scripts, 'lib'));
   copyFileSync(join(dirname(sourceInstaller), 'lib', 'timing.sh'), join(scripts, 'lib', 'timing.sh'));
+  copyFileSync(join(dirname(sourceInstaller), 'lib', 'check-installed-canary.mjs'), join(scripts, 'lib', 'check-installed-canary.mjs'));
   copyFileSync(join(dirname(sourceInstaller), 'run-installed-checks.sh'), join(scripts, 'run-installed-checks-real.sh'));
   const checks = join(scripts, 'fixture-checks'); mkdirSync(checks);
+  // The runner calls check-helper-provider.sh unconditionally, so the injected set carries a stub for
+  // it: the real check probes this machine, the stub only records the target it was handed (W1).
+  const helperProof = join(scripts, 'helper-provider-ran');
+  writeFileSync(join(checks, 'check-helper-provider.sh'), `#!/bin/bash\nprintf '%s' "$1" > '${helperProof}'\nexit 0\n`);
   // Explicit check-set injection keeps this portable-app fixture off all account and alarm probes.
   writeFileSync(join(scripts, 'run-installed-checks.sh'), '#!/bin/bash\nexec bash "$(dirname "$0")/run-installed-checks-real.sh" "$@" --checks-dir "$(dirname "$0")/fixture-checks"\n');
   writeFileSync(join(checks, 'check-installed-fixture.sh'), '#!/bin/bash\nset -eu\ntest -f "$1/Contents/MacOS/LuxDidi"\nexit "${DIDI_FIXTURE_CHECK_FAIL:-0}"\n');
   const run = (extra: Record<string, string> = {}) => spawnSync('/bin/bash', [installer, app], { env: { ...process.env, HOME: home, ...extra }, encoding: 'utf8', timeout: 15000 });
-  return { root, home, app, run };
+  const installedTarget = join(home, 'Applications/Lux Didi.app');
+  // The post-relaunch phase install-macos-app.sh --verify-canary reads the receipt the call wrote.
+  const verifyCanary = (extra: Record<string, string> = {}) => spawnSync('/bin/bash', [installer, '--verify-canary', installedTarget], { env: { ...process.env, HOME: home, ...extra }, encoding: 'utf8', timeout: 15000 });
+  return { root, home, app, build, helperProof, run, installedTarget, verifyCanary };
 }
 test('installed open-web check binds the explicit app target before any build', () => {
   const root = mkdtempSync(join(tmpdir(), 'didi-open-web-target-'));
@@ -48,14 +60,31 @@ test('fresh installation creates no connector or provider authority configuratio
   const f = fixture();
   try {
     const result = f.run(); assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /INSTALL-MACOS-APP PASS/);
+    assert.match(result.stdout, /INSTALL-MACOS-APP PENDING target=.* canary=required_after_relaunch/, 'an install stays pending until the relaunched call proves it');
+    assert.doesNotMatch(result.stdout, /INSTALL-MACOS-APP PASS/, 'no install is green before a real call used a real tool');
     assert.match(result.stdout, /INSTALLED-CHECK PASS check-installed-fixture\.sh/);
-    assert.match(result.stdout, /INSTALLED-CHECKS PASS ran=1 failed=0/);
+    assert.match(result.stdout, /INSTALLED-CHECK PASS check-helper-provider\.sh/);
+    assert.match(result.stdout, /INSTALLED-CHECKS PASS ran=2 failed=0/);
+    assert.equal(readFileSync(f.helperProof, 'utf8'), join(f.home, 'Applications/Lux Didi.app'), 'the install ran the helper-provider check on the installed target');
     assert.ok(existsSync(join(f.home, 'Applications/Lux Didi.app/Contents/MacOS/LuxDidi')));
     assert.equal(existsSync(join(f.home, 'Library')), false);
     const configDir = join(f.home, 'provider-config');
     assert.deepEqual(loadMcpEndpoints({ configDir }), { state: 'missing' });
     assert.deepEqual(loadLiveConfig({ configDir, ownerId: 'synthetic-owner' }), { status: 'unconfigured' });
+    const receiptPath = join(f.home, '.lux/didi-canary/receipt.json');
+    mkdirSync(dirname(receiptPath), { recursive: true });
+    const receipt = { schemaVersion: 1, target: resolve(f.installedTarget), installId: f.build.installId, releaseCommit: f.build.releaseCommit, ok: true, code: 'ok', callId: 'synthetic-call', terminalReason: 'clean_close' };
+    const missing = f.verifyCanary();
+    assert.equal(missing.status, 1, missing.stdout);
+    assert.match(missing.stdout, /CANARY FAIL code=canary_receipt_missing/, 'a receipt another build left is not this install proof');
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, releaseCommit: 'b'.repeat(40) }));
+    const stale = f.verifyCanary();
+    assert.equal(stale.status, 1, stale.stdout);
+    assert.match(stale.stdout, /CANARY FAIL code=canary_receipt_stale/, 'a receipt from another build is red');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const verified = f.verifyCanary();
+    assert.equal(verified.status, 0, verified.stdout + verified.stderr);
+    assert.match(verified.stdout, /INSTALL-MACOS-APP PASS .*canary=task_tool_and_task_settled/, 'a receipt bound to this build finalizes the install');
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 test('successful upgrade and failed post-swap verification preserve owner files and symlinks', () => {
@@ -74,6 +103,7 @@ test('successful upgrade and failed post-swap verification preserve owner files 
       }
     }
     const first = f.run(); assert.equal(first.status, 0, first.stderr);
+    assert.equal(readFileSync(f.helperProof, 'utf8'), join(f.home, 'Applications/Lux Didi.app'), 'the install ran the helper-provider check on the installed target');
     const verifyOwnerFiles = () => {
       for (const snapshot of snapshots) {
         assert.equal(readFileSync(snapshot.path, 'utf8'), snapshot.bytes);

@@ -45,8 +45,13 @@ and never promises work. The voice collects the complete commentary sequence bef
 
 ### Open-line task delivery (10.11)
 
-Finalized owner speech starts or revises the helper after 1,200 ms without new owner transcript.
+Finalized owner speech starts or revises the helper after 600 ms without new owner transcript.
 New words restart this host-owned quiet; adapter finalization consumes the same interval, not an extra delay.
+The bound is `OWNER_QUIET_MS` in `server/tasks/call.ts`: 600 ms is the ceiling the contract set, not a
+measured minimum. From `host.log` `owner_final` to `task_lifecycle` start/revision on the 2026-11-05
+01:11 and 07:18 calls, the adapter had already credited at least 693 ms of the interval on every
+observed finalization, so the residual wait is zero today and the ceiling only guards an adapter that
+credits less. A later fragment still revises the running task rather than splitting the ask.
 There is no lexical hesitation classifier. Stop commands,
 mic pacing and barge-in retain their existing paths. Longer gaps can revise running work.
 

@@ -87,7 +87,9 @@ Search wire arguments select `detail="snippets"` and
 instructions. Voice mode is not used: its secondary rows omit scores and relationship badges.
 Snippet width is the remote renderer's native width, not the voice-only `snippet_chars`
 argument. Full snippet rows carry scores and badges; remote weak title-only rows
-are retained with their ids and ranks, without inventing absent evidence.
+are retained with their ids and ranks and `snippet_status="not_supplied"` so the
+helper can distinguish missing source snippets from missing knowledge, without
+inventing absent evidence.
 The entire accepted text envelope reaches the helper, capped at 24000
 characters and six bounded references. Source policy validation still precedes delivery;
 structured diagnostics never outrank the accepted MCP text blocks.

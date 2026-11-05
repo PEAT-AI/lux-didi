@@ -63,7 +63,7 @@ function posts(root: Record<string, unknown>): Record<string, unknown>[] {
 function rankedText(raw: string): RankedItem[] {
   return raw.split('\n').flatMap(line => {
     const match = /^(?:-\s+)?\*\*#(\d+)\*\*\s+(?:\[[^\]]+\]\s+)?(.+)$/.exec(line);
-    return match ? [{ id: match[1]!, title: match[2]!.trim() }] : [];
+    return match ? [{ id: match[1]!, title: match[2]!.trim(), ...(/^\s*-\s+/.test(line) ? { snippet_status: 'not_supplied' as const } : {}) }] : [];
   });
 }
 function eventTime(value: unknown): string {
@@ -78,7 +78,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     const empty = !rows.length && /\bNo (?:results|matches|insights)(?: found)?\b/i.test(data);
     return { status: rows.length ? 'ok' : empty ? 'empty' : 'partial',
       text: data.slice(0, 24000),
-      references: rows.map((row, index) => ({ id: row.id, title: row.title, rank: index + 1 })), next_cursor: null,
+      references: rows.map((row, index) => ({ id: row.id, title: row.title, rank: index + 1, ...(row.snippet_status ? { snippet_status: row.snippet_status } : {}) })), next_cursor: null,
       coverage: `${rows.length} ranked vault candidates in source order. Semantic retrieval, not exact-name matching.${data.length > 24000 ? ' Source text truncated.' : ''}`,
       repair: rows.length || empty ? null : 'Unrecognized vault search response; do not infer corpus absence.' };
   }

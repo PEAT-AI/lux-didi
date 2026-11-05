@@ -55,7 +55,8 @@ test('a correction suppresses the stale worker answer', async t => {
   const first = deferred(); let inference = 0;
   const f = fixture(t, async () => ++inference === 1 ? first.promise : { text: 'Corrected answer.', calls: [] });
   f.call.delegation('d1'); const stale = f.call.input('First request', 1);
-  await f.call.input('Correction', 2); first.resolve({ text: 'Stale answer.', calls: [] }); await stale;
+  const correction = f.call.input('Correction', 2);
+  first.resolve({ text: 'Stale answer.', calls: [] }); await Promise.all([stale, correction]);
   assert.deepEqual(f.results(), [{ id: 'd1', text: 'Corrected answer.', kind: 'result' }]);
 });
 test('no delegation still executes finalized input and appends on the open line', async t => {
@@ -129,15 +130,15 @@ for (const gap of [200, 599, 600, 1_600, 8_000]) test(`C-DELIVERY: fragment gap 
   f.call.ownerWords(); f.call.finalized('Synthetic first fragment', 1);
   clock.advance(gap); await Promise.resolve();
   assert.equal(inputs.length, gap < 600 ? 0 : 1);
-  const first = f.call.runtime.controller.current?.identity;
+  const first = { ...f.call.runtime.controller.current!.identity };
   f.call.ownerWords(); f.call.finalized('Synthetic second fragment', 2);
   clock.advance(599); assert.equal(inputs.length, gap < 600 ? 0 : 1);
-  clock.advance(1); await Promise.resolve();
+  clock.advance(1); for (let i = 0; i < 30; i++) await Promise.resolve();
   assert.equal(inputs.length, gap < 600 ? 1 : 2);
   assert.match(inputs.at(-1)!, /Synthetic second fragment/);
   if (gap < 600) assert.match(inputs[0]!, /Synthetic first fragment/);
   else { const revised = f.call.runtime.controller.current!.identity;
-    assert.equal(revised.task_id, first!.task_id); assert.equal(revised.task_revision, first!.task_revision + 1); }
+    assert.equal(revised.task_id, first.task_id); assert.equal(revised.task_revision, first.task_revision + 1); }
 });
 test('C-DELIVERY: the residual wait after a final is at most the literal 600 ms ceiling', async t => {
   const clock = quietClock(); let runs = 0;
@@ -213,9 +214,9 @@ test('C-DELIVERY: a correction during a running read revises only after transcri
   for (let i = 0; i < 30; i++) await Promise.resolve();
   assert.equal(reads, 1); const first = f.call.runtime.controller.current!.identity;
   f.call.ownerWords(); f.call.finalized('Synthetic correction.', 2); clock.advance(599);
-  assert.equal(f.call.runtime.controller.isCurrent(first), true);
+  assert.equal(first.task_revision, 1);
   clock.advance(1); for (let i = 0; i < 30; i++) await Promise.resolve();
-  assert.equal(f.call.runtime.controller.isCurrent(first), false); release();
+  assert.equal(first.task_revision, 2, 'his later words advance the live revision rather than aborting it'); release();
   for (let i = 0; i < 30; i++) await Promise.resolve();
   assert.equal(reads, 1); assert.equal(f.results().length, 1); assert.equal(f.results()[0]!.text, 'Synthetic corrected result.');
 });

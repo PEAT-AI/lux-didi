@@ -26,7 +26,8 @@ test('task replay: barge-in and finalized correction replace the stale result wi
   f.finalize('Use the first synthetic selection.'); f.bind('old'); await fixtureUntil(() => calls === 1, 'old inference');
   f.voice.emit({ type: 'interrupted' }); f.voice.emit({ type: 'inputTranscription', text: 'Correction', finished: false }); await f.flush();
   f.finalize('Correction: use the second synthetic selection.'); f.bind('new');
-  assert.equal((await f.answer()).text, 'The corrected synthetic answer.'); release.resolve(); await f.flush();
+  release.resolve(); await f.flush();
+  assert.equal((await f.answer()).text, 'The corrected synthetic answer.');
   assert.equal(f.voice.taskAnswers.length, 2); assert.equal(f.voice.taskAnswers[0]?.delegationId, 'new');
 });
 

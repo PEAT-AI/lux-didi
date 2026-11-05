@@ -142,6 +142,20 @@ test('C-TRACE 1: the same cut utterance is a turn of its own in history_turns', 
   assert.equal(inserted, 1);
 });
 
+test('C-TRACE 1 F3: a provider final that lands after the cut does not write the sentence twice', async t => {
+  const live = await openLive(t);
+  await ownerPartial(live, 'what is ');
+  await ownerPartial(live, 'the weather');
+  await modelTurn(live);
+  await turnComplete(live);
+  // The adapter's own final for the sentence the boundary already flushed arrives late, and carries the same words.
+  await live.emit({ type: 'inputTranscription', text: 'what is the weather', finished: true });
+  live.store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='terminal' WHERE live_session_id=?", [live.liveSessionId]));
+  live.store.transaction(tx => persistHistoryTurns(tx, live.liveSessionId));
+  const rows = live.store.transaction(tx => tx.all("SELECT text FROM history_turns WHERE role='owner' ORDER BY id"));
+  assert.deepEqual(rows.map(row => String(row.text)), ['what is the weather']);
+});
+
 test('C-TRACE 2: attributionUncertain is true only where a turn really replaced another', async t => {
   const live = await openLive(t);
   await ownerSaid(live, 'first question');

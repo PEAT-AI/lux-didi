@@ -28,11 +28,15 @@ function fixture() {
   copyFileSync(join(dirname(sourceInstaller), 'lib', 'timing.sh'), join(scripts, 'lib', 'timing.sh'));
   copyFileSync(join(dirname(sourceInstaller), 'run-installed-checks.sh'), join(scripts, 'run-installed-checks-real.sh'));
   const checks = join(scripts, 'fixture-checks'); mkdirSync(checks);
+  // The runner calls check-helper-provider.sh unconditionally, so the injected set carries a stub for
+  // it: the real check probes this machine, the stub only records the target it was handed (W1).
+  const helperProof = join(scripts, 'helper-provider-ran');
+  writeFileSync(join(checks, 'check-helper-provider.sh'), `#!/bin/bash\nprintf '%s' "$1" > '${helperProof}'\nexit 0\n`);
   // Explicit check-set injection keeps this portable-app fixture off all account and alarm probes.
   writeFileSync(join(scripts, 'run-installed-checks.sh'), '#!/bin/bash\nexec bash "$(dirname "$0")/run-installed-checks-real.sh" "$@" --checks-dir "$(dirname "$0")/fixture-checks"\n');
   writeFileSync(join(checks, 'check-installed-fixture.sh'), '#!/bin/bash\nset -eu\ntest -f "$1/Contents/MacOS/LuxDidi"\nexit "${DIDI_FIXTURE_CHECK_FAIL:-0}"\n');
   const run = (extra: Record<string, string> = {}) => spawnSync('/bin/bash', [installer, app], { env: { ...process.env, HOME: home, ...extra }, encoding: 'utf8', timeout: 15000 });
-  return { root, home, app, run };
+  return { root, home, app, helperProof, run };
 }
 test('installed open-web check binds the explicit app target before any build', () => {
   const root = mkdtempSync(join(tmpdir(), 'didi-open-web-target-'));
@@ -50,7 +54,9 @@ test('fresh installation creates no connector or provider authority configuratio
     const result = f.run(); assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /INSTALL-MACOS-APP PASS/);
     assert.match(result.stdout, /INSTALLED-CHECK PASS check-installed-fixture\.sh/);
-    assert.match(result.stdout, /INSTALLED-CHECKS PASS ran=1 failed=0/);
+    assert.match(result.stdout, /INSTALLED-CHECK PASS check-helper-provider\.sh/);
+    assert.match(result.stdout, /INSTALLED-CHECKS PASS ran=2 failed=0/);
+    assert.equal(readFileSync(f.helperProof, 'utf8'), join(f.home, 'Applications/Lux Didi.app'), 'the install ran the helper-provider check on the installed target');
     assert.ok(existsSync(join(f.home, 'Applications/Lux Didi.app/Contents/MacOS/LuxDidi')));
     assert.equal(existsSync(join(f.home, 'Library')), false);
     const configDir = join(f.home, 'provider-config');
@@ -74,6 +80,7 @@ test('successful upgrade and failed post-swap verification preserve owner files 
       }
     }
     const first = f.run(); assert.equal(first.status, 0, first.stderr);
+    assert.equal(readFileSync(f.helperProof, 'utf8'), join(f.home, 'Applications/Lux Didi.app'), 'the install ran the helper-provider check on the installed target');
     const verifyOwnerFiles = () => {
       for (const snapshot of snapshots) {
         assert.equal(readFileSync(snapshot.path, 'utf8'), snapshot.bytes);

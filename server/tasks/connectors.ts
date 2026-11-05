@@ -187,7 +187,6 @@ export function nativeTaskReadTool(name: string, connector: string, args?: Recor
   return mapping?.connector === connector ? mapping.tool : undefined;
 }
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}, handoffsRemaining = 2): ToolPorts['execute'] {
-  if (handoffsRemaining === 2) console.info('company_bindings', JSON.stringify(Object.fromEntries(['knowledge', 'data', 'crm'].map(endpoint => [endpoint, bindings.some(binding => binding.connector === 'mongoose' && companyEndpoint(binding) === endpoint)]))));
   return async (name, args, signal, outsideTextSeen = false, identity) => {
     if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });

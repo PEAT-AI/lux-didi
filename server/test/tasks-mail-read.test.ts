@@ -6,7 +6,7 @@ import type { ConnectorEvidence, ConnectorReader } from '../connectors/index.js'
 import type { ConnectionPolicy } from '../tools/types.js';
 
 // Synthetic fixtures only. No provider call, no owner account, no real name.
-const SENDER = { Subject: 'Mooring plan', From: 'Dana <dana@example.invalid>', To: 'rob@example.invalid', Date: 'Mon, 5 Oct 2026 09:00:00 +0000' };
+const SENDER = { Subject: 'Mooring plan', From: 'Dana <dana@example.invalid>', To: 'synthetic-owner@example.invalid', Date: 'Mon, 5 Oct 2026 09:00:00 +0000' };
 
 /** The shaped display text, exactly what the old seam received as `response.text`. */
 function shapedRead(headers: Record<string, string>, body?: string): string {

@@ -160,7 +160,32 @@ The runtime context carries one compact line of live connector state per family,
 
 The Live voice receives speech-ready results from the host-owned helper rather than calling source tools itself. The helper performs the typed tool work; the voice reads its result completely, retaining names, numbers, dates and qualifications. A partial result, a gap or a failure must remain explicit rather than becoming a claim that the work succeeded.
 
-The 4,103-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
+The 4,610-character check applies to the public worker instruction block, not to a serialized voice-tool reply. The helper's registered tools own their result shapes and continuation behavior. There is no shared voice-facing source-result envelope or delivered-answer character counter controlling this helper lifecycle.
+
+### What she already said (C-REPEAT)
+
+The helper's input carries what she already said as plain labelled data: the last answer's text, bounded at 4,000
+characters with a `truncated` flag, and how far its delivery got as accepted chunks of the spoken total. A cut
+answer is accepted below total, so an answer interrupted by his voice is distinguishable from one that finished.
+The record lives on the call's delivery, so it survives every revision of a task and a provider rebuild inside
+the call; it is never re-derived from the transcript. `already_said` is data, never an order: the helper decides
+whether words that add no new ask return no_action, whether an answer he wants to hear again is spoken, or
+whether a cut answer continues from where it stopped.
+
+The host passes exactly one fact about overlap, `owner_words_overlapped_her_speech`: true when his words
+arrived while her audio was still audible (`taskOutputQuiet === false`). The host draws no conclusion from it.
+
+The helper's input also carries `verified_status` as facts only: `other_work_running` (false for a sole run),
+`last_task` with its terminal status and the failed tools with their closed failure codes, plus the existing
+`rebuilt`, `rebuild_cause` and `staged_deletion`. No field claims a run is running, so a question about what she
+is doing is answered from what the host can see. `no_action` delivery is unchanged: she is told only while she
+is actually waiting, and it is never silent.
+
+The helper receives the same people roster text the voice prompt renders, from the same source and without the
+owner lore, so a first name he says resolves to the right person on the first search. `workerInstructions`
+appends the roster only when a roster is installed, bounded by the same `PEOPLE_CHAR_LIMIT` of 6,000 characters
+the voice prompt uses; a synthetic roster of one person adds 69 characters to a block that measures 4,610
+characters without one.
 
 Fresh session recovery uses the call transcript seed built by `LiveSessionOwner.#rebuildSeed` and `#seedHistory`. The current seed contains transcript turns only; it adds no separate helper-result ledger. Session recovery and a helper's follow-up tool reads are distinct operations, and recovery does not grant authority to replay an uncertain remote write.
 

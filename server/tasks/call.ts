@@ -27,12 +27,14 @@ export class TaskCall {
   #queuedWords = '';
   #queuedTurn = 0;
   #inputPending = false;
+  #overlapped = false;
   #cancelQuiet: (() => void) | undefined;
   constructor(readonly ports: TaskCallPorts) {
     this.delivery = new TaskDelivery({ isCurrent: identity => !this.#closed && this.runtime.controller.isCurrent(identity),
       append: (id, text) => ports.append(this.#generation, id, text),
       state: (identity, state, chunk) => { this.runtime.deliveryState(identity, state, chunk); ports.state(identity, state, chunk); } });
     this.runtime = ports.createRuntime({
+      said: () => this.delivery.said(),
       attach: (identity, binding) => { if (ports.provider === 'openai') this.delivery.attach(identity, binding); },
       progress: identity => this.delivery.progress(identity),
       closed: identity => this.delivery.closed(identity),
@@ -51,7 +53,9 @@ export class TaskCall {
     this.#generation = generation; this.#delegation = undefined; this.#latestDelegation = undefined; this.#functions = [];
     this.#outputQuiet = true; this.delivery.socket(generation, ready);
   }
-  ownerWords(): void {
+  /** His words arrive; the host's one fact is whether her speech was still running. */
+  ownerWords(overlapped = false): void {
+    this.#overlapped = this.#overlapped || overlapped;
     this.#cancelQuiet?.(); this.#cancelQuiet = undefined; this.#inputPending = true;
     this.#spoken = false; this.#delegation = undefined;
   }
@@ -73,7 +77,8 @@ export class TaskCall {
   spoke(): void { this.#spoken = true; }
   input(words: string, ownerTurn: number): Promise<WorkerResult> {
     this.#answer = undefined;
-    const { revision, result } = this.runtime.finalize(words, this.#generation, ownerTurn);
+    const overlapped = this.#overlapped; this.#overlapped = false;
+    const { revision, result } = this.runtime.finalize(words, this.#generation, ownerTurn, overlapped);
     if (this.#latestDelegation) this.runtime.attach(revision.identity, this.#latestDelegation);
     for (const call of this.#functions) this.runtime.attach(revision.identity, call.id);
     this.ports.working?.(true);

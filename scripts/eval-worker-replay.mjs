@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 // Use the shipped public worker instruction, not a second replay-only prompt.
 const instructionSource = readFileSync(new URL('../server/tasks/instructions.ts', import.meta.url), 'utf8');
 export const WORKER_INSTRUCTIONS = JSON.parse(instructionSource.match(/export const WORKER_INSTRUCTIONS = ("[^\n]*");/)[1]);
-if (WORKER_INSTRUCTIONS.length > 4267) throw new Error('Worker instructions exceed 4,103 characters');
+if (WORKER_INSTRUCTIONS.length > 4610) throw new Error('Worker instructions exceed 4,610 characters');
 
 // Synthetic Gmail fixtures and semantics from probe/worker-replay-110.
 // Offline only. A canned replay does not establish real model behaviour.
@@ -270,6 +270,39 @@ function readMail({ id }) {
     body: hit.body,
     chars: hit.body.length,
   };
+}
+
+// C-REPEAT: what he says after an answer, what she already said and how far it got. Each row is a shape a
+// release owner can replay offline; a row never runs a model here and the eval is unpriced. `judge` names the
+// only thing a real call can settle: the model's judgment over the data the host handed it.
+export const REPLAY_ROW_EXPECTATIONS = Object.freeze(['no_action', 'answer', 'repeat', 'deeper', 'state']);
+export const REPLAY_ROWS = Object.freeze([
+  { id: 'agreement-after-answer', judge: 'she adds nothing and starts no task',
+    owner_words: 'yeah', overlapped: false, expect: 'no_action',
+    already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
+  { id: 'agreement-during-her-speech', judge: 'she lets the cut answer stand and does not begin it again',
+    owner_words: 'mm hm', overlapped: true, expect: 'no_action',
+    already_said: { text: 'The sampling plan is ready and two replicates per plot is enough. The institute covers the assay cost. Tell me the plot count by Monday.', accepted: 1, total: 3 } },
+  { id: 'half-sentence', judge: 'she asks nothing new and repeats nothing',
+    owner_words: 'and the second one was', overlapped: true, expect: 'no_action',
+    already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 1, total: 2 } },
+  { id: 'short-follow-up', judge: 'the new ask is answered, read together with the task before it',
+    owner_words: 'what did David say about the cost', overlapped: false, expect: 'answer',
+    already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
+  { id: 'repeat-that', judge: 'the answer he asked to hear again is spoken, and only that',
+    owner_words: 'say that again', overlapped: false, expect: 'repeat',
+    already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
+  { id: 'go-deeper', judge: 'the earlier search is not repeated: wider sources, opened pointers, what changed',
+    owner_words: 'go deeper on the sampling plan', overlapped: false, expect: 'deeper',
+    already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
+  { id: 'why-did-that-fail', judge: 'nothing is running is said plainly, with the real outcome and the closed code',
+    owner_words: 'why did that fail', overlapped: false, expect: 'state',
+    already_said: { text: 'I could not read the mail search.', accepted: 1, total: 1 },
+    verified_status: { other_work_running: false, last_task: { status: 'complete', failed_tools: [{ tool: 'chat_attention', code: 'unavailable' }] } } },
+]);
+for (const row of REPLAY_ROWS) {
+  if (!REPLAY_ROW_EXPECTATIONS.includes(row.expect)) throw new Error(`Replay row ${row.id} names an unknown expectation`);
+  if (!row.judge) throw new Error(`Replay row ${row.id} names no judgment a real call must settle`);
 }
 
 export { MAIL, searchMail, readMail, parseMailQuery };

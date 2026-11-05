@@ -4039,7 +4039,9 @@ export class LiveSessionOwner {
         if (event.type === 'inputTranscription') {
           handle.inputJournalId = persisted;
           if (event.text.length) {
-            handle.taskWords = (handle.taskWords ?? '') + event.text; handle.taskLastWordsAt = this.#now(); handle.taskOwnerOpen = true; handle.tasks?.ownerWords();
+            // C-REPEAT: one host fact, no host decision. taskOutputQuiet is false while her audio is audible, so his
+            // words overlapped her speech exactly when it is still false as they arrive.
+            handle.taskWords = (handle.taskWords ?? '') + event.text; handle.taskLastWordsAt = this.#now(); handle.taskOwnerOpen = true; handle.tasks?.ownerWords(handle.taskOutputQuiet === false);
             handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: true });
           }
           if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();

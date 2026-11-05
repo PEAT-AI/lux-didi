@@ -56,7 +56,8 @@ test('the release character holds the installed baseline while issue 455 remains
 
 test('the composed Live instruction carries NAYA_CHARACTER and NAYA_VOICE_SURFACE verbatim', () => {
   const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
-  assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`, 'the Live base is the character plus the voice surface');
+  assert.ok(NAYA_LIVE_BASE.startsWith(`${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}\n\n`), 'the Live base retains the character and voice surface before the opening-facts rule');
+  assert.match(NAYA_LIVE_BASE, /Never open on a subject in exclude_topics/);
   assert.ok(composed.text.includes(NAYA_CHARACTER), 'the composed instruction carries the character verbatim');
   assert.ok(composed.text.includes(NAYA_VOICE_SURFACE), 'the composed instruction carries the voice surface verbatim');
   for (const retired of ['short, expressive', 'point first', 'Small talk short']) assert.equal(composed.text.includes(retired), false, `retired brevity string: ${retired}`);

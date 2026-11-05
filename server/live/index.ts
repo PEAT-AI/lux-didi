@@ -396,11 +396,6 @@ export function openerFromJournal(rows: readonly { readonly kind: string; readon
   return utterance.trim();
 }
 
-/**
- * Release 3u: the topic an earlier call's opener came from, read off the plan that call's own start
- * recorded. The words the opener shares with an option decide it, so a topic is never guessed: an
- * opener whose subject the plan does not name is reported without one.
- */
 /** The topics of the last three delivered calls, under the same history and route authority. */
 export interface PreviousOpener { readonly text: string; readonly sessionId: string; readonly dataClass: DataClass; readonly topics: readonly string[]; readonly at: number }
 export function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { previous: readonly PreviousOpener[] } {
@@ -1701,8 +1696,8 @@ export class LiveSessionOwner {
       // only: the state it reached, how many events rode it and how old it was at this start.
       this.#summaryLog?.({ event: 'calendar_digest', state: this.#calendarState, items: digestItems(this.#calendar),
         ageMs: this.#calendarAt === undefined ? 0 : Math.max(0, now - this.#calendarAt) });
-      // M1's plan receipt after O1b-A: the journal is gone, so the plan rides the host log beside the sizes.
-      // Metadata only, the kinds offered and the start counter that chose them, never the owner's text.
+      // Opening facts have a counts-only receipt beside the instruction sizes.
+      // Counts only, never owner facts, topic keys or delivered words.
       hostLogEvent({ event: 'opener_facts', day: opening.facts.day.length, commitments: opening.facts.commitments.length, saved_for_him: opening.facts.saved_for_him.length, open_thread: Number(opening.facts.open_thread.length > 0), exclude_topics: opening.facts.exclude_topics.length });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };

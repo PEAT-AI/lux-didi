@@ -200,7 +200,6 @@ export function nativeTaskReadTool(name: string, connector: string, args?: Recor
 }
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}, handoffsRemaining = 2): ToolPorts['execute'] {
   return async (name, args, signal, outsideTextSeen = false, identity) => {
-    if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.', 'upstream_error', 'not_configured');
@@ -209,6 +208,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).find(declaration => declaration.name === mapping.tool);
     if (!declaration) return failed(binding.connector === 'mongoose' ? companySignInRepair(binding) : 'This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
+    if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
     const mapped = mapping.args(args, declaration.parameters);
     if (!declaration.validate(mapped)) return readerFailure(name, 'invalid_argument');
     const scope = createResultScope();

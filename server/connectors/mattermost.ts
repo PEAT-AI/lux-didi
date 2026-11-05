@@ -852,8 +852,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
      * #1016: one wave, every child read against what is left of the budget. A read still running when the
      * budget ends is dropped, its finished siblings are kept and the wave is named, never blocking them.
      */
-    const wave = async <T>(works: Promise<T>[]): Promise<{ values: T[]; complete: boolean }> => {
-      const values: T[] = new Array<T>(works.length);
+    const wave = async <T>(works: Promise<T>[]): Promise<{ values: (T | undefined)[]; complete: boolean }> => {
+      const values: (T | undefined)[] = new Array<T | undefined>(works.length);
       if (works.length === 0) return { values, complete: true };
       const left = remaining();
       if (left <= 0) { local.abort(); return { values, complete: false }; }
@@ -919,11 +919,11 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       capture(recentRead.evidence);
       const moved = (parseChannelList(recentRead.evidence.decodedResult) ?? [])
         .filter(channel => channel.id !== undefined && (channel.lastPostAt === undefined || Date.parse(channel.lastPostAt) >= cutoff));
-      // Wave two: the conversations that moved, at the history limit. A budget end here loses the
-      // threads it seeded.
+      // Wave two: the conversations that moved, at the history limit. A budget end keeps the histories
+      // that did answer, then names the wave and the thread seeds it did not reach.
       const second = await wave(moved.map(async channel => read('mattermost_search', { query: '', channel: channel.id!, limit: MATTERMOST_ATTENTION.historyLimit, ...windowed }, halt)));
-      if (!second.complete) return finish(['moved_conversations', 'threads']);
       for (const history of second.values) {
+        if (history === undefined) continue;
         if (!history.ok) return history.result;
         capture(history.evidence);
         for (const raw of postsIn(history.evidence.decodedResult) ?? []) {
@@ -933,14 +933,16 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
           threadCandidate(post);
         }
       }
+      if (!second.complete) return finish(['moved_conversations', 'threads']);
     }
     // Threads the owner started or joined: only a newest post from someone else awaits a reply. The
     // reads run together, and the cap keeps the scan's tail short.
     const roots = [...threads].slice(0, MATTERMOST_ATTENTION.maxThreads);
-    // Wave three: the candidate threads under the rest of the budget.
+    // Wave three: the candidate threads under the rest of the budget. A budget end keeps the threads
+    // that did answer.
     const third = await wave(roots.map(async rootId => read('mattermost_get_thread', { post_id: rootId }, halt)));
-    if (!third.complete) return finish(['threads']);
     for (const thread of third.values) {
+      if (thread === undefined) continue;
       if (!thread.ok) continue;
       capture(thread.evidence);
       const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(childPost).filter((post): post is ChildPost => post !== undefined);
@@ -948,7 +950,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (newest === undefined || newest.at < cutoff || isOwnerPost(who.owner, newest.author)) continue;
       push('thread', newest);
     }
-    return finish([]);
+    return finish(third.complete ? [] : ['threads']);
   }
 
   /** C-CHAT: the argument names a child tool declares, so a read sends only what that child understands. */

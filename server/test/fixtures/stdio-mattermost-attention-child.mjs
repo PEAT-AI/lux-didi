@@ -8,7 +8,7 @@
 // newer child's filtered page {total, returned, offset, channels} (types, sort, limit) with them. Post fields are the
 // concise shape {id, username, channel, timestamp, message, url}, and the declared limit maxima are
 // the child's own (search 50, channel history 200).
-// argv[2] = mode (window | no-window | no-thread | slow | slow-identity | stall-thread | error-mentions). DIDI_FAKE_MATTERMOST_LOG records every call.
+// argv[2] = mode (window | no-window | no-thread | slow | slow-identity | stall-thread | stall-dm | error-mentions). DIDI_FAKE_MATTERMOST_LOG records every call.
 import { appendFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -34,6 +34,9 @@ const mentionOld = post('postMentionOld', 'team-release', 'dana', now - 10 * DAY
 // A direct conversation, with one owner post and one from Dana.
 const dmDana = post('postDmDana', 'direct-dana', 'dana', now - 1 * HOUR, 'sent you the deck for review', 'dm-dana');
 const dmOwner = post('postDmOwner', 'direct-dana', 'owner-chat', now - 3 * HOUR, 'thanks, looking now', 'dm-owner');
+// #1016: a second direct conversation, listed only by the stall-dm mode, whose answer proves a wave keeps
+// the siblings that did answer.
+const dmRavi = post('postDmRavi', 'direct-ravi', 'ravi', now - 2 * HOUR, 'sent the retest notes', 'dm-ravi');
 // Two threads the owner opened: one waits on Dana, the other the owner answered last.
 const threadOpenRoot = post('threadOpenRoot', 'direct-dana', 'owner-chat', now - 5 * HOUR, 'can you check the diag numbers?', 'thread-open-root');
 const threadOpenReply = post('threadOpenReply', 'direct-dana', 'dana', now - 30 * 60 * 1000, 'done, they line up', 'thread-open-reply');
@@ -49,6 +52,7 @@ const mentions = [mentionOld, mentionRecent];
 const ownerPosts = [dmOwner, threadOpenRoot, threadDoneRoot, threadDoneReply, publicThreadRoot];
 const history = {
   'direct-dana': [dmOwner, threadDoneRoot, dmDana, threadDoneReply, threadOpenRoot],
+  'direct-ravi': [dmRavi],
 };
 const threads = {
   threadOpenRoot: [threadOpenRoot, threadOpenReply],
@@ -82,8 +86,11 @@ server.setRequestHandler('tools/call', async (request) => {
   if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 500));
   // #1016: an identity read that answers after the scan's budget: the budget must already be armed there.
   if (mode === 'slow-identity' && name === 'mattermost_whoami') await new Promise(resolve => setTimeout(resolve, 3_000));
-  // #1016: a child that answers the thread read long after the scan's budget, so only the budget ends the scan.
-  if (mode === 'stall-thread' && name === 'mattermost_get_thread') await new Promise(resolve => setTimeout(resolve, 6_000));
+  // #1016: a child that answers one thread read long after the scan's budget, so only the budget ends the
+  // scan while that wave's other threads answer normally.
+  if (mode === 'stall-thread' && name === 'mattermost_get_thread' && args.post_id === 'threadOpenRoot') await new Promise(resolve => setTimeout(resolve, 6_000));
+  // #1016: one conversation history stalls while its sibling answers in the same wave.
+  if (mode === 'stall-dm' && name === 'mattermost_search' && args.channel === 'chanDirectDana') await new Promise(resolve => setTimeout(resolve, 6_000));
   // #1016: a real upstream failure, which must stay a failure and never become a partial digest.
   if (mode === 'error-mentions' && name === 'mattermost_search' && String(args.query).startsWith('@')) return { isError: true, content: [{ type: 'text', text: 'archive unavailable' }] };
   const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
@@ -97,6 +104,7 @@ server.setRequestHandler('tools/call', async (request) => {
     const channels = [
       { id: 'chanTeamRelease', name: 'team-release', display_name: 'Team Release', type: 'O' },
       { id: 'chanDirectDana', name: 'direct-dana', display_name: 'dana', type: 'D' },
+      ...(mode === 'stall-dm' ? [{ id: 'chanDirectRavi', name: 'direct-ravi', display_name: 'ravi', type: 'D' }] : []),
     ];
     if (Object.keys(args).length === 0) return text({ count: channels.length, channels });
     const rows = channels.filter(channel => !Array.isArray(args.types) || args.types.includes(channel.type))
@@ -123,7 +131,7 @@ server.setRequestHandler('tools/call', async (request) => {
     const query = typeof args.query === 'string' ? args.query : '';
     // A channel read with no words: that conversation's posts, newest first, inside the window.
     if (typeof args.channel === 'string') {
-      const byId = { chanDirectDana: 'direct-dana' };
+      const byId = { chanDirectDana: 'direct-dana', chanDirectRavi: 'direct-ravi' };
       return text(envelope(within([...(history[byId[args.channel] ?? args.channel] ?? [])].sort((a, b) => b.timestamp.localeCompare(a.timestamp)))));
     }
     return text(envelope(within(query.startsWith('from:') ? ownerPosts : mentions)));

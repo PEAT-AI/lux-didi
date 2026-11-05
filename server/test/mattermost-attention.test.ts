@@ -272,9 +272,24 @@ test('#1016: a stalled child yields the waves that answered, with the missing wa
   assert.ok(elapsed < 5_000, `the scan ends at its budget, not at the stalled child (${elapsed} ms)`);
   assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
   assert.match(view.missing ?? '', /no answer from threads/u, 'the coverage line names the wave that did not finish');
-  assert.deepEqual(summaries(view.items), ['dm dana sent you the deck for review', 'mention dana @owner-chat can you confirm the 3k release?'], 'the waves that answered are kept');
+  // The other threads in the same wave answered: their items are kept, never dropped with the stalled one.
+  assert.deepEqual(summaries(view.items), ['thread dana I can take it tomorrow morning', 'dm dana sent you the deck for review', 'mention dana @owner-chat can you confirm the 3k release?'], 'the waves that answered are kept');
   const rendered = renderAttention(view);
   assert.match(rendered.text, /^note: .*no answer from threads/u, 'the model reads the coverage line before the items');
+});
+
+// A budget end inside a wave must keep the siblings that answered there, not just the earlier waves.
+test('#1016: a stalled conversation keeps the history that answered in the same wave', async t => {
+  const f = setup('stall-dm');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_500);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `the scan ends at its budget, not at the stalled history (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from moved_conversations/u, 'the coverage line names the stalled wave');
+  assert.deepEqual(summaries(view.items), ['dm ravi sent the retest notes', 'mention dana @owner-chat can you confirm the 3k release?'], 'the history that answered is kept');
 });
 
 // The identity read is a child call too: the budget is armed before it, so a slow whoami ends the scan

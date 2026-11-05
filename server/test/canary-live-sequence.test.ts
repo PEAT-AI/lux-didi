@@ -12,9 +12,10 @@ import { chatMigrations } from '../chat/index.js';
 import { liveMigrations, validateLiveProfile } from '../live/index.js';
 import { composeLive } from '../host/live.js';
 import { listenService } from '../http/server.js';
-import { attachHostLogSink } from '../tools/host-events.js';
+import { attachHostLogSink, hostLogEvent } from '../tools/host-events.js';
 import { fixture, CANARY } from './openai-live-voice-fixture.js';
-import { syntheticTaskFactory } from './synthetic-task.js';
+import { hostTaskFactory } from '../tasks/host.js';
+import { resolveTaskModels } from '../config/tasks.js';
 
 // Reject the silent /run failure between provider readiness and the first owner ask.
 // This uses the production owner, HTTP handler, upgrader and OpenAI wire adapter.
@@ -25,7 +26,7 @@ test('installed canary HTTP/socket/run sequence reaches a real task after provid
   const live = composeLive(store, dir, {
     profile: validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'ExplicitVoice', keyReference: 'test-reference', route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic system', dataClass: 'ordinary' } }),
     credentials: { resolve: async () => CANARY }, socketFactory: provider.socketFactory,
-    createTaskRuntime: syntheticTaskFactory(store),
+    createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [], executors: () => ({}), timeZone: 'UTC', log: hostLogEvent, infer: async () => ({ text: '', calls: [], no_action: true }), effectCheck: async () => true }),
   }).service;
   const service = await listenService({ store, live, port: 0 });
   t.diagnostic(`CANARY SEQUENCE port=${new URL(service.origin).port} pid=${process.pid}`);

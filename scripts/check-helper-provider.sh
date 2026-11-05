@@ -36,7 +36,7 @@ done
 if [ -z "$module_dir" ]; then
   # The declared tool set under test is this build's, never a stale one.
   if [ ! -f "$root/server/dist/tasks/tools.js" ] || [ -n "$(find "$root/server" -maxdepth 4 -name '*.ts' -newer "$root/server/dist/tasks/tools.js" -not -path '*/node_modules/*' -not -path '*/dist/*' -print -quit)" ]; then
-    bash "$root/scripts/run-local.sh" --build-only >/dev/null
+    "$root/server/node_modules/.bin/tsc" -p "$root/server/tsconfig.json"
   fi
   module_dir="$root/server/dist"
 fi

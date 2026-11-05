@@ -82,7 +82,8 @@ test('calendar facts contain only upcoming timed items and preserve all-day cont
 test('opening diagnostic retention removes old rows and bounds even a burst of calls', () => {
   const db = new DatabaseSync(':memory:');
   try {
-    for (const sql of taskMigrations.find(migration => migration.version === 4)!.statements) db.exec(sql);
+    const opening = taskMigrations.find(migration => migration.statements.some(sql => sql.includes('delivered_opening_topics')))!;
+    for (const sql of opening.statements) db.exec(sql);
     const insert = db.prepare('INSERT INTO delivered_opening_topics(call_id,utc,topics) VALUES (?,?,?)');
     insert.run('old', now - 31 * 86400000, '["old"]');
     for (let index = 0; index < 105; index++) insert.run(`call-${index}`, now + index, '["architecture"]');

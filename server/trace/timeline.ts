@@ -689,15 +689,11 @@ export function listCalls(scan: LogScan): CallRow[] {
   for (const liveSessionId of sessions) {
     const { lines } = attributeLines(scan, { liveSessionId });
     const stamps = lines.map(({ line }) => line.at).filter((value): value is number => value !== null);
-    // Older logs carry no open event: then the call's first line stands in for it and the row says nothing extra.
-    let start: number | null = stamps.length === 0 ? null : Math.min(...stamps);
-    let terminatedAt: number | null = null;
+    let openedAt: number | null = null, terminatedAt: number | null = null;
     const operations = new Set<string>();
     let voiceTools = 0, maxSilenceMs: number | null = null, terminal: string | null = null;
     for (const { line } of lines) {
-      if (line.event === 'live_provider_open') {
-        start = start === null || line.at === null ? start : Math.min(start, line.at);
-      }
+      if (line.event === 'live_provider_open' && line.at !== null && (openedAt === null || line.at < openedAt)) openedAt = line.at;
       if (line.event === 'live_terminal' && (terminatedAt === null || (line.at !== null && line.at < terminatedAt))) {
         terminatedAt = line.at;
         terminal = `${name(line.record.state) ?? 'unknown'}/${name(line.record.code) ?? 'unknown'}`;
@@ -712,6 +708,9 @@ export function listCalls(scan: LogScan): CallRow[] {
       const silence = count(line.record.deadAirMs) ?? (line.event === 'live_heard_silence' ? count(line.record.ms) : null);
       if (silence !== null && (maxSilenceMs === null || silence > maxSilenceMs)) maxSilenceMs = silence;
     }
+    // The open is the call's start; a line attributed before it (a pre-open state, a window-joined row) is not.
+    // Older logs carry no open at all: then the call's first line stands in for it.
+    const start = openedAt ?? (stamps.length === 0 ? null : Math.min(...stamps));
     if (start === null) continue;
     const durationMs = terminatedAt === null ? null : Math.max(0, terminatedAt - start);
     rows.push({ liveSessionId, start, durationMs, tools: operations.size, voiceTools: voiceTools || null, maxSilenceMs, terminal, lines: lines.length });

@@ -206,6 +206,20 @@ test('W18: a row tagged after the terminal never extends the call\u2019s duratio
   assert.equal(rows[0]?.terminal, 'closed/revoked');
 });
 
+// W18 B1: the host stamps a session-tagged live_state before the open, and the 2 s window join admits pidless
+// rows ahead of it. Neither is part of the call's lifetime.
+test('W18: a row before the open never lengthens the call', () => {
+  const t = 1792486800000;
+  const rows = listCalls(scanOf([
+    JSON.stringify({ timestamp: new Date(t - 1500).toISOString(), event: 'live_state', liveSessionId: SESSION, state: 'listening' }),
+    JSON.stringify({ timestamp: new Date(t).toISOString(), event: 'live_provider_open', liveSessionId: SESSION }),
+    JSON.stringify({ timestamp: new Date(t + 3000).toISOString(), event: 'live_terminal', liveSessionId: SESSION, state: 'closed', code: 'voice_stop' }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.start, t);
+  assert.equal(rows[0]?.durationMs, 3000);
+});
+
 test('W18: an open with no terminal prints open, no terminal and never a duration', () => {
   const t = 1792486800000;
   const rows = listCalls(scanOf([

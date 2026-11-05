@@ -886,32 +886,46 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // C-CHAT (L4-04): the direct and group conversations by their last post, never the first few in list
     // order. A child whose channel list has no recency cannot say which ones moved, so that leg is skipped
     // and the digest says which capability is missing.
-    const recent = listFilters().types && listFilters().sort
+    const recencyReadable = Boolean(listFilters().types && listFilters().sort);
+    const recent = recencyReadable
       ? read('mattermost_list_channels', { types: ['D', 'G'], sort: 'recent', limit: MATTERMOST_ATTENTION.maxDmChannels }, halt)
       : Promise.resolve(undefined);
     // Wave one: the two searches and the recency list. Losing it loses the thread seeds with it.
     const first = await wave([written, mentions, recent]);
-    if (!first.complete) return finish(['mentions', 'threads']);
-    const [writtenRead, mentionsRead, recentRead] = first.values as [ChildRead, ChildRead, ChildRead | undefined];
+    const [writtenRead, mentionsRead, recentRead] =
+      first.values as [ChildRead | undefined, ChildRead | undefined, ChildRead | undefined];
+    // C-W17: when the budget ends inside this wave, the entries that answered are read below exactly as
+    // the later waves read theirs, and only the legs that did not answer are named in the coverage line.
+    const unanswered = first.complete ? [] : [
+      ...(writtenRead === undefined ? ['own_written'] : []),
+      ...(mentionsRead === undefined ? ['mentions'] : []),
+      ...(recentRead === undefined && recencyReadable ? ['channel_list'] : []),
+    ];
     // The owner's own-author search seeds threads whatever the channel: a thread nobody mentioned the
     // owner in never reaches the handle search.
-    if (!writtenRead.ok) return writtenRead.result;
-    capture(writtenRead.evidence);
-    for (const raw of postsIn(writtenRead.evidence.decodedResult) ?? []) {
-      const post = childPost(raw);
-      if (post !== undefined && post.at >= cutoff) threadCandidate(post);
+    if (writtenRead !== undefined) {
+      if (!writtenRead.ok) return writtenRead.result;
+      capture(writtenRead.evidence);
+      for (const raw of postsIn(writtenRead.evidence.decodedResult) ?? []) {
+        const post = childPost(raw);
+        if (post !== undefined && post.at >= cutoff) threadCandidate(post);
+      }
     }
     // Mentions: the child's own handle search, with the window and the handle itself checked here.
-    if (!mentionsRead.ok) return mentionsRead.result;
-    capture(mentionsRead.evidence);
-    for (const raw of postsIn(mentionsRead.evidence.decodedResult) ?? []) {
-      const post = childPost(raw);
-      if (post === undefined || post.at < cutoff) continue;
-      if (isOwnerPost(who.owner, post.author)) { threadCandidate(post); continue; }
-      if (!mentionsOwner(who.owner, post.text)) continue;
-      push('mention', post);
-      threadCandidate(post);
+    if (mentionsRead !== undefined) {
+      if (!mentionsRead.ok) return mentionsRead.result;
+      capture(mentionsRead.evidence);
+      for (const raw of postsIn(mentionsRead.evidence.decodedResult) ?? []) {
+        const post = childPost(raw);
+        if (post === undefined || post.at < cutoff) continue;
+        if (isOwnerPost(who.owner, post.author)) { threadCandidate(post); continue; }
+        if (!mentionsOwner(who.owner, post.text)) continue;
+        push('mention', post);
+        threadCandidate(post);
+      }
     }
+    // A first wave that lost a leg ends here, after the answers above are kept: never the hard-coded pair.
+    if (unanswered.length > 0) return finish(unanswered);
     // Direct and group conversations: the owner's own posts await no reply, but they seed the thread rule.
     if (recentRead === undefined) missing = 'direct messages by recency need the newer chat archive';
     else {

@@ -8,7 +8,7 @@
 // newer child's filtered page {total, returned, offset, channels} (types, sort, limit) with them. Post fields are the
 // concise shape {id, username, channel, timestamp, message, url}, and the declared limit maxima are
 // the child's own (search 50, channel history 200).
-// argv[2] = mode (window | no-window | no-thread | slow | slow-identity | stall-thread | stall-dm | error-mentions). DIDI_FAKE_MATTERMOST_LOG records every call.
+// argv[2] = mode (window | no-window | no-thread | slow | slow-identity | stall-thread | stall-dm | stall-channels | error-mentions). DIDI_FAKE_MATTERMOST_LOG records every call.
 import { appendFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -90,7 +90,10 @@ server.setRequestHandler('tools/call', async (request) => {
   // scan while that wave's other threads answer normally.
   if (mode === 'stall-thread' && name === 'mattermost_get_thread' && args.post_id === 'threadOpenRoot') await new Promise(resolve => setTimeout(resolve, 6_000));
   // #1016: one conversation history stalls while its sibling answers in the same wave.
-  if (mode === 'stall-dm' && name === 'mattermost_search' && args.channel === 'chanDirectDana') await new Promise(resolve => setTimeout(resolve, 6_000));
+  // C-W17: the first wave's searches answer and only the channel list stalls, so the digest must keep the
+// answered search items and name channel_list alone.
+if (mode === 'stall-channels' && name === 'mattermost_list_channels') await new Promise(resolve => setTimeout(resolve, 6_000));
+if (mode === 'stall-dm' && name === 'mattermost_search' && args.channel === 'chanDirectDana') await new Promise(resolve => setTimeout(resolve, 6_000));
   // #1016: a real upstream failure, which must stay a failure and never become a partial digest.
   if (mode === 'error-mentions' && name === 'mattermost_search' && String(args.query).startsWith('@')) return { isError: true, content: [{ type: 'text', text: 'archive unavailable' }] };
   const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });

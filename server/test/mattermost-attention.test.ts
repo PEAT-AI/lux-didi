@@ -397,3 +397,24 @@ test('R29 an actual native attention read advances task exposure, while invalid 
   assert.notEqual(result.status, 'failed', JSON.stringify(result));
   assert.ok(runtime.taskContext(revision.identity.task_id)?.exposures.includes('company'));
 });
+
+// C-W17: the first wave is the two searches plus the channel list. When the budget ends inside it, the
+// entries that answered are consumed exactly as the later waves consume theirs, and only the leg that did
+// not answer is named: never the hard-coded pair 'mentions, threads', which named a search that answered.
+test('C-W17: a first-wave budget end keeps the answered searches and names only channel_list', async t => {
+  const f = setup('stall-channels');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_000);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  // The stalled channel list answers after six seconds, so only the scan's own budget can end it here.
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled child (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from channel_list/u, 'the coverage line names the leg that did not answer');
+  assert.doesNotMatch(view.missing ?? '', /mentions|own_written|threads/u, 'the searches answered, so they are never named');
+  // Both searches answered: their items are kept, never dropped because the sibling leg stalled.
+  const kept = summaries(view.items);
+  assert.ok(kept.some(item => item.startsWith('mention ')), `the mention search's items are kept (${kept.join(' | ')})`);
+  assert.ok(kept.some(item => item.startsWith('dm ') || item.startsWith('thread ')), `the own-author search seeds are kept (${kept.join(' | ')})`);
+});

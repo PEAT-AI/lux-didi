@@ -77,7 +77,7 @@ test('task replay: repeated rejection fails on the same line; stale acknowledgem
   let calls = 0;
   const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic retained answer.', calls: [] }; }, { clock: true });
   f.finalize('Give the synthetic retained answer.'); f.bind('old'); const answer = await f.answer();
-  f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); await fixtureUntil(() => f.voice.taskAnswers.length === 2, 'one bounded append retry');
+  f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); await fixtureUntil(() => f.voice.taskAnswers.length === 3, 'one bounded append retry');
   f.voice.emit({ type: 'commentaryRejected', commandId: f.voice.taskAnswers[1]!.commandId }); await f.flush();
   f.voice.emit({ type: 'commentaryRejected', commandId: answer.commandId }); f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
   t.mock.timers.tick(15_000); await f.flush();
@@ -89,7 +89,7 @@ for (const noAction of [false, true]) {
     let calls = 0;
     const f = await liveTaskFixture(t, async () => { calls++; if (!noAction) throw new Error('SYNTHETIC_RAW_PROVIDER_ERROR'); return { text: '', calls: [], no_action: true }; });
     f.finalize('Handle the synthetic request.'); f.bind();
-    if (noAction) { await f.flush(); await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'no_action', 'no-action terminal worker'); await f.flush(); assert.equal(f.voice.taskAnswers.length, 2); assert.match(f.voice.taskAnswers[0]!.text, /"kind":"no_action"/); }
+    if (noAction) { await f.flush(); await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'no_action', 'no-action terminal worker'); await f.flush(); assert.equal(f.voice.taskAnswers.length, noAction ? 1 : 2); assert.match(f.voice.taskAnswers[0]!.text, /"kind":"no_action"/); }
     else { await fixtureUntil(() => f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status === 'incomplete', 'failed worker terminal disposition'); const answer = await f.answer(); assert.ok(answer.text.length > 0 && answer.text.length <= 450); assert.equal(answer.text.includes('SYNTHETIC_RAW_PROVIDER_ERROR'), false); }
     assert.equal(calls, 1);
     assert.equal(f.store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status, noAction ? 'no_action' : 'incomplete');

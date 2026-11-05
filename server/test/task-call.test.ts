@@ -230,19 +230,20 @@ test('C-SILENCE: no action survives unready replacement and late delegation', as
 test('C-SILENCE: twice rejected remainder stays owed until socket ready', async t => {
   const f = fixture(t, async () => ({ text: 'Synthetic retained answer.', calls: [] }));
   await f.call.input('Synthetic ask', 1);
-  f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2'); assert.equal(f.results().length, 2);
+  f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2'); assert.equal(f.sent.length, 2);
   assert.ok(f.call.delivery.waitingAnswer());
-  f.call.socket(2); assert.equal(f.results().length, 3);
-  f.call.delivery.accepted('c3'); f.call.delivery.ready(); assert.equal(f.results().length, 3);
+  f.call.socket(2); assert.equal(f.sent.length, 3);
+  f.call.delivery.accepted('c3'); assert.equal(f.sent.length, 4, 'accepted header releases content');
+  f.call.delivery.accepted('c4'); f.call.delivery.ready(); assert.equal(f.sent.length, 4);
 });
 for (const rejected of [false, true]) test(`C-SILENCE: newer revision retires terminal debt rejected=${rejected}`, async t => {
   let runs = 0;
   const f = fixture(t, async () => ++runs === 1 ? { text: rejected ? 'Synthetic old.' : '', calls: [], ...(!rejected ? { no_action: true } : {}) } : { text: '', calls: [], no_action: true });
   await f.call.input('Synthetic old ask', 1);
   if (rejected) { f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2'); }
-  await f.call.input('Synthetic new ask', 2); const count = f.results().length;
-  f.call.delegation('new'); assert.equal(f.results().length, count + 1);
-  assert.match(f.results().at(-1)!.text, /No lookup is needed/);
+  await f.call.input('Synthetic new ask', 2); const count = f.sent.length;
+  f.call.delegation('new'); assert.equal(f.sent.length, count + 1);
+  assert.equal(commentaryPart(f.sent.at(-1)!.text).kind, 'no_action');
 });
 for (const text of ['', ' ', '\n']) test(`C-SILENCE: blank composition keeps findings and coverage ${JSON.stringify(text)}`, async t => {
   let runs = 0;
@@ -256,9 +257,9 @@ test('C-SILENCE: recovery rejection waits for another event, not activity', asyn
   const f = fixture(t, async () => ({ text: 'Synthetic retained.', calls: [] }));
   await f.call.input('Synthetic retry ask', 1);
   f.call.delivery.rejected('c1'); f.call.delivery.rejected('c2');
-  f.call.socket(2); f.call.delivery.rejected('c3'); assert.equal(f.results().length, 3);
-  f.call.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.results().length, 3);
-  f.call.delegation('retry'); assert.equal(f.results().length, 4);
+  f.call.socket(2); f.call.delivery.rejected('c3'); assert.equal(f.sent.length, 3);
+  f.call.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.sent.length, 3);
+  f.call.delegation('retry'); assert.equal(f.sent.length, 4);
 });
 
 test('SILENCE-R1: failed composition speaks plain findings with one incomplete clause', async t => {

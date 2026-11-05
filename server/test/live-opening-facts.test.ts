@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics } from '../prompt/live-persona.js';
+import { buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript } from '../prompt/live-persona.js';
 
 const now = Date.parse('2026-11-05T09:00:00Z');
 const base = { now, timeZone: 'Europe/London', familyNames: ['Alice'], floorSubjects: ['Freya', 'boat'] };
@@ -56,4 +56,17 @@ test('only the last three delivered calls contribute excluded semantic topics', 
   const opening = buildOpeningFacts({ ...base, excludeTopics });
   assert.deepEqual(opening.facts.exclude_topics, ['sleep', 'marathon', 'architecture']);
   assert.ok(!opening.section.includes('older'));
+});
+
+test('host floor inputs follow family roster membership, aliases and authored off-limit subjects', () => {
+  const floors = openingContextFloors([{ name: 'Alice Smith', aliases: ['Ally'], circle: 'family' },
+    { name: 'Morgan', aliases: [], circle: 'work' }], 'Never joke about Selene. Architecture is a fine subject for humour.');
+  const result = buildOpeningFacts({ now, timeZone: 'UTC', ...floors, day: ['2026-11-05 Alice birthday', '2026-11-05 Ally lunch', '2026-11-05 Selene repairs', '2026-11-05 Morgan architecture review'] });
+  assert.deepEqual(result.facts.day, ['2026-11-05 Morgan architecture review']);
+});
+
+test('first turn includes every transcription segment and stops before later assistant turns', () => {
+  assert.equal(openingTurnTranscript([{ kind: 'inputTranscription', text: 'Hello' },
+    { kind: 'outputTranscription', text: 'The architecture ' }, { kind: 'outputTranscription', text: 'review is next.' },
+    { kind: 'turnComplete', text: null }, { kind: 'outputTranscription', text: 'Another topic' }]), 'The architecture review is next.');
 });

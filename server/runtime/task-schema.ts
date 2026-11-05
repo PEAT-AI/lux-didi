@@ -51,7 +51,7 @@ export interface OperationRecord extends TaskRecord {
 /** Owner-local diagnostics for delivered first assistant turns, never offered candidates. */
 export const openingMigrations: readonly SchemaMigration[] = [{ owner: 'opening-topics', version: 1, statements: [
   `CREATE TABLE delivered_opening_topics (
-    call_id TEXT PRIMARY KEY REFERENCES live_sessions(live_session_id) ON DELETE CASCADE,
+    call_id TEXT PRIMARY KEY,
     utc INTEGER NOT NULL, topics TEXT NOT NULL
   )`,
   'CREATE INDEX delivered_opening_topics_utc ON delivered_opening_topics(utc)',

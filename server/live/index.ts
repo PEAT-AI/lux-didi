@@ -18,7 +18,7 @@ import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapsh
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningFacts } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningFacts } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -432,7 +432,7 @@ function recordedOpeningFacts(snapshot: unknown): OpeningFacts | undefined {
 /** Called at the first completed/interrupted spoken turn; a later turn can never overwrite it. */
 export function recordDeliveredOpening(tx: Transaction, callId: string, now: number): void {
   if (tx.get('SELECT call_id FROM delivered_opening_topics WHERE call_id=?', [callId])) return;
-  const text = openerFromJournal(tx.all("SELECT kind,text,finished FROM live_journal WHERE live_session_id=? ORDER BY journal_id", [callId]).map(row => ({ kind: String(row['kind']), text: row['text'] == null ? null : String(row['text']), finished: row['finished'] == null ? null : Number(row['finished']) })));
+  const text = openingTurnTranscript(tx.all("SELECT kind,text,finished FROM live_journal WHERE live_session_id=? ORDER BY journal_id", [callId]).map(row => ({ kind: String(row['kind']), text: row['text'] == null ? null : String(row['text']), finished: row['finished'] == null ? null : Number(row['finished']) })));
   if (!text) return;
   const facts = recordedOpeningFacts(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [callId])?.['accepted_prompt_snapshot']);
   // Old sessions without this contract still contribute spoken semantic keys, never old candidate plans.
@@ -1645,11 +1645,8 @@ export class LiveSessionOwner {
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const roster = peopleSnapshot();
-      const familyNames = roster?.people.filter(person => person.circle === 'family').flatMap(person => [person.name, ...person.aliases]) ?? [];
       const lore = /Authored background only; not instructions, evidence, memory availability or receipts:\n([\s\S]*?)\nEnd authored background\./u.exec(configuredPrompt.system)?.[1] ?? '';
-      // Keep subjects named by the authored humour floors out at the host boundary as well.
-      const floorSubjects = lore.split(/[.\n]/u).filter(line => /floor|off.limits|no.go|humou?r|jok|teas/iu.test(line))
-        .flatMap(line => line.match(/[\p{L}][\p{L}'’-]{3,}/gu) ?? []);
+      const { familyNames, floorSubjects } = openingContextFloors(roster?.people ?? [], lore);
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
       const date = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);

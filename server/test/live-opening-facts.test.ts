@@ -1,3 +1,4 @@
+import { safeEvent } from '../host/log.js';
 import { DatabaseSync } from 'node:sqlite';
 import { taskMigrations, pruneOpeningTopics } from '../runtime/task-schema.js';
 import test from 'node:test';
@@ -91,4 +92,15 @@ test('opening diagnostic retention removes old rows and bounds even a burst of c
     assert.equal(db.prepare('SELECT call_id FROM delivered_opening_topics WHERE call_id=?').get('call-0'), undefined);
     assert.equal(db.prepare('SELECT call_id FROM delivered_opening_topics WHERE call_id=?').get('call-104')?.['call_id'], 'call-104');
   } finally { db.close(); }
+});
+
+test('opening log admits only the closed counts envelope and rejects private payloads', () => {
+  const event = { event: 'opener_facts', day: 2, commitments: 1, saved_for_him: 0, open_thread: 1, exclude_topics: 3 };
+  assert.deepEqual(safeEvent(event), event);
+  for (const key of ['day', 'commitments', 'saved_for_him', 'open_thread', 'exclude_topics']) {
+    for (const invalid of [-1, 0.5, NaN, Infinity, 'private fact', ['sleep'], null]) assert.equal(safeEvent({ ...event, [key]: invalid }), undefined);
+  }
+  assert.equal(safeEvent({ ...event, facts: 'private calendar title' }), undefined);
+  assert.equal(safeEvent({ ...event, topics: ['sleep'] }), undefined);
+  assert.equal(safeEvent({ event: 'opener_plan', kinds: ['calendar'], rotation: 0 }), undefined);
 });

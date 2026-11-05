@@ -206,9 +206,9 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
           const nativeCode = 'reason' in result ? result.reason : connectorFailures.get(result)?.nativeCode ?? code;
           const connectorCode = connectorFailureKind(nativeCode);
           binding.reportFailure?.(tool, code, connectorCode);
-          const wrongReference = name.startsWith('read_') && ['grant_missing', 'bad_reference', 'not_found'].includes(connectorCode);
+          const wrongReference = name.startsWith('read_') && ['grant_missing', 'bad_reference'].includes(connectorCode);
           const reason = reasonCodeFor(nativeCode);
-          const shaped = wrongReference ? readerFailure(name, 'wrong_source_id') : readerFailure(name, failureCategory(nativeCode), connectorCode === 'upstream_unavailable' && reason === 'unknown' ? 'source_down' : reason);
+          const shaped = wrongReference ? readerFailure(name, 'wrong_source_id') : connectorCode === 'not_found' && name.startsWith('read_') ? readerFailure(name, 'not_found') : readerFailure(name, failureCategory(nativeCode), connectorCode === 'upstream_unavailable' && reason === 'unknown' ? 'source_down' : reason);
           return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair };
         };
         if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode, mapping.tool);

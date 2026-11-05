@@ -98,7 +98,7 @@ export function readerFailure(name: string, category: FailureCategory, reason: R
     : category === 'timeout' || category === 'unavailable' || category === 'upstream_error' ? 'Retry this source or use other verified findings.'
     : category === 'cancelled' ? 'Continue in the current task using verified findings.' : 'Repair the identifier or cursor before retrying.';
   hostLogEvent({ event: 'tool_failure', tool: name, category });
-  return failed(`${identifier} ${action} This read did not complete; do not infer absence.`, category, reason);
+  return failed(`${category === 'not_found' ? 'Search again and read an id the search returned. ' : ''}${identifier} ${action} This read did not complete; do not infer absence.`, category, reason);
 }
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
 export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour'; rank?: number; snippet_status?: 'not_supplied' }

@@ -166,3 +166,16 @@ test('CLI reports dated private prices only for the configured model', () => {
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('ordinary and question-accepted abstentions pass without excusing appended fabrications', async () => {
+  const { score } = await api();
+  const q = { ...question, kind: 'abstain', required_facts: [] };
+  const trace = { status: 'complete', findings: [{ source: 'vault', status: 'empty' }], opened: [], writes: 0 };
+  for (const text of ['I found no matching records.', 'No results found. I cannot answer that from this source.']) {
+    assert.equal(score(q, { ...trace, text }).correct, true);
+    assert.equal(score(q, { ...trace, text: text + ' The answer is a fabricated synthetic fact.' }).correct, false);
+  }
+  const custom = { ...q, required_facts: [['The supplied records do not establish that answer.']] };
+  assert.equal(score(custom, { ...trace, text: 'The supplied records do not establish that answer.' }).correct, true);
+  assert.equal(score(custom, { ...trace, text: 'The supplied records do not establish that answer. The answer is a fabricated synthetic fact.' }).correct, false);
+});

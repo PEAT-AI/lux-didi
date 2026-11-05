@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { liveTaskFixture } from './live-task-fixture.js';
 import { fixtureUntil, deferred } from './live-voice-fixture.js';
 import { documentResult } from '../tasks/results.js';
+import { commentaryResults } from './commentary-test.js';
 
 // Retrieved work lives in the host task, not in a provider research-context byte counter.
 test('host task context carries captured evidence and continuation into the next worker step', async t => {
@@ -58,5 +59,6 @@ test('newer owner words supersede pending work while retaining their ordered con
   await fixtureUntil(() => inputs.length === 2, 'corrected owner revision');
   assert.ok(inputs[1]!.indexOf('original synthetic selection') < inputs[1]!.indexOf('second synthetic selection'));
   release.resolve(); assert.equal((await f.answer()).text, 'The corrected synthetic result.'); await f.flush();
-  assert.equal(f.voice.taskAnswers.length, 1); assert.equal(f.voice.taskAnswers[0]?.delegationId, 'corrected');
+  const envelopes = commentaryResults(f.voice.taskAnswers);
+  assert.equal(envelopes.length, 1); assert.equal(envelopes[0]?.delegationId, 'corrected');
 });

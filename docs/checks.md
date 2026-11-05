@@ -26,13 +26,13 @@ binaries run outside the lock: only the compiler is inside it.
 
 ## The release gate
 
-Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time, then `check-package`; CI runs the same script with `--ci` on every pull request into `main`, so this fixed list is the pull request gate. It sees only the checks it names; the combined-tree gate below sees every file the branch changed.
+Before a release, run these thirteen at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`, `check-helper-provider`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time, then `check-package`; CI runs the same script with `--ci` on every pull request into `main`, so this fixed list is the pull request gate. It sees only the checks it names; the combined-tree gate below sees every file the branch changed.
 
 `bash scripts/check-combined-tree.sh <base> <head>` is the release gate: it maps every file the branch changed to its checks and runs that union at the head, so a release never ships a file no check covers.
 
 ## What CI runs and what stays local
 
-Nine of the twelve need nothing macOS: they install from the npm cache, compile TypeScript, and run node test files. Those nine are the gate CI reproduces, in this order:
+Nine of the thirteen need nothing macOS: they install from the npm cache, compile TypeScript, and run node test files. Those nine are the gate CI reproduces, in this order:
 
 `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-web-unit`, `check-install-smoke`.
 
@@ -40,7 +40,7 @@ Nine of the twelve need nothing macOS: they install from the npm cache, compile 
 fixture checks: one passes, one fails, one prints `CHECK BLOCKED`, and the blocked one is counted
 apart from the failed one while both still fail the gate.
 
-`check-package` is the tenth check CI runs. It packs the service from a clean `git archive`, installs the tarball offline into an empty cache and runs the package tests, so it needs `git`, `npm`, `tar` and `node` and no macOS tool. It is not one of the twelve above, and the gauntlet runs it last because it builds and reinstalls the whole service.
+`check-package` is the tenth check CI runs. It packs the service from a clean `git archive`, installs the tarball offline into an empty cache and runs the package tests, so it needs `git`, `npm`, `tar` and `node` and no macOS tool. It is not one of the thirteen above, and the gauntlet runs it last because it builds and reinstalls the whole service.
 
 ### Check inventory
 
@@ -61,13 +61,14 @@ Those ten run in three parallel jobs, one per group below. Each group is its own
 
 `ci-success` is the one status a branch protection can require: it needs the gate job and passes only when its result is `success`, so a failed, cancelled or blocked leg fails `ci-success`.
 
-The three that stay local, and the reason from the script itself:
+The four that stay local, and the reason from the script itself:
 
 | Check | Why it cannot run on an ubuntu runner |
 | --- | --- |
 | `check-native-live` | compiles Swift with `xcrun swiftc` under `scripts/with-compile-lock.sh` and builds the app bundle with `scripts/build-macos-app.sh` |
 | `Tests/DidiMacTests/check-mac.sh` | compiles `Sources/LuxDidi/*.swift` and `Tests/DidiMacTests/main.swift` with `xcrun swiftc`, then runs the binary |
 | `check-host` | takes the `lux-browser-slot` lease on the shared GPU renderer and drives `server/test/host-browser.mjs`; without that lease the check is blocked, not skipped |
+| `check-helper-provider` | sends one real request to the owner's configured provider with the owner's own credential, which an ubuntu runner does not have; with no provider configuration it prints SKIP |
 
 A gate check that runs past twenty minutes is a defect; the CI job is under fifteen in practice and fails on the job timeout at twenty.
 
@@ -83,6 +84,7 @@ A gate check that runs past twenty minutes is a defect; the CI job is under fift
 | `check-live-session` | session | Linux-portable | built server and the live suites' local provider adapters |
 | `check-model` | - | Linux-portable | server TypeScript and `@types/node` installed |
 | `check-host` | - | Mac only | Swift toolchain, a built app bundle and the `lux-browser-slot` lease |
+| `check-helper-provider` | - | Mac only | the owner's configured provider directory and its credential, plus a built server `dist` |
 | `check-host-entry` | - | Linux-portable | a clean committed tree and a built `dist` |
 | `check-service` | - | Linux-portable | `npm ci` in `server` |
 | `check-connected` | - | Linux-portable | the renderer lease and a built server and web |
@@ -275,6 +277,48 @@ imports it, so `check-host.sh` also fails if any non-`test/`, non-`eval/` source
 | Check | Evidence |
 | --- | --- |
 | `scripts/check-installed-alarm.sh [app target]` | Runs the four alarm tools, stub-clock delivery, fake-shell frames and alarm setup against packaged host modules, with synthetic state and no audio or app launch. With no target it stages an offline package; an explicit target never falls back to the checkout. The installed-check discovery runner finds this script automatically. |
+
+## The helper's provider contract (one paid request)
+
+`scripts/check-helper-provider.sh` sends exactly one real request to the owner's configured provider and
+proves the whole declared tool set of this build is one the provider accepts. It exists because release
+10.12 shipped `read_knowledge.ids` with `uniqueItems` under `strict: true`, and OpenAI answered HTTP 400
+for every helper request until 10.13.
+
+The declared set is the static declarations plus the company tools of every configured endpoint. The
+product keeps no offline cache of published company declarations: `tool_connections.policy_json` carries
+`toolNames` and `schemaDigest` only, and `mongoosePublishCatalogue` has no persisted form, so an
+endpoint's schemas exist only inside a live connection. For 10.13 the source is therefore the committed
+capture `server/test/fixtures/mongoose-tools-list-literal.json`, and **live-discovery parity is not
+claimed**: every run prints
+`HELPER-PROVIDER WARN source=committed-capture path=... captured=YYYY-MM-DD live-parity=not-claimed`.
+Persisting the discovered declarations in the store is a wave-2 wagon; when it lands, `--capture` names
+a source explicitly and a missing capture for a configured endpoint is `reason=discovery_missing`. The request goes through the packaged model port
+(`server/dist`, rebuilt when a source file is newer), the installed role from `loadTaskModels(configDir)`
+and the real credential resolver for the provider key. The check never connects a connector, never
+resolves a sign-in material, never refreshes an OAuth grant and never copies or writes the owner's
+configuration: connector liveness and sign-in state are `check-installed-connectors.sh`'s job, so this
+check proves the schemas whatever the token state. It prints closed states, counts and timings only:
+never the key, never owner content.
+
+- `HELPER-PROVIDER PASS` requires the observed registry to equal the expected one: every run prints
+  `expected=<static>+<company> observed=<n>`, and PASS also needs a `completed` response that names a
+  registered tool.
+- A configured endpoint with no cached discovery is exit 2 `reason=discovery_missing`, naming the
+  endpoint: it is never skipped and never passes, because its declarations would ship unproved.
+- A registry smaller than the configuration requires is exit 2 `reason=company_bindings_unavailable`.
+- exit 2 also prints the redacted provider error body (bounded to 2 KB) when the provider rejected the
+  schema.
+- exit 3 prints SKIP when the machine has no provider configuration, or configures a provider that
+  does not take the OpenAI strict shape. A machine with nothing configured has nothing to prove.
+- A run costs well under USD 0.01. Do not loop it.
+
+A catalogue source is a dated artifact: a company tool the endpoint publishes but the source does not
+carry is not sent, so the source has to be refreshed when the endpoints gain tools.
+
+It runs in `scripts/run-installed-checks.sh`, so `scripts/install-macos-app.sh` restores the prior app
+when it fails, and it is a local check of `scripts/ci-gauntlet.sh` (`check-helper-provider:local`). It is
+never part of a GitHub CI run, which has no provider key.
 
 ## Installed real-provider canary (opt-in, paid)
 

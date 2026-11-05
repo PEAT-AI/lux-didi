@@ -1,3 +1,4 @@
+import { redactSecrets } from '../tools/redact.js';
 import { FAILURE_CATEGORIES, REASON_CODES } from '../tasks/results.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
@@ -187,9 +188,33 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       !['sent', 'accepted', 'retry', 'undelivered'].includes(String(value.state))) return;
     return { event: 'task_delivery', taskId: value.taskId, revision: value.revision, state: value.state };
   }
+  if (value.event === 'task_inference_failed') {
+    const reasons = ['provider_rejected', 'provider_auth', 'provider_rate_limited', 'provider_unavailable', 'provider_incomplete', 'provider_empty', 'credential_unavailable', 'provider_timeout', 'deadline'];
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'stage', 'reason_code', 'status', 'model', 'tool_count', 'instruction_chars', 'elapsed_ms', 'detail']) ||
+      typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.revision) ||
+      !['inference', 'final'].includes(String(value.stage)) || !reasons.includes(String(value.reason_code)) ||
+      (value.status !== undefined && (!isSafeCount(value.status) || Number(value.status) > 599)) ||
+      typeof value.model !== 'string' || !/^[A-Za-z0-9_.:/-]{1,100}$/.test(value.model) ||
+      !isSafeCount(value.tool_count) || !isSafeCount(value.instruction_chars) || !isSafeCount(value.elapsed_ms) || typeof value.detail !== 'string') return;
+    return { ...value, detail: redactSecrets(value.detail).slice(0, 2000) };
+  }
+  if (value.event === 'task_runtime_rejected') {
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'reason_code']) || value.reason_code !== 'runtime_rejected' ||
+      (value.taskId !== undefined && (typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId))) ||
+      (value.revision !== undefined && !isSafeCount(value.revision))) return;
+    return value;
+  }
+  if (value.event === 'task_settled') {
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'status', 'reason_code', 'findings', 'elapsed_ms']) ||
+      typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.revision) ||
+      !['complete', 'no_action', 'incomplete', 'cancelled'].includes(String(value.status)) ||
+      (value.reason_code !== undefined && !['provider_rejected', 'provider_auth', 'provider_rate_limited', 'provider_unavailable', 'provider_incomplete', 'provider_empty', 'credential_unavailable', 'provider_timeout', 'deadline', 'runtime_rejected'].includes(String(value.reason_code))) ||
+      !isSafeCount(value.findings) || !isSafeCount(value.elapsed_ms)) return;
+    return value;
+  }
   if (value.event === 'task_lifecycle') {
     if (!closedKeys(value, ['event', 'phase', 'taskId', 'revision', 'generation', 'count', 'ms']) ||
-      !['start', 'revision', 'inference', 'calls', 'dedupe', 'deadline', 'cancel', 'complete', 'stale', 'delivery'].includes(String(value.phase)) ||
+      !['start', 'revision', 'inference', 'calls', 'dedupe', 'deadline', 'cancel', 'complete', 'incomplete', 'cancelled', 'stale', 'delivery'].includes(String(value.phase)) ||
       typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.generation) ||
       !isSafeCount(value.revision) || !isSafeCount(value.count) || !isSafeCount(value.ms)) return;
     return { event: 'task_lifecycle', phase: value.phase, taskId: value.taskId, generation: value.generation, revision: value.revision, count: value.count, ms: value.ms };

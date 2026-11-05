@@ -1789,7 +1789,9 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
           const unavailable = await task.runtime.runTool('read_knowledge', { ids: [1], include_links: true, cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
           assert.equal(unavailable.status, 'failed', 'an unpublished native read must not become a usable task capability');
         }
-        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).ids, { type: 'array', minItems: 1, maxItems: 6, uniqueItems: true, items: { type: 'integer', minimum: 1 } });
+        // The provider's strict mode refuses uniqueItems, so the ids keep their bounds only and the
+        // distinct-id rule is a validate rule on the same agent (server/test/task-tools-provider-shape.test.ts).
+        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).ids, { type: 'array', minItems: 1, maxItems: 6, items: { type: 'integer', minimum: 1 } });
       } finally { task.close(); }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));

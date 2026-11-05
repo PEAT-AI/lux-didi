@@ -1,7 +1,15 @@
+import { redactSecrets } from '../tools/redact.js';
 import type { Credentials, Transport } from '../adapters/model/types.js';
 import { geminiDialect } from '../tools/declarations.js';
 import type { Infer, InferRequest, Inference, ToolCall } from './worker.js';
 import type { Schema } from './tools.js';
+export const PROVIDER_REASONS = ['provider_rejected', 'provider_auth', 'provider_rate_limited', 'provider_unavailable', 'provider_incomplete', 'provider_empty', 'credential_unavailable', 'provider_timeout'] as const;
+export class ProviderError extends Error {
+  readonly detail: string;
+  constructor(readonly reason_code: typeof PROVIDER_REASONS[number], detail = '', readonly status?: number, readonly request_id?: string) {
+    super(reason_code); this.name = 'ProviderError'; this.detail = redactSecrets(detail).slice(0, 2000);
+  }
+}
 export const DEFAULT_WORKER_MODEL = 'gpt-6.1-terra';
 export const DEFAULT_WORKER_EFFORT = 'low';
 export interface ModelRole { provider: 'openai' | 'gemini'; model: string; effort: 'low' | 'medium' | 'high'; keyReference: string }
@@ -29,6 +37,7 @@ function terminal(text: string, calls: ToolCall[]): Inference {
   try {
     const value = record(JSON.parse(text));
     if (!calls.length && value.status === 'no_action') return { text: '', calls, no_action: true };
+    if (!calls.length && typeof value.spoken === 'string') return { text: value.spoken, calls, ...(Array.isArray(value.exact) && value.exact.every(item => typeof item === 'string') ? { exact: value.exact as string[] } : {}) };
   } catch { /* A regular final answer is text. */ }
   return { text, calls };
 }
@@ -40,10 +49,12 @@ const terminalRule = '\nFor plain conversation with no action, return the JSON o
 /** No credential discovery here: the host supplies its existing reference resolver. */
 export function createModelPort(options: ModelOptions): Infer {
   return async (request, signal) => {
-    if (options.role.provider === 'gemini' && !options.role.model) throw new Error('Configure the Gemini role model explicitly');
+    if (options.role.provider === 'gemini' && !options.role.model) throw new ProviderError('provider_unavailable', 'gemini_model_unconfigured');
     const role: ModelRole = { provider: options.role.provider ?? 'openai', model: options.role.model ?? DEFAULT_WORKER_MODEL, effort: options.role.effort ?? DEFAULT_WORKER_EFFORT, keyReference: options.role.keyReference };
-    const key = await options.credentials.resolve(role.keyReference);
-    if (!key || signal.aborted) throw new Error('Worker credential unavailable or revision cancelled');
+    let key: string | undefined;
+    try { key = await options.credentials.resolve(role.keyReference); } catch { throw new ProviderError('credential_unavailable'); }
+    if (!key) throw new ProviderError('credential_unavailable');
+    if (signal.aborted) throw new ProviderError('provider_timeout');
     const send = options.transport ?? fetch;
     const allOutputs = new Map(request.outputs.map(output => [output.id, output]));
     let url: string, body: Record<string, unknown>, headers: Record<string, string>;
@@ -77,12 +88,24 @@ export function createModelPort(options: ModelOptions): Infer {
       body = { systemInstruction: { parts: [{ text: request.instructions + (options.kind === 'effect_check' ? '' : terminalRule) }] }, contents, tools: [{ functionDeclarations: declarations(request, 'gemini') }], generationConfig: { thinkingConfig: { thinkingLevel: role.effort.toUpperCase() } } };
       headers = { 'content-type': 'application/json', 'x-goog-api-key': key };
     }
-    const response = await send(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
-    if (!response.ok) throw new Error(`Worker provider HTTP ${response.status}`);
-    const json = record(await response.json());
+    let response: Response;
+    try { response = await send(url, { method: 'POST', headers, body: JSON.stringify(body), signal }); }
+    catch (error) { throw new ProviderError(signal.aborted ? 'provider_timeout' : 'provider_unavailable', error instanceof Error ? error.message : ''); }
+    if (!response.ok) {
+      const code = response.status === 401 || response.status === 403 ? 'provider_auth' : response.status === 429 ? 'provider_rate_limited' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected';
+      let detail = '';
+      try { detail = await response.text(); } catch { detail = 'response_body_unavailable'; }
+      throw new ProviderError(code, redactSecrets(detail.split(key).join('[REDACTED]')), response.status, response.headers.get('x-request-id') ?? response.headers.get('request-id') ?? undefined);
+    }
+    const requestId = response.headers.get('x-request-id') ?? response.headers.get('request-id') ?? undefined;
+    let raw: string;
+    try { raw = await response.text(); } catch { throw new ProviderError(signal.aborted ? 'provider_timeout' : 'provider_unavailable', 'response_body_unavailable', response.status, requestId); }
+    const detail = redactSecrets(raw.split(key).join('[REDACTED]')).slice(0, 2000);
+    let json: Record<string, unknown>;
+    try { json = record(JSON.parse(raw)); } catch { throw new ProviderError('provider_incomplete', detail, response.status, requestId); }
     const calls: ToolCall[] = []; const texts: string[] = [];
     if (role.provider === 'openai') {
-      if (json.status !== 'completed') throw new Error('Worker response incomplete');
+      if (json.status !== 'completed') throw new ProviderError('provider_incomplete', detail, response.status, requestId);
       for (const raw of Array.isArray(json.output) ? json.output : []) {
         const item = record(raw);
         if (item.type === 'function_call' && typeof item.name === 'string' && typeof item.call_id === 'string') calls.push({ id: item.call_id, name: item.name, args: callArgs(item.arguments) });
@@ -93,7 +116,7 @@ export function createModelPort(options: ModelOptions): Infer {
       }
     } else {
       const candidate = record((Array.isArray(json.candidates) ? json.candidates : [])[0]);
-      if (candidate.finishReason !== 'STOP') throw new Error('Worker response incomplete');
+      if (candidate.finishReason !== 'STOP') throw new ProviderError('provider_incomplete', detail, response.status, requestId);
       const content = record(candidate.content);
       for (const raw of Array.isArray(content.parts) ? content.parts : []) {
         const part = record(raw), call = record(part.functionCall);
@@ -101,7 +124,7 @@ export function createModelPort(options: ModelOptions): Infer {
         if (typeof call.name === 'string') calls.push({ id: typeof call.id === 'string' ? call.id : `gemini-${request.turns.length}-${calls.length}`, name: call.name, args: call.args });
       }
     }
-    if (!calls.length && !texts.length) throw new Error('Worker response empty');
+    if (!calls.length && !texts.length) throw new ProviderError('provider_empty', detail, response.status, requestId);
     const items = role.provider === 'openai' ? (Array.isArray(json.output) ? json.output : []) : (record(record((json.candidates as unknown[])[0]).content).parts as unknown[]);
     return { ...terminal(texts.join('\n'), calls), continuation: { provider: role.provider, items } };
   };

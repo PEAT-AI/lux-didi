@@ -1,3 +1,4 @@
+import { commentaryItems, resultCommentary } from '../tasks/delivery.js';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -60,7 +61,7 @@ test('the helper is told what she already said, and how far its chunks got', asy
   f.call.delivery.accepted('c1');
   assert.equal(f.sent.length, 2, 'the second chunk is offered once the first is accepted');
   await f.call.input('Second synthetic ask', 1);
-  assert.deepEqual(said(captured, 1), { text: answer, accepted: 1, total: 2, truncated: false },
+  assert.deepEqual(said(captured, 1), { text: answer, accepted: 1, total: commentaryItems(resultCommentary({ status: 'complete', text: answer, findings: [] })).length, truncated: false },
     'a cut answer is distinguishable from a finished one by accepted chunks of total');
 });
 
@@ -68,9 +69,9 @@ test('a finished delivery is told as fully accepted', async t => {
   const captured: Captured[] = [];
   const f = fixture(t, capture(() => ({ text: 'The only synthetic sentence.', calls: [] }), captured));
   await f.call.input('First synthetic ask', 1);
-  f.call.delivery.accepted('c1');
+  f.call.delivery.accepted('c1'); f.call.delivery.accepted('c2');
   await f.call.input('Second synthetic ask', 1);
-  assert.deepEqual(said(captured, 1), { text: 'The only synthetic sentence.', accepted: 1, total: 1, truncated: false });
+  assert.deepEqual(said(captured, 1), { text: 'The only synthetic sentence.', accepted: 2, total: 2, truncated: false });
 });
 
 test('said stays across a revision and across a provider socket rebuild', async t => {
@@ -153,5 +154,5 @@ test('the follow-up rules are judgments the helper applies, never lines to say',
     'when the status says nothing is running, say that nothing is running and give the real outcome',
   ]) assert.ok(WORKER_INSTRUCTIONS.includes(rule), rule);
   assert.doesNotMatch(WORKER_INSTRUCTIONS, /A short follow-up refers to the task before it/);
-  assert.doesNotMatch(WORKER_INSTRUCTIONS, /"/, 'no quoted line for her to say');
+  assert.doesNotMatch(WORKER_INSTRUCTIONS.replace('{"status":"no_action"}', ''), /"/, 'no quoted line for her to say');
 });

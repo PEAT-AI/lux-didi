@@ -85,3 +85,9 @@ test('chat TOOLS conduct is in the compiled instruction and its audited capabili
   const disabled = compilePrompt({ ...base, capabilities: chatCapabilities([], []) });
   assert.doesNotMatch(disabled.system, /TOOLS:/);
 });
+
+test('commentary delivery keeps its closed instruction section while teaching multipart data', async () => {
+  const { NAYA_WORK_DELIVERY } = await import('../prompt/live-persona.js');
+  assert.match(NAYA_WORK_DELIVERY, /same id and part i\/n/);
+  assert.match(NAYA_WORK_DELIVERY, /Header items carry kind, cause, what_failed, next_step and exact/);
+});

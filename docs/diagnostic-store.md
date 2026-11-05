@@ -78,3 +78,10 @@ columns in [debugging.md](debugging.md#the-task-audit-inside-call---audit-1012).
 records the first audible moment of the whole turn even when a later provider response produced the
 answer. `trace_utterance` holds one `final=1` row per owner sentence, including a sentence the
 model's speech cut off, which is finalized from its own deltas.
+
+Task schema version 3 adds `tasks.failure`, a JSON object with `stage` and
+`reason_code`, or JSON null when no helper inference failure occurred. The closed
+metadata survives the 30-day content pruning window and expires with task metadata.
+Provider detail is not retained in this column. `final_answer` keeps its existing
+text-only representation. This supports timeline inspection without retaining
+provider bodies on task rows.

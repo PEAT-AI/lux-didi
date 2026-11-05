@@ -540,14 +540,11 @@ test('the earlier-conversations section sits right after # Memory and yields bef
   assert.ok(huge.text.includes('SYNTHETIC retained memory'));
 });
 
-test('the recovery pickup line is the exact fixed text of release 3g-c', () => {
-  assert.equal(LIVE_RECOVERY_PICKUP, "The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner's last words.");
+test('the recovery pickup is typed connection data, not an opening sentence', () => {
+  assert.equal(LIVE_RECOVERY_PICKUP, '```COMMENTARY\n' + JSON.stringify({ kind: 'recovery', cause: 'connection_dropped', mid_answer: false }) + '\n```');
 });
-test('C-PICKUP: the mute pickup names the silence, never a dropped connection', () => {
-  assert.equal(LIVE_MUTE_PICKUP, "You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a result reports a failure, say in one short sentence that it failed; otherwise answer the owner's last words.");
-  for (const word of ['dropped', 'back', 'connection']) {
-    assert.equal(LIVE_MUTE_PICKUP.toLowerCase().includes(word), false, `the mute pickup never says ${word}`);
-  }
+test('C-PICKUP: mute pickup names provider silence without inventing a dropped connection', () => {
+  assert.equal(LIVE_MUTE_PICKUP, '```COMMENTARY\n' + JSON.stringify({ kind: 'recovery', cause: 'provider_silent', mid_answer: false }) + '\n```');
 });
 test('the voice surface asks for varied phrasing, never the same framing phrase twice', () => {
   assert.ok(NAYA_VOICE_SURFACE.includes('Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.'), 'the phrasing rule is stated verbatim');
@@ -800,9 +797,9 @@ test('PV1-R1: the accent head and tail blocks are pinned verbatim, and the voice
   assert.deepEqual([...LIVE_ACCENTS], ['indian-strong', 'indian-light', 'voice-default']);
   assert.equal(LIVE_DEFAULT_ACCENT, 'indian-strong');
   const WHO = 'You are a young woman from Pune who grew up speaking Indian English at home and at school, and you have never spoken any other accent.';
-  const HOLD = 'Stay in this accent for the whole session, in every single sentence, never drifting to an American or British accent. Examples of your phrasing: "Actually, the bicycle is balancing itself only, because of the steering." "See, the wheels are spinning, na, so it wants to go straight." "This is the thing, no? You just have to keep moving."';
-  const STRONG = 'Accent: speak English with a strong, clearly audible Indian English accent, as an educated native Indian English speaker does. Use syllable-timed rhythm with even stress instead of English stress-timing and vowel reduction. Pronounce t and d as retroflex, with the tongue curled back. Merge v and w into one soft sound. Use unaspirated p, t and k. Use clear full vowels, a rolled or tapped r, and the Indian English sing-song intonation with rising and falling pitch on phrases. Use natural Indian English phrasing such as "actually", "itself", "only", "na" and "no?". Do not caricature or exaggerate; keep it natural and fluent.';
-  const LIGHT = 'Accent: speak English with a gentle, natural Indian English accent, as an educated native Indian English speaker does. Use syllable-timed rhythm with even stress instead of English stress-timing and vowel reduction. Use clear full vowels, a rolled or tapped r, and the Indian English sing-song intonation with rising and falling pitch on phrases. Use natural Indian English phrasing such as "actually", "itself", "only", "na" and "no?". Do not caricature or exaggerate; keep it natural and fluent.';
+  const HOLD = 'Stay in this accent for the whole session, in every single sentence, never drifting to an American or British accent. The accent lives in the sound, the rhythm and the intonation of ordinary English, never in tag words or stock phrases, and every word you say is an English word.';
+  const STRONG = 'Accent: speak English with a strong, clearly audible Indian English accent, as an educated native Indian English speaker does. Use syllable-timed rhythm with even stress instead of English stress-timing and vowel reduction. Pronounce t and d as retroflex, with the tongue curled back. Merge v and w into one soft sound. Use unaspirated p, t and k. Use clear full vowels, a rolled or tapped r, and the Indian English sing-song intonation with rising and falling pitch on phrases. Let the sound, the rhythm and the intonation carry it: no tag words, no stock phrases, and English words only. Do not caricature or exaggerate; keep it natural and fluent.';
+  const LIGHT = 'Accent: speak English with a gentle, natural Indian English accent, as an educated native Indian English speaker does. Use syllable-timed rhythm with even stress instead of English stress-timing and vowel reduction. Use clear full vowels, a rolled or tapped r, and the Indian English sing-song intonation with rising and falling pitch on phrases. Let the sound, the rhythm and the intonation carry it: no tag words, no stock phrases, and English words only. Do not caricature or exaggerate; keep it natural and fluent.';
   assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].head, [WHO, STRONG, HOLD].join('\n\n'));
   assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].tail, HOLD);
   assert.equal(LIVE_ACCENT_PRESETS['indian-light'].head, [WHO, LIGHT, HOLD].join('\n\n'));
@@ -890,9 +887,9 @@ test('S4b: the voice surface carries backchannel and interruption policy section
 });
 
 test('S4b: the accent preset head and tail are byte-identical to the shipped voice anchors', () => {
-  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].head), 'f3d65e108053df0c32afe9c9003470359bc1d8b427b35f72994c82f7fd072a5d');
-  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-light'].head), '14fc697b526d6d289e65999c36da0a1f4e4efffdcbc39227ddae4057635bdaf2');
-  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].tail), 'f8592a00e9f57bf1fcccd8acceabf1c2488255cda92dcbd1f5397e53100e638e');
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].head), '22a7baf4f24ae787d99c0c3cd590baa7f7817ad761469712ab574f9b9dd04d50');
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-light'].head), '7da579031b731160b64f4ac9e968666a31d6ba35755c6c2b8db3b617c83e30f8');
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].tail), 'e760ab6e9927683f8504ed2ac351898e5031eecbeaa9b8514252686f0c8a8f77');
   assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].tail, LIVE_ACCENT_PRESETS['indian-light'].tail, 'both presets share the one tail');
 });
 
@@ -1412,7 +1409,7 @@ const HONESTY_CONTRADICTIONS = [
 test('C-PROMPT 10.11: she answers from herself and speaks of a lookup only in the turn she hands one off', () => {
   assert.match(NAYA_WORK_DELIVERY, /Everything else is yours and you answer it yourself, at once/);
   assert.match(NAYA_WORK_DELIVERY, /Speak of looking something up only in the turn you hand it off/);
-  assert.match(NAYA_WORK_DELIVERY, /Word may also be that nothing needs looking up/);
+  assert.match(NAYA_WORK_DELIVERY, /A no_action means answer from this conversation and your own mind/);
   assert.match(NAYA_WORK_DELIVERY, /You cannot see work in progress/);
   assert.match(NAYA_WORK_DELIVERY, /give what is there rather than only that it is incomplete/);
   assert.match(NAYA_VOICE_SURFACE, /that includes his pauses, his hesitations and any sentence he has not finished/);
@@ -1435,12 +1432,12 @@ test('HONESTY: the rendered voice instruction carries each honesty rule once and
 });
 
 // C-PROMPT: delivery states the facts exactly and the close asks only when a question is earned.
-test('C-PROMPT: delivery keeps the facts exact, adds her view after them, and the close asks only when earned', () => {
-  assert.match(NAYA_WORK_DELIVERY, /keeping every name, number, date and qualification/);
-  assert.match(NAYA_WORK_DELIVERY, /Say a person's name as it is written/);
-  assert.match(NAYA_WORK_DELIVERY, /A large amount may be said rounded in speech when the exact figure adds nothing and he did not ask for it/);
-  assert.match(NAYA_WORK_DELIVERY, /your own view may follow in your own voice/);
-  assert.match(NAYA_WORK_DELIVERY, /never summarise what he asked to hear/);
+test('C-PROMPT: delivery preserves exact entities and leaves other phrasing to her', () => {
+  assert.match(NAYA_WORK_DELIVERY, /Reproduce every exact entity verbatim/);
+  assert.match(NAYA_WORK_DELIVERY, /no rounding, dropping or rephrasing/);
+  assert.match(NAYA_WORK_DELIVERY, /Everything else is in your own voice/);
+  assert.match(NAYA_WORK_DELIVERY, /Add nothing the result does not say/);
+  assert.match(NAYA_WORK_DELIVERY, /never summarise what he asked to hear in full/);
   assert.equal(NAYA_CHARACTER.includes('Close with a costly question'), false, 'the base no longer orders a costly question');
   assert.match(NAYA_CHARACTER, /A closing question earns its place only when his answer would change what you do next/);
   assert.equal(NAYA_CHARACTER.includes('Say still about one'), false, 'the garbled still sentence is gone');

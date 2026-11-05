@@ -68,6 +68,7 @@ import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
 import { announcesLookup, lateFindingsText, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, previousOpeners, openersNote, OPENER_CONTEXT_CHARS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, fixtureUntil, fixtureSettled, options, pcm } from './live-voice-fixture.js';
+import { commentaryPart, commentaryResults } from './commentary-test.js';
 import { fixture as openAiFixture, options as openAiOptions, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OpenAiLiveVoiceAdapter } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
@@ -3205,10 +3206,12 @@ test('a finalized request produces one task answer without a provider tool batch
   assert.equal(inferences, 1); assert.equal(p.taskAnswers.length, 0, 'work starts before a binding but cannot speak there');
   p.emit({ type: 'delegation', delegationId: 'binding-answer' });
   await settlePort(); finish.resolve(); await settlePort();
+  await acceptTaskAnswer(p);
   assert.equal(inferences, 1, 'a provider delegation attaches to current work, not a second inference');
-  assert.equal(p.taskAnswers.length, 1);
-  assert.equal(p.taskAnswers[0]?.delegationId, 'binding-answer');
-  assert.equal(p.taskAnswers[0]?.text, 'Synthetic records were checked.');
+  const answers = commentaryResults(p.taskAnswers);
+  assert.equal(answers.length, 1);
+  assert.equal(answers[0]?.delegationId, 'binding-answer');
+  assert.equal(answers[0]?.text, 'Synthetic records were checked.');
   assert.equal(p.toolResponses.length, 0, 'client mode has no function-call output carrier');
 });
 
@@ -3688,6 +3691,15 @@ const audibleFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, 
 /** The fixture port forwards any port event; its declared union predates tool calls and the silence model. */
 const portEvent = (event: unknown) => event as never;
 const settlePort = async (): Promise<void> => { for (let i = 0; i < 12; i++) await tick(); };
+/** Accept each envelope part in turn, as the real client does, so the whole answer reaches the wire. */
+const acceptTaskAnswer = async (voice: { taskAnswers: { text: string; commandId: string }[]; emit: (event: { type: 'commentaryAccepted'; commandId: string }) => void }): Promise<void> => {
+  for (let guard = 0; guard < 8; guard++) {
+    const pending = voice.taskAnswers.at(-1);
+    if (!pending || commentaryPart(pending.text).final) return;
+    voice.emit({ type: 'commentaryAccepted', commandId: pending.commandId });
+    await settlePort();
+  }
+};
 
 
 
@@ -5415,7 +5427,8 @@ test('a pending task owns silence without an old tool batch or background job', 
   assert.equal(p.sessionsOpened, 1, 'the watchdog must not recreate a socket during worker inference');
   assert.equal(p.taskAnswers.length, 0);
   release.resolve(); await settlePort();
-  assert.equal(p.taskAnswers[0]?.text, 'The synthetic work finished.');
+  await acceptTaskAnswer(p);
+  assert.equal(commentaryResults(p.taskAnswers)[0]?.text, 'The synthetic work finished.');
 });
 
 test('barge-in and a finalized correction suppress the old answer and keep only current work', async t => {
@@ -5439,9 +5452,11 @@ test('barge-in and a finalized correction suppress the old answer and keep only 
   await settlePort(); release.resolve(); await settlePort();
   assert.equal(signals[0]?.aborted, true);
   assert.equal(inferences, 2);
-  assert.equal(p.taskAnswers.length, 1);
-  assert.equal(p.taskAnswers[0]?.text, 'The corrected synthetic answer.');
-  assert.equal(p.taskAnswers[0]?.delegationId, 'corrected-binding');
+  await acceptTaskAnswer(p);
+  const corrected = commentaryResults(p.taskAnswers);
+  assert.equal(corrected.length, 1);
+  assert.equal(corrected[0]?.text, 'The corrected synthetic answer.');
+  assert.equal(corrected[0]?.delegationId, 'corrected-binding');
 });
 
 test('a socket rebuild retains pending work and answers only the fresh delegation', async t => {
@@ -5463,9 +5478,11 @@ test('a socket rebuild retains pending work and answers only the fresh delegatio
   p.emit({ type: 'delegation', delegationId: 'fresh-binding' });
   await settlePort(); release.resolve(); await settlePort();
   assert.equal(inferences, 1, 'socket rebuild must not redispatch a task or an effect');
-  assert.equal(p.taskAnswers.length, 1);
-  assert.equal(p.taskAnswers[0]?.delegationId, 'fresh-binding');
-  assert.equal(p.taskAnswers[0]?.text, 'The retained synthetic result.');
+  await acceptTaskAnswer(p);
+  const retained = commentaryResults(p.taskAnswers);
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0]?.delegationId, 'fresh-binding');
+  assert.equal(retained[0]?.text, 'The retained synthetic result.');
 });
 
 function consumeTaskPort(t: TestContext, attachment: Awaited<ReturnType<typeof openPort>>['attachment']): void {
@@ -5492,10 +5509,15 @@ test('real OpenAI wire: finalized owner speech starts the helper and client comm
   clock.advance(700);
   await h.helperQuiet();
   await fixtureUntil(() => h.f.frames.some(frame => (frame as unknown as { type?: string }).type === 'session.commentary.append'), 'real OpenAI helper answer');
-  const command = h.f.frames.find(frame => (frame as unknown as { type?: string }).type === 'session.commentary.append') as unknown as Record<string, unknown>;
-  assert.equal(command['content'], 'The exact synthetic wire answer.'); assert.equal(command['delegation_id'], 'synthetic-wire-binding'); assert.equal(inferences, 1);
+  const appended = () => h.f.frames.filter(frame => (frame as unknown as { type?: string }).type === 'session.commentary.append') as unknown as Record<string, unknown>[];
+  const command = appended()[0]!;
+  // The client wire now carries W3's envelope: the spoken answer travels in the content part after the
+  // header is accepted, so this decodes the parts instead of comparing one plain-text item.
+  assert.equal(commentaryPart(String(command['content'])).section, 'header'); assert.equal(command['delegation_id'], 'synthetic-wire-binding'); assert.equal(inferences, 1);
   assert.equal(h.f.frames.some(frame => /^response\./.test(String((frame as unknown as { type?: string }).type))), false);
   h.f.send({ type: 'session.commentary.appended', client_event_id: command['event_id'] });
+  await fixtureUntil(() => appended().length > 1, 'real OpenAI helper answer content');
+  assert.equal(appended().map(frame => commentaryPart(String(frame['content']))).filter(part => part.section === 'content').map(part => part.content).join(' '), 'The exact synthetic wire answer.');
   h.f.send({ type: 'session.output_transcript.delta', delta: 'The exact synthetic wire answer.' });
   await fixtureUntil(() => h.store.transaction(tx => Number(tx.get("SELECT COUNT(*) AS n FROM live_journal WHERE kind='outputTranscription'")?.n)) > 0, 'heard answer on real wire');
 });

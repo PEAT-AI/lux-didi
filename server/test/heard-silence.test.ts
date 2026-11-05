@@ -1,3 +1,4 @@
+import { fixtureUntil } from './live-voice-fixture.js';
 import { liveTaskFixture } from './live-task-fixture.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import assert from 'node:assert/strict';
@@ -88,11 +89,14 @@ const deadAir = (live: Live): Record<string, unknown>[] => live.receipts.filter(
 test('task delivery: provider acceptance settles without transcript and never retries', async t => {
   let calls = 0;
   const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
-  f.finalize('Do the synthetic task.'); f.bind(); const answer = await f.answer();
+  f.finalize('Do the synthetic task.'); f.bind(); await f.flush();
+  await fixtureUntil(() => f.voice.taskAnswers.length === 1, 'first header awaiting acceptance');
+  assert.match(f.voice.taskAnswers[0]!.text, /"section":"header"/);
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM task_deliveries WHERE state != ?', ['attached']))?.state, 'pending');
+  const answer = await f.answer();
   f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
   t.mock.timers.tick(30_000); await f.flush();
-  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 1); assert.equal(calls, 1);
+  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 2); assert.equal(calls, 1);
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM task_deliveries WHERE state != ?', ['attached']))?.state, 'delivered');
 });
 
@@ -102,7 +106,7 @@ const f = await liveTaskFixture(t, async () => { calls++; return { text: 'The sy
 f.finalize('Do the synthetic task.'); f.bind(); const answer = await f.answer();
 f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); f.voice.emit({ type: 'outputTranscription', text: answer.text, finished: true }); await f.flush();
 t.mock.timers.tick(15_000); await f.flush(); assert.equal(f.voice.sessionsOpened, 1); assert.equal(calls, 1);
-assert.equal(f.voice.taskAnswers.length, 1, 'acceptance already settled delivery');
+assert.equal(f.voice.taskAnswers.length, 2, 'acceptance already settled delivery');
 });
 
 test('L-05: three fragments of one utterance produce one measurement, not three', async t => {
@@ -130,5 +134,5 @@ test('task delivery: prior idle silence cannot create an acknowledgement deadlin
   t.mock.timers.tick(10_000); f.finalize('Give the synthetic task answer.'); f.bind(); const answer = await f.answer();
   f.voice.emit({ type: 'commentaryAccepted', commandId: answer.commandId }); await f.flush();
   t.mock.timers.tick(30_000); await f.flush();
-  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 1);
+  assert.equal(f.voice.sessionsOpened, 1); assert.equal(f.voice.taskAnswers.length, 2);
 });

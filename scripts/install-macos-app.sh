@@ -119,6 +119,8 @@ timing_step swap "$((SECONDS - step_started))"
 # Installation owns only the app bundle. Configuration remains owner-controlled.
 # C-CONNECT9: an install that leaves a shipped connector unconnected is not an install. Every
 # scripts/check-installed-*.sh runs against the app just installed, and one failure restores the prior app.
+# W1 (10.13): that gate also runs scripts/check-helper-provider.sh, so an install whose declared tool
+# set the provider rejects is restored like any other failed install.
 step_started=$SECONDS
 if ! bash "$script_dir/run-installed-checks.sh" "$target"; then
   rm -rf "$target"

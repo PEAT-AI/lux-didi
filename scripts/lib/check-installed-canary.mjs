@@ -93,6 +93,7 @@ export async function installedCanary(argv, env = process.env, output = line => 
   const ids = new Set();
   for (const ask of asks) {
     if (!ask || !/^[a-zA-Z0-9_-]{1,64}$/.test(ask.id) || ids.has(ask.id) || !Array.isArray(ask.finals) || !ask.finals.length || ask.finals.length > 8 || ask.finals.some(text => typeof text !== 'string' || !text.trim() || text.length > 4000)) throw new Error('invalid_ask');
+    if (ask.expect?.task !== 'complete' || ask.expect?.readOnly !== true || 'sideEffect' in ask.expect || 'tool' in ask.expect) throw new Error('read_only_task_ask_required');
     ids.add(ask.id);
   }
   if (!(await lstat(join(target, 'Contents/Info.plist'))).isFile()) throw new Error('invalid_installed_target');

@@ -327,13 +327,24 @@ shell to open one private call. Only the installer/operator runs this paid path;
 authors and reviewers use fixtures, never the live app. The target must identify the
 running bundle. The script does not launch or relaunch it.
 
-The private file `~/.lux/didi-canary/asks.json` still opts the owner into the paid
-check. It must be a nonempty array of objects with unique `id`, nonempty `finals`
-and legacy `expect` fields. Its contents are never logged or committed. The installed
-probe no longer executes these configurable asks or their old voice-tool names.
-It asks in natural language for the title of the official RFC 9110 specification
-using a read-only public web search. It never asks for contacts, drafts, notes,
-alarms or other writes. Do not use the old alarm examples for this install check.
+The private file `~/.lux/didi-canary/asks.json` is the only source of asks.
+Never commit it or print its contents. It must contain read-only owner requests:
+
+```json
+[
+  {
+    "id": "public-read",
+    "finals": ["Find the title of the official public HTTP specification using read-only tools."],
+    "expect": { "task": "complete", "readOnly": true }
+  }
+]
+```
+
+Use [the synthetic example](../scripts/fixtures/canary-asks.example.json) as the
+shape reference. Legacy `expect.tool` and all `sideEffect` values are rejected;
+no alarms, app opening, drafts, notes, sends or other writes belong in this file.
+There is no built-in replacement prompt or fallback when the opt-in file is absent.
+Old private files must be updated by their owner; the checker never rewrites them.
 
 The final authority is `logs/host.log`, not provider turns, connector count or
 lifecycle completion. The checker matches each host-line `liveSessionId` to the
@@ -354,18 +365,25 @@ or timeout. This terminal revoke is cleanup, not evidence that connector discove
 revoked the call.
 
 `run-installed-checks.sh` retains the independent helper-provider smoke and runs
-with the app down. Its PASS is not a completed installation: it names
-`canary=pending_after_relaunch`. The installer first emits PENDING, then the installer
-lane relaunches the exact target and runs
-`scripts/install-macos-app.sh --verify-canary <installed-target>`.
-Only that second phase can emit the installer's final PASS, after a real-call
-receipt. Neither phase starts or relaunches the app itself.
+with the app down. Its PASS names `canary=pending_after_relaunch`, not a completed
+installation. The initial installer phase emits PENDING. The installer lane then
+relaunches the exact target, runs `scripts/run-installed-canary.sh <installed-target>`,
+and invokes `scripts/install-macos-app.sh --verify-canary <installed-target>`.
+Only that final verification can emit `INSTALL-MACOS-APP PASS`.
 
-The receipt includes `shutdownReason`: `canary_shutdown_timer` explicitly identifies
-the canary's own expiry timer; `task_observed` identifies normal observation cleanup;
-`observation_timeout` identifies an observation timeout. This explains revocation
-without changing the existing session-revoke behavior. No missing-group event is
-treated as a reason to revoke.
+The post-relaunch canary atomically writes `~/.lux/didi-canary/receipt.json` with
+metadata only: schema version, exact resolved bundle path, `installId` and
+`releaseCommit` read from the installed app's `Contents/Resources/didi-runtime.json`,
+call id, outcome, reason code and terminal reason. Starting another attempt first
+invalidates any previous green receipt. Final installer verification reads this
+artifact without opening another call. Missing is `canary_receipt_missing`, a
+mismatched bundle/build is `canary_receipt_stale`, and a failed or malformed receipt
+is `canary_red`. None is a pass or skip.
+
+The receipt's `terminalReason` names `canary_shutdown_timer` for the canary's own
+expiry timer, `clean_close` for its normal cleanup, or the sanitized terminal code
+when the call already failed. The timer and revoke behavior are unchanged. A
+missing connector group is not treated as a reason to revoke the call.
 
 ## Private source evaluation (manual only)
 

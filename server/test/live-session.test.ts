@@ -5193,7 +5193,7 @@ test('actual InstalledCanary never-ready close releases production session and l
   let clock = 0;
   const host = new InstalledCanary(h.store, live, async () => { clock += 5000; }, () => clock);
   t.after(() => host.shutdown());
-  const asks = [{ id: 'synthetic-ready', finals: ['synthetic owner text'], expect: { tool: 'search', codeClass: 'success' as const, nonEmpty: true } }];
+  const asks = [{ id: 'synthetic-ready', finals: ['synthetic owner text'], expect: { task: 'complete' as const, readOnly: true as const } }];
   const session = host.open(asks, h.ctx);
   const attachment = live.attach(session.liveSessionId, h.ctx);
   await h.f.frame(1);

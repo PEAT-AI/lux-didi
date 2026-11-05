@@ -201,7 +201,7 @@ test('default model and effort are applied without provider-specific caller code
 test('review-owned worker instructions are short and preserve absence after widening', async () => {
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   // 10.11: the mandated worker rules re-pin the block to its measured size (TR-R5).
-assert.ok(WORKER_INSTRUCTIONS.length <= 6394);
+assert.ok(WORKER_INSTRUCTIONS.length === 7206);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
   assert.match(WORKER_INSTRUCTIONS, /Absence\./);
 });
@@ -444,11 +444,14 @@ test('reader failures carry actionable closed categories without exception text'
     const execute = connectorExecutor([{ connector: 'mongoose', policy, reader }]);
     const missing = await execute('read_company', { ref: 'ticket:63' }, new AbortController().signal);
     assert.equal(Reflect.get(missing, 'failure_category'), 'not_found');
+    assert.equal(missing.reason_code, 'not_found');
+    assert.match(missing.repair!, /Search again and read an id the search returned/);
     assert.match(missing.repair!, /search_company/);
     assert.match(missing.repair!, /ref.*verbatim/i);
     throws = true;
     const secret = await execute('read_company', { ref: 'ticket:63' }, new AbortController().signal);
     assert.equal(Reflect.get(secret, 'failure_category'), 'upstream_error');
+    assert.equal(secret.reason_code, 'source_down');
     assert.ok(events.some(event => Reflect.get(event as object, 'category') === 'not_found'));
     assert.doesNotMatch(JSON.stringify([missing, secret, events]), /SECRET_SENTINEL_763/);
   } finally { detach(); }

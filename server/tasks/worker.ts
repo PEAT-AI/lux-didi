@@ -80,7 +80,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const provider = error instanceof ProviderError ? error : undefined;
     failure = { stage, reason_code: expired || clock.now() - start >= REVISION_DEADLINE_MS ? 'deadline' : provider?.reason_code ?? 'provider_unavailable', detail: provider?.detail ?? '' };
     hostLogEvent({ event: 'task_inference_failed', taskId: options.identity.task_id, revision: options.identity.task_revision,
-      stage, reason_code: failure.reason_code, status: provider?.status, model: options.model ?? DEFAULT_WORKER_MODEL,
+      stage, reason_code: failure.reason_code, status: provider?.status, http_status: provider?.status, request_id: provider?.request_id, provider_error_class: provider?.error_class ?? 'unknown', model: options.model ?? DEFAULT_WORKER_MODEL,
       tool_count: options.registry.size, instruction_chars: workerInstructions(options.profile).length, elapsed_ms: Math.max(0, clock.now() - start), detail: failure.detail });
   };
   const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join(' ')).filter(Boolean).join(' ');
@@ -102,7 +102,14 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
       return { status: 'incomplete', text: answer.text.trim() || incomplete().text, findings, failures, receipts, ...(answer.exact ? { exact: answer.exact } : {}) };
-    } catch (error) { inferenceFailed(error, 'final'); return options.signal.aborted ? finish() : incomplete(); }
+    } catch (error) {
+      if (options.signal.aborted && !expired) {
+        hostLogEvent({ event: 'task_inference_superseded', taskId: options.identity.task_id,
+          revision: options.identity.task_revision, stage: 'final', elapsed_ms: Math.max(0, clock.now() - start) });
+        return finish();
+      }
+      inferenceFailed(error, 'final'); return options.signal.aborted ? finish() : incomplete();
+    }
     finally { clear(); options.signal.removeEventListener('abort', cancel); }
   }
   async function readBounded(body: (signal: AbortSignal) => Promise<ToolResult>): Promise<ToolResult> {
@@ -183,7 +190,14 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       try {
         options.event?.('inference', 1, clock.now() - start);
         inference = await bounded(signal => options.infer({ instructions: workerInstructions(options.profile), input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
-      } catch (error) { inferenceFailed(error, 'inference'); return options.signal.aborted ? finish() : compose(); }
+      } catch (error) {
+        if (options.signal.aborted && !expired) {
+          hostLogEvent({ event: 'task_inference_superseded', taskId: options.identity.task_id,
+            revision: options.identity.task_revision, stage: 'inference', elapsed_ms: Math.max(0, clock.now() - start) });
+          return finish();
+        }
+        inferenceFailed(error, 'inference'); return options.signal.aborted ? finish() : compose();
+      }
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length && !inference.no_action && !inference.text.trim() && findings.length) return compose();

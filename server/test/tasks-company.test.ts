@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../runtime/store.js';
+import { hostTaskFactory } from '../tasks/host.js';
+import { FakeDelivery } from '../tasks/controller.js';
+import { resolveTaskModels } from '../config/tasks.js';
 import { connectorExecutor } from '../tasks/connectors.js';
 import type { BoundConnector } from '../tasks/connectors.js';
 import type { ConnectorEvidence } from '../connectors/index.js';
@@ -198,4 +205,77 @@ test('F1 real projected follow-up retains all admitted native pages', async () =
     { outcome: 'evidence', items: [{ ref: 'knowledge:synthetic', text: 'Admitted follow-up two' }], next_cursor: null, coverage: { complete: true } },
   ])])('search_company', { query: 'synthetic' }, new AbortController().signal);
   assert.match(result.text, /Admitted follow-up one/); assert.match(result.text, /Admitted follow-up two/); assert.equal(result.next_cursor, null); assert.equal(result.references.length, 2);
+});
+
+test('a configured failing CRM endpoint remains reachable through the host registry and task runtime', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-company-missing-crm-'));
+  const store = new Store(directory);
+  let crmReads = 0;
+  mongoosePublishCatalogue('connected-knowledge', [{ name: 'search', description: 'Search synthetic company knowledge.', inputSchema: {
+    type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string' } }, required: ['query'], additionalProperties: false,
+  } }]);
+  const healthy: BoundConnector[] = [
+    { connector: 'mongoose', policy: { ...policy, connectionId: 'connected-knowledge', endpoint: { ...policy.endpoint, id: 'connected-knowledge' } }, reader: { call: async () => ({ state: 'completed', decodedResult: { outcome: 'no_match', items: [] } }) as ConnectorEvidence } },
+    dataBinding([job('completed')], []),
+  ];
+  // This configured endpoint failed credential refresh before publishing its catalogue.
+  const crm: BoundConnector = { connector: 'mongoose', policy: { ...policy, connectionId: 'configured-failing-crm', toolNames: ['get_company'], endpoint: { ...policy.endpoint, id: 'configured-failing-crm', resource: 'mongoose:crm' } },
+    reader: { call: async () => { crmReads++; throw new Error('credential-refresh-failed'); } },
+  };
+  const create = (bindings: readonly BoundConnector[]) => hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => bindings, timeZone: 'UTC',
+    infer: async () => ({ text: '', calls: [], no_action: true }), effectCheck: async () => true,
+  })('synthetic-company', new FakeDelivery());
+  const runtime = create([...healthy, crm]);
+  const unconfigured = create(healthy);
+  t.after(() => { runtime.close(); unconfigured.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  assert.equal(unconfigured.registry.has('get_company'), false, 'an endpoint not configured at all stays absent');
+  assert.equal(runtime.registry.has('ask_data_agent'), true, 'the connected data endpoint remains available');
+  assert.equal(runtime.registry.has('search_company'), true, 'the connected knowledge endpoint remains available');
+  assert.equal(runtime.registry.has('get_company'), true, 'configured CRM must expose its repair through the actual registry');
+  const revision = runtime.begin('Look up Synthetic Company in CRM', 1, 1);
+  const signal = new AbortController().signal;
+  const knowledge = await runtime.runTool('search_company', { query: 'Synthetic Company', mode: 'answer', cursor: null }, { ...revision.identity, operation_id: 'synthetic-knowledge-read' }, signal);
+  assert.equal(knowledge.status, 'no_match', JSON.stringify(knowledge));
+  const data = await runtime.runTool('ask_data_agent', { question: 'Synthetic business question' }, { ...revision.identity, operation_id: 'synthetic-data-read' }, signal);
+  assert.equal(data.status, 'ok', JSON.stringify(data));
+  const result = await runtime.runTool('get_company', {}, { ...revision.identity, operation_id: 'synthetic-crm-repair' }, new AbortController().signal);
+  assert.match(JSON.stringify(result), /not_configured/);
+  assert.match(JSON.stringify(result), /CRM endpoint/);
+  assert.match(JSON.stringify(result), /[Ss]ign-in/);
+  assert.equal(crmReads, 0, 'a catalogue-less endpoint returns its repair without dispatching a CRM request');
+});
+
+for (const persisted of [false, true]) test(`a configured failing data endpoint returns repair through the registry with ${persisted ? 'its persisted schema' : 'an open schema when no catalogue exists'}`, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-company-failing-data-'));
+  const store = new Store(directory);
+  const healthy = dataBinding([], []);
+  let dispatches = 0;
+  const endpointId = `configured-failing-data-${persisted}`;
+  const failing: BoundConnector = { connector: 'mongoose', policy: { ...healthy.policy, connectionId: endpointId, endpoint: { ...healthy.policy.endpoint, id: endpointId } },
+    reader: { call: async () => { dispatches++; throw new Error('credential-refresh-failed'); } },
+  };
+  const persistedSchema = { ...jobSchema, properties: { ...jobSchema.properties, stored_only: { type: 'string' } } };
+  if (persisted) store.savePublishedCatalogue({ endpointId, resource: 'mongoose:data', discoveredAt: 1, schemaDigest: 'synthetic', declarations: JSON.stringify([
+    { name: 'data_agent_job', description: 'Stored synthetic native data job.', parameters: persistedSchema },
+  ]) });
+  const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [failing], timeZone: 'UTC',
+    infer: async () => ({ text: '', calls: [], no_action: true }), effectCheck: async () => true,
+  })('synthetic-data-repair', new FakeDelivery());
+  t.after(() => { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  assert.equal(runtime.registry.has('data_agent_job'), true);
+  const schema = runtime.registry.get('data_agent_job')!.parameters;
+  if (persisted) assert.deepEqual(schema, persistedSchema, 'the actual stored declaration is used verbatim, including stored-only fields');
+  else {
+    assert.equal(schema.additionalProperties, true);
+    assert.deepEqual(schema.required, []);
+  }
+  const revision = runtime.begin('Continue the synthetic data job', 1, 1);
+  for (const op of ['get', 'reply']) {
+    const args = { job_id: jobId, op, ...(persisted ? { stored_only: 'synthetic' } : { arbitrary: { nonempty: true } }) };
+    const result = await runtime.runTool('data_agent_job', args, { ...revision.identity, operation_id: `synthetic-data-repair-${op}` }, new AbortController().signal);
+    assert.match(JSON.stringify(result), /not_configured/);
+    assert.match(JSON.stringify(result), /data endpoint/);
+    assert.match(JSON.stringify(result), /[Ss]ign-in/);
+  }
+  assert.equal(dispatches, 0, 'even an op other than get returns repair before healthy-binding op validation');
 });

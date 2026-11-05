@@ -195,14 +195,23 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       !['sent', 'accepted', 'retry', 'undelivered'].includes(String(value.state))) return;
     return { event: 'task_delivery', taskId: value.taskId, revision: value.revision, state: value.state };
   }
+  if (value.event === 'task_inference_superseded') {
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'stage', 'elapsed_ms']) ||
+      typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) ||
+      !isSafeCount(value.revision) || !['inference', 'final'].includes(String(value.stage)) || !isSafeCount(value.elapsed_ms)) return;
+    return value;
+  }
   if (value.event === 'task_inference_failed') {
     const reasons = ['provider_rejected', 'provider_auth', 'provider_rate_limited', 'provider_unavailable', 'provider_incomplete', 'provider_empty', 'credential_unavailable', 'provider_timeout', 'deadline'];
-    if (!closedKeys(value, ['event', 'taskId', 'revision', 'stage', 'reason_code', 'status', 'model', 'tool_count', 'instruction_chars', 'elapsed_ms', 'detail']) ||
+    if (!closedKeys(value, ['event', 'taskId', 'revision', 'stage', 'reason_code', 'status', 'model', 'tool_count', 'instruction_chars', 'elapsed_ms', 'detail', 'provider_error_class', 'http_status', 'request_id']) ||
       typeof value.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(value.taskId) || !isSafeCount(value.revision) ||
       !['inference', 'final'].includes(String(value.stage)) || !reasons.includes(String(value.reason_code)) ||
       (value.status !== undefined && (!isSafeCount(value.status) || Number(value.status) > 599)) ||
       typeof value.model !== 'string' || !/^[A-Za-z0-9_.:/-]{1,100}$/.test(value.model) ||
-      !isSafeCount(value.tool_count) || !isSafeCount(value.instruction_chars) || !isSafeCount(value.elapsed_ms) || typeof value.detail !== 'string') return;
+      !isSafeCount(value.tool_count) || !isSafeCount(value.instruction_chars) || !isSafeCount(value.elapsed_ms) || typeof value.detail !== 'string' ||
+      (value.provider_error_class !== undefined && !['dns', 'connect', 'reset', 'tls', 'abort', 'body', 'http_4xx', 'http_429', 'http_5xx', 'unknown'].includes(String(value.provider_error_class))) ||
+      (value.http_status !== undefined && !isSafeCount(value.http_status)) ||
+      (value.request_id !== undefined && (typeof value.request_id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value.request_id)))) return;
     return { ...value, detail: redactSecrets(value.detail).slice(0, 2000) };
   }
   if (value.event === 'task_runtime_rejected') {
@@ -312,8 +321,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     if (typeof value.code !== 'string' || !codes.includes(value.code) || !token(value.tool) || !token(value.connector)
       || !['Error', 'SyntaxError', 'UnknownThrow', 'McpResultError'].includes(String(value.errorClass))
+      || (value.connectorCode !== undefined && (typeof value.connectorCode !== 'string' || !['grant_missing', 'bad_reference', 'not_found', 'upstream_unavailable', 'upstream_rejected', 'unknown'].includes(value.connectorCode)))
       || value.messageHead !== value.code || String(value.messageHead).length > 120) return;
-    return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead };
+    return { event: 'tool_failure', code: value.code, tool: value.tool, connector: value.connector, errorClass: value.errorClass, messageHead: value.messageHead, ...(value.connectorCode !== undefined ? { connectorCode: value.connectorCode } : {}) };
   }
   if (value.event === 'chat_timing') {
     // Timing receipts: milliseconds and counts only, never text, never a tool argument or result.
@@ -604,15 +614,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const hasException = Object.prototype.hasOwnProperty.call(value, 'exceptionCode');
     const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
     const hasAttempt = Object.prototype.hasOwnProperty.call(value, 'attempt');
-    const allowed = ['connector', 'event', 'stage', ...(hasExceptionClass ? ['exceptionClass'] : []), ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
+    const hasHttpStatus = 'httpStatus' in value;
+    if (hasHttpStatus && (!Number.isInteger(value.httpStatus) || (value.httpStatus as number) < 100 || (value.httpStatus as number) > 599)) return;
+    const allowed = ['connector', 'event', 'stage', ...(hasHttpStatus ? ['httpStatus'] : []), ...(hasExceptionClass ? ['exceptionClass'] : []), ...(hasReason ? ['reason'] : []), ...(hasException ? ['exceptionCode'] : []), ...(hasEndpoint ? ['endpointId'] : []), ...(hasAttempt ? ['attempt'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.stage !== 'string' || !stages.includes(value.stage)) return;
-    if (hasExceptionClass && !['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown'].includes(String(value.exceptionClass))) return;
+    if (hasExceptionClass && !['refused', 'dns', 'tls', 'timeout', 'http_4xx', 'http_5xx', 'transport', 'unknown', 'refresh_rejected_4xx', 'refresh_rejected_5xx', 'refresh_network', 'refresh_malformed', 'storage', 'lock'].includes(String(value.exceptionClass))) return;
     if (hasReason && !token(value.reason)) return;
     if (hasException && !token(value.exceptionCode)) return;
     if (hasEndpoint && !isSafeId(value.endpointId)) return;
     if (hasAttempt && (typeof value.attempt !== 'string' || !attempts.includes(value.attempt))) return;
-    return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasExceptionClass ? { exceptionClass: value.exceptionClass } : {}), ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
+    return { event: 'connector_failure', ...(hasHttpStatus ? { httpStatus: value.httpStatus } : {}), connector: value.connector, stage: value.stage, ...(hasExceptionClass ? { exceptionClass: value.exceptionClass } : {}), ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'tool_classified_failure') {
     // W14 (LOGS.md L-08): one row per call the connector itself refused with a typed code, so host.log

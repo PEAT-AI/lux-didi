@@ -184,12 +184,67 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
   const [newest, older] = rows;
   assert.ok(newest && older);
   assert.deepEqual(newest, {
-    liveSessionId: fixture.liveSessionId, start: 1792486800000, durationMs: 10400, tools: 1,
+    liveSessionId: fixture.liveSessionId, start: 1792486800000, durationMs: 10000, tools: 0, voiceTools: 1,
     maxSilenceMs: 1744, terminal: 'closed/voice_stop', lines: 16,
   });
   assert.equal(older.liveSessionId, fixture.otherSessionId);
-  assert.equal(older.durationMs, 0);
+  assert.equal(older.durationMs, null);
   assert.equal(older.terminal, null);
+});
+
+// W18: the list's lifetime is the call's own open to its own terminal. Rows the session's id tags after the
+// terminal, and a call the owner revokes before it ever settles, are the two cases #1016 misread as long calls.
+test('W18: a row tagged after the terminal never extends the call\u2019s duration', () => {
+  const t = 1792486800000;
+  const rows = listCalls(scanOf([
+    JSON.stringify({ timestamp: new Date(t).toISOString(), event: 'live_provider_open', liveSessionId: SESSION }),
+    JSON.stringify({ timestamp: new Date(t + 3000).toISOString(), event: 'live_terminal', liveSessionId: SESSION, state: 'closed', code: 'revoked' }),
+    JSON.stringify({ timestamp: new Date(t + 3_600_000).toISOString(), event: 'consumer_detach', liveSessionId: SESSION }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.durationMs, 3000);
+  assert.equal(rows[0]?.terminal, 'closed/revoked');
+});
+
+// W18 B1: the host stamps a session-tagged live_state before the open, and the 2 s window join admits pidless
+// rows ahead of it. Neither is part of the call's lifetime.
+test('W18: a row before the open never lengthens the call', () => {
+  const t = 1792486800000;
+  const rows = listCalls(scanOf([
+    JSON.stringify({ timestamp: new Date(t - 1500).toISOString(), event: 'live_state', liveSessionId: SESSION, state: 'listening' }),
+    JSON.stringify({ timestamp: new Date(t).toISOString(), event: 'live_provider_open', liveSessionId: SESSION }),
+    JSON.stringify({ timestamp: new Date(t + 3000).toISOString(), event: 'live_terminal', liveSessionId: SESSION, state: 'closed', code: 'voice_stop' }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.start, t);
+  assert.equal(rows[0]?.durationMs, 3000);
+});
+
+test('W18: an open with no terminal prints open, no terminal and never a duration', () => {
+  const t = 1792486800000;
+  const rows = listCalls(scanOf([
+    JSON.stringify({ timestamp: new Date(t).toISOString(), event: 'live_provider_open', liveSessionId: SESSION }),
+    JSON.stringify({ timestamp: new Date(t + 1200).toISOString(), event: 'live_provider_ready', liveSessionId: SESSION }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.durationMs, null);
+  assert.equal(rows[0]?.terminal, null);
+  assert.match(renderCallList(rows), /open, no terminal/);
+});
+
+test('W18: helper tools count once per operation id, and the voice path keeps its own count', () => {
+  const t = 1792486800000;
+  const tool = (operationId: string, cache: string) => JSON.stringify({ timestamp: new Date(t + 500).toISOString(), event: 'task_tool',
+    liveSessionId: SESSION, taskId: 'task-a', revision: 1, operationId, tool: 'read_file', durationMs: 4, category: 'ok', reason_code: null, cache });
+  const rows = listCalls(scanOf([
+    JSON.stringify({ timestamp: new Date(t).toISOString(), event: 'live_provider_open', liveSessionId: SESSION }),
+    tool('op-1', 'miss'),
+    tool('op-1', 'hit'),
+    tool('op-2', 'miss'),
+    JSON.stringify({ timestamp: new Date(t + 600).toISOString(), event: 'live_tool_turn', liveSessionId: SESSION, toolCallsThisTurn: 2 }),
+    JSON.stringify({ timestamp: new Date(t + 2000).toISOString(), event: 'live_terminal', liveSessionId: SESSION, state: 'closed', code: 'voice_stop' }),
+  ]));
+  assert.deepEqual(rows.map(row => [row.tools, row.voiceTools]), [[2, 2]]);
 });
 
 test('#1011: a stale server/dist is warned about with the build command, and the read never builds (#699, #752)', () => {
@@ -258,7 +313,7 @@ test('the CLI discovers host.log, its rotated file and audio.log, and nothing el
     assert.doesNotMatch(doctor, /notes\.txt/);
     const list = execFileSync(process.execPath, [cli, 'list', '--data-dir', dir], { encoding: 'utf8' });
     assert.match(list, /sess-cli-1 2026-10-20T09:00:00\.000Z 9\.000s/);
-    assert.match(list, /sess-cli-2 2026-10-19T09:00:00\.000Z 0\.000s/);
+    assert.match(list, /sess-cli-2 2026-10-19T09:00:00\.000Z - 0 - - open, no terminal/);
     const call = execFileSync(process.execPath, [cli, 'call', 'sess-cli-1', '--data-dir', dir], { encoding: 'utf8' });
     assert.match(call, /^call sess-cli-1 start=2026-10-20T09:00:00\.000Z dur=9000ms entries=3/);
     const store = spawnSync(process.execPath, [cli, 'latest', '--data-dir', dir], { encoding: 'utf8' });
@@ -1125,4 +1180,23 @@ test('task audit lists one call\'s tasks, its tool rows with reason and its sett
   assert.match(rendered, /task stored-failure status=incomplete revisions=0\/1 delivery=none settled=incomplete reason=no_access/u);
   assert.equal(rendered.includes('SYNTHETIC_REPAIR_NOT_METADATA'), false, 'only the closed reason code leaves the row');
   assert.equal(rendered.includes('other-call'), false);
+});
+
+test('call audit lists inference attempts and counts only the selected call', async () => {
+  const { createRequire } = await import('node:module');
+  const { buildTaskAudit, renderTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
+  const base = { taskId: 'synthetic', stage: 'inference', callId: 'synthetic-call' };
+  const rows = [
+    { ...base, event: 'task_inference_superseded', revision: 1, elapsed_ms: 2 },
+    { ...base, event: 'task_inference_failed', revision: 2, reason_code: 'provider_unavailable', provider_error_class: 'reset', elapsed_ms: 3 },
+    { ...base, event: 'task_inference_failed', revision: 3, reason_code: 'deadline', provider_error_class: 'unknown', elapsed_ms: 24000 },
+    { ...base, callId: 'other-call', event: 'task_inference_superseded', revision: 4, elapsed_ms: 1 },
+  ];
+  const audit = buildTaskAudit({ all: () => [] }, rows, { callId: 'synthetic-call' });
+  assert.deepEqual(audit.inferenceOutcomeCounts, { superseded: 1, failed: 1, deadline: 1 });
+  const text = renderTaskAudit(audit);
+  assert.match(text, /revision=1 outcome=superseded elapsed_ms=2/);
+  assert.match(text, /revision=2 outcome=failed provider_unavailable reset elapsed_ms=3/);
+  assert.match(text, /revision=3 outcome=deadline elapsed_ms=24000/);
+  assert.doesNotMatch(text, /revision=4/);
 });

@@ -1,3 +1,4 @@
+import { TASK_DISCLOSURE } from '../tasks/results.js';
 import { canonicalTaskFixture } from './canonical-task-fixture.js';
 import { connectorDescriptor } from '../connectors/index.js';
 import { HOST_EVIDENCE } from '../tools/types.js';
@@ -436,7 +437,45 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
       const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [intent.executionId]));
       const response = JSON.parse(String(row?.result_json)).response;
       assert.match(JSON.stringify(response), /Synthetic subject line/, JSON.stringify(task.results));
-      assert.equal(response.status, 'partial', 'verified native Markdown is not invented ranked ids');
+      assert.equal(response.status, 'ok', 'a finished native search is not partial display text');
+      assert.deepEqual(response.references.map((item: { id: string }) => item.id), ['m1', 'm2']);
+      assert.equal(response.next_cursor, null);
+      const disclosure = task.results[0]?.[TASK_DISCLOSURE];
+      assert.equal(disclosure?.sourcePolicyRefs?.[0]?.connectionId, 'gmail', 'structured evidence keeps its approved source policy');
+      assert.deepEqual(task.results[0]?.dataClasses, disclosure?.dataClasses);
+      assert.deepEqual(disclosure?.dataClasses, ['private'], 'structured evidence retains approved private disclosure classification');
+      assert.equal(task.runtime.registry.get('search_mail')?.outside_text, true);
+      let index = 1;
+      const callTool = async (toolName: string, arguments0: Record<string, unknown>) => {
+        const tool = task.tools.find(candidate => candidate.name === toolName)!;
+        const nextIntent = { ...intent, executionId: `run:1:${index++}`, callId: `synthetic-${index}`, toolName,
+          accountId: tool.accountId, resourceId: tool.resourceId, argumentsHash: sha256(JSON.stringify(arguments0)) };
+        assert.equal(owner.journal.intent(nextIntent), 'fresh');
+        await tool.execute(arguments0, { ...nextIntent, signal: new AbortController().signal });
+        return task.results.at(-1)!;
+      };
+      const firstPage = await callTool('search_mail', { query: 'synthetic-paged', cursor: null });
+      assert.equal(firstPage.status, 'partial');
+      assert.deepEqual(firstPage.references.map(item => item.id), ['page-one']);
+      assert.equal(firstPage.next_cursor, 'synthetic-next');
+      assert.match(firstPage.coverage, /continue/i);
+      const secondPage = await callTool('search_mail', { query: 'synthetic-paged', cursor: firstPage.next_cursor });
+      assert.equal(secondPage.status, 'ok');
+      assert.deepEqual(secondPage.references.map(item => item.id), ['page-two']);
+      assert.equal(secondPage.next_cursor, null);
+      const before = readFileSync(`${pidFile}.calls`, 'utf8');
+      const emptyId = await callTool('read_mail', { id: '', cursor: null });
+      assert.equal(emptyId.reason_code, 'bad_argument', 'empty public argument is not a native reference refusal');
+      const badId = await callTool('read_mail', { id: 'x'.repeat(4097), cursor: null });
+      assert.equal(badId.reason_code, 'wrong_id');
+      assert.match(badId.repair ?? '', /Search again and read an id the search returned/);
+      assert.equal(readFileSync(`${pidFile}.calls`, 'utf8'), before, 'malformed reference never reaches the wire');
+      const missing = await callTool('read_mail', { id: 'synthetic-not-found', cursor: null });
+      assert.equal(missing.reason_code, 'not_found');
+      assert.match(missing.repair ?? '', /Search again and read an id the search returned/);
+      const outage = await callTool('read_mail', { id: 'synthetic-outage', cursor: null });
+      assert.equal(outage.reason_code, 'source_down');
+
     } finally { task.close(); }
   } finally {
     await adapter.close();

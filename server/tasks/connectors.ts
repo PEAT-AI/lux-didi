@@ -1,7 +1,8 @@
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
-import { mongooseEndpointName } from '../connectors/mongoose.js';
+import type { PublishedCatalogue } from '../runtime/store.js';
+import { MONGOOSE_ENDPOINT_TOOLS, mongooseEndpointName } from '../connectors/mongoose.js';
 import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
@@ -10,9 +11,9 @@ import { GOOGLE_DEFAULTS } from '../connectors/google.js';
 import { receivedGmailBody } from '../tools/live-shape.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { cleanMailStructure, HEADER_LINE } from './clean.js';
-import { documentResult, failed, readerFailure, failureCategory, rankedResult, reasonCodeFor, type RankedItem, type ToolResult } from './results.js';
+import { connectorFailureKind, type ConnectorFailureKind, documentResult, failed, readerFailure, failureCategory, rankedResult, reasonCodeFor, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
-export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
+export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode, connectorCode?: ConnectorFailureKind) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
 export interface TaskExecutionContext { identity: Identity | undefined; outsideTextSeen: boolean }
 export interface ExistingExecutors {
   /** Bound existing executors for local effects, web, memory, people and Trello. No model interpretation. */
@@ -140,7 +141,8 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const items: RankedItem[] = list.flatMap(raw => {
     const item = record(raw), itemId = String((name === 'search_company' ? item.ref ?? item.id : item.id ?? item.ref) ?? item.file_id ?? '');
     if (!itemId) return [];
-    return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
+    const subject = name === 'search_mail' ? (Array.isArray(item.headers) ? item.headers.map(record).find(header => text(header.name).toLowerCase() === 'subject')?.value : record(item.headers).Subject) : undefined;
+    return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
   });
   if (name === 'search_knowledge' || name === 'search_company') return rankedResult(text(args.query), items);
   const next = text(root.nextPageToken ?? root.next_cursor);
@@ -158,15 +160,35 @@ const companySteps: Readonly<Record<string, string>> = {
   check_data_capability: 'Check company data coverage before a request that may lie outside coverage. Follow decision, blocker_codes and suggested_tools. Quantitative coverage belongs here, not knowledge search.',
   get_company: 'Look up customer facts, deals and leads on the CRM endpoint by slug or company name first.',
 };
-function companyEndpoint(binding: BoundConnector): string | undefined {
+function companyEndpoint(binding: BoundConnector): ReturnType<typeof mongooseEndpointName> {
   return mongooseEndpointName(binding.policy.endpoint.resource) ?? ('url' in binding.policy.endpoint ? mongooseEndpointName(binding.policy.endpoint.url) : undefined);
 }
+function companySignInRepair(binding: BoundConnector): string {
+  const endpoint = companyEndpoint(binding);
+  return `The Mongoose ${endpoint === 'crm' ? 'CRM' : endpoint ?? 'company'} endpoint is unavailable. Sign-in is needed for that endpoint in Settings.`;
+}
 /** Typed company steps preserve each endpoint's published schema and authoritative grants. */
-export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {
+export function configuredCompanyTools(bindings: readonly BoundConnector[], catalogues: readonly PublishedCatalogue[] = []): Definition[] {
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy).filter(item => nativeTaskReadGranted(binding.policy, item.name)));
-  const typed = Object.entries(companySteps).flatMap(([name, description]) => {
+  const typed = Object.entries(companySteps).flatMap<Definition>(([name, description]) => {
     const declaration = capabilities.find(item => item.name === name);
-    if (!declaration) return [];
+    if (!declaration) {
+      const unavailable = bindings.find(binding => {
+        const endpoint = companyEndpoint(binding);
+        return binding.connector === 'mongoose' && endpoint !== undefined && MONGOOSE_ENDPOINT_TOOLS[endpoint].includes(name) && nativeTaskReadGranted(binding.policy, name);
+      });
+      // A configured endpoint can fail before publishing its schema. Keep a repair-only task route,
+      // not an invented remote schema or a capability for an endpoint the owner never configured.
+      if (!unavailable) return [];
+      const catalogue = catalogues.find(row => row.endpointId === unavailable.policy.endpoint.id && row.resource === unavailable.policy.endpoint.resource);
+      let parameters: Record<string, unknown> = { type: 'object', properties: {}, required: [], additionalProperties: true };
+      if (catalogue) {
+        const stored = JSON.parse(catalogue.declarations) as { name: string; parameters: Record<string, unknown> }[];
+        const declaration = stored.find(tool => tool.name === name);
+        if (declaration) parameters = declaration.parameters;
+      }
+      return [{ outside: false, name, description: `${companySignInRepair(unavailable)} This route only returns the repair; no company data is read.`, fields: {}, parameters }];
+    }
     const fields = strictSchema(declaration.parameters).properties as Record<string, Record<string, unknown>>;
     if (name === 'data_agent_job' && fields.op) fields.op = { type: 'string', enum: ['get'] };
     return [{ outside: true, name, description: `${description} ${declaration.description}`, fields, validate: (args: Record<string, unknown>) => (name !== 'data_agent_job' || args.op === 'get') && declaration.validate(Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null))) }];
@@ -188,20 +210,30 @@ export function nativeTaskReadTool(name: string, connector: string, args?: Recor
 }
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}, handoffsRemaining = 2): ToolPorts['execute'] {
   return async (name, args, signal, outsideTextSeen = false, identity) => {
-    if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.', 'upstream_error', 'not_configured');
-    const binding = bindings.find(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool) && CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool));
+    const candidates = bindings.filter(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool));
+    const binding = candidates.find(binding => CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool)) ?? candidates.find(binding => binding.connector === 'mongoose');
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
-    const declaration = CONNECTOR_DESCRIPTORS[binding.connector]!.declarations(binding.policy).find(declaration => declaration.name === mapping.tool)!;
+    const declaration = CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).find(declaration => declaration.name === mapping.tool);
+    if (!declaration) return failed(binding.connector === 'mongoose' ? companySignInRepair(binding) : 'This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
+    if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
     const mapped = mapping.args(args, declaration.parameters);
-    if (!declaration.validate(mapped)) return readerFailure(name, 'invalid_argument');
+    if (!declaration.validate(mapped)) return readerFailure(name, name === 'read_mail' ? 'wrong_source_id' : 'invalid_argument');
     const scope = createResultScope();
     try {
       return await scope.run(async () => {
         const result = await binding.reader.call(mapping.tool, mapped, signal);
-        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => { binding.reportFailure?.(tool, code); const shaped = readerFailure(name, failureCategory('reason' in result ? result.reason : code), reasonCodeFor('reason' in result ? result.reason : code)); return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair }; };
+        const failure = (repair: string, code: ToolFailureCode, tool = name): ToolResult => {
+          const nativeCode = 'reason' in result ? result.reason : connectorFailures.get(result)?.nativeCode ?? code;
+          const connectorCode = connectorFailureKind(nativeCode);
+          binding.reportFailure?.(tool, code, connectorCode);
+          const wrongReference = name.startsWith('read_') && ['grant_missing', 'bad_reference'].includes(connectorCode);
+          const reason = reasonCodeFor(nativeCode);
+          const shaped = wrongReference ? readerFailure(name, 'wrong_source_id') : connectorCode === 'not_found' && name.startsWith('read_') ? readerFailure(name, 'not_found') : readerFailure(name, failureCategory(nativeCode), connectorCode === 'upstream_unavailable' && reason === 'unknown' ? 'source_down' : reason);
+          return { ...shaped, [TASK_CONNECTOR_FAILURE_CODE]: code, [TASK_CONNECTOR_FAILURE]: shaped.repair ?? repair };
+        };
         if (scope.failureCode) return failure('The connector result could not be retained. Reduce the read size or retry after other reads finish.', scope.failureCode, mapping.tool);
         const hostRepair = connectorFailures.get(result);
         if (hostRepair) {
@@ -215,10 +247,9 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
           try {
             snapshot = binding.project(result);
             if (binding.connector !== 'mongoose') {
-            // A mail read and a calendar window are judged on the structured source, never on the
-            // rendered display text: the display drops the quoted chain, trims and carries handles.
-            const payloadSource = binding.connector === 'lux-knowledge' ? (record(result.decodedResult).content as unknown[]).map(part => text(record(part).text)).join('\n') : name === 'read_mail' || name === 'calendar_events' ? result.decodedResult
-              : binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult
+            // Keep native ids, continuation and completeness, while retaining the approved
+            // display snapshot below as the outside-text disclosure provenance.
+            const payloadSource = binding.connector === 'lux-knowledge' ? (record(result.decodedResult).content as unknown[]).map(part => text(record(part).text)).join('\n') : ['read_mail', 'calendar_events', 'search_mail', 'search_drive', 'search_company', 'search_chat', 'chat_person', 'chat_group', 'chat_channel'].includes(name) ? result.decodedResult
               : snapshot.response.text ?? snapshot.response;
             const shaped = projectTaskPayload(name, payloadSource, args);
             if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');

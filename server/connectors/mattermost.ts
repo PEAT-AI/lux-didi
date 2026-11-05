@@ -51,6 +51,12 @@ export const MATTERMOST_CHAT = { days: 30, limit: 8, maxOffset: 1000, maxPeople:
 
 /** Attention window and read bounds; a caller may only narrow `days` and `limit`. */
 export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 10, maxThreads: 8, historyLimit: 20, snippet: 160 } as const;
+/**
+ * #1016: the attention scan's own budget, under the task layer's 12 s connector read stop
+ * (server/tasks/worker.ts CONNECTOR_DEADLINE_MS). Its three waves fan out to 21 child calls, so a slow
+ * wave used to end the whole read with a timeout and throw away the waves that had answered.
+ */
+export const MATTERMOST_ATTENTION_BUDGET_MS = 10_000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** The channel index ceiling: a child that never reports exhaustion must not be paged forever. */
@@ -116,7 +122,7 @@ export interface AttentionItem {
   snippet: string;
 }
 /** The digest the attention view renders: newest first, one line per item. */
-export interface MattermostAttention { after: string; items: AttentionItem[]; /** C-CHAT: a capability this child lacks, said once. */ missing?: string }
+export interface MattermostAttention { after: string; items: AttentionItem[]; /** C-CHAT: a capability this child lacks, said once, and #1016: the waves the budget ended under. */ missing?: string; /** #1016: a wave of the scan did not answer inside the budget, so the digest is partial. */ sourceIncomplete?: boolean }
 
 /** C-CHAT: which chat read the ask wants: one person, the overview with one person, a channel, a group, one thread. */
 export type ChatReadIntent = 'person' | 'overview' | 'channel' | 'group' | 'thread' | 'topics';
@@ -174,7 +180,7 @@ export interface MattermostReader {
 /** W1030: a draft names a channel or a person, never both, and carries no send. */
 export interface MattermostDraftInput { channelId?: string; dmUsername?: string; rootId?: string; message: string }
 
-export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig; now?: (() => number) | undefined }
+export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig; now?: (() => number) | undefined; /** #1016: the attention scan's budget; the shipped default is MATTERMOST_ATTENTION_BUDGET_MS. */ attentionBudgetMs?: number | undefined }
 
 // W1030: the endpoint's published catalog may be its reads, its draft family or both, so the known set
 // is the read envelope plus the draft envelope; which names a grant may cover stays the policy's.
@@ -812,7 +818,13 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!Number.isSafeInteger(days) || days < 1 || days > MATTERMOST_ATTENTION.maxDays) return { state: 'refused', reason: 'invalid-days' };
     const limit = input.limit === undefined ? MATTERMOST_ATTENTION.limit : input.limit;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > settings.maxLimit) return { state: 'refused', reason: 'limit-out-of-budget' };
-    const who = await ownerIdentity(signal);
+    // #1016: the budget is armed before the identity read, because that read is a child call too:
+    // identity time plus the waves must fit inside the task's read stop, not start after it.
+    const deadline = Date.now() + (options.attentionBudgetMs ?? MATTERMOST_ATTENTION_BUDGET_MS);
+    const local = new AbortController();
+    const halt = signal === undefined ? local.signal : AbortSignal.any([signal, local.signal]);
+    const remaining = (): number => deadline - Date.now();
+    const who = await ownerIdentity(halt);
     if (!who.ok) return who.result;
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
     const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
@@ -833,49 +845,101 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     };
     // #610: the independent reads run under one budget. The two attention searches and the channel
     // list answer on their own, so they go out together at the attention page size, never the maximum.
+    // #1016: the waves run under the budget armed above, under the task layer's read stop, so the waves
+    // that answered are kept when one of them does not. A budget end is a partial digest, never a throw.
+    type ChildRead = Awaited<ReturnType<typeof read>>;
+    /**
+     * #1016: one wave, every child read against what is left of the budget. A read still running when the
+     * budget ends is dropped, its finished siblings are kept and the wave is named, never blocking them.
+     */
+    const wave = async <T>(works: Promise<T>[]): Promise<{ values: (T | undefined)[]; complete: boolean }> => {
+      const values: (T | undefined)[] = new Array<T | undefined>(works.length);
+      if (works.length === 0) return { values, complete: true };
+      const left = remaining();
+      if (left <= 0) { local.abort(); return { values, complete: false }; }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const all = Promise.all(works.map((work, index) => work.then(value => { values[index] = value; })));
+      const ended = new Promise<boolean>(resolve => { timer = setTimeout(() => { local.abort(); resolve(false); }, left); });
+      try { return { values, complete: await Promise.race([all.then(() => true), ended]) }; }
+      finally { if (timer !== undefined) clearTimeout(timer); }
+    };
+    let missing: string | undefined;
+    const finish = (gaps: readonly string[]): MattermostResult => {
+      const items = scored.sort((left, right) => right.at - left.at).slice(0, limit).map(entry => entry.item);
+      const coverage = gaps.length === 0 ? undefined : `attention budget ended; no answer from ${gaps.join(', ')}`;
+      const notes = [missing, coverage].filter((note): note is string => note !== undefined);
+      // The digest stands on the identity read: its provenance is what the projection reports.
+      const composed = { ...who.evidence };
+      delete composed[SOURCE_DISPATCH];
+      return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items, ...(notes.length === 0 ? {} : { missing: notes.join('; ') }), ...(gaps.length === 0 ? {} : { sourceIncomplete: true }) } satisfies MattermostAttention };
+    };
+    // #1016: an identity read that spends the budget leaves no wave able to answer, so the digest is
+    // partial and names the identity read instead of running the waves past the task's read stop.
+    if (remaining() <= 0) return finish(['the identity read']);
     const attentionLimit = Math.min(MATTERMOST_ATTENTION.limit, settings.maxLimit);
     // C-CHAT (L4-11): both searches read the window newest first in keyword mode, never the whole archive
     // ranked by the slow default mode and filtered afterwards.
     const windowed = { ...keywordMode(), ...(searchWindow(new Date(cutoff).toISOString(), undefined) ?? {}) };
     delete windowed['after'];
-    const written = read('mattermost_search', { query: `from:${who.owner.username}`, limit: attentionLimit, ...windowed }, signal);
-    const mentions = read('mattermost_search', { query: `@${who.owner.username}`, limit: attentionLimit, ...windowed }, signal);
+    const written = read('mattermost_search', { query: `from:${who.owner.username}`, limit: attentionLimit, ...windowed }, halt);
+    const mentions = read('mattermost_search', { query: `@${who.owner.username}`, limit: attentionLimit, ...windowed }, halt);
     // C-CHAT (L4-04): the direct and group conversations by their last post, never the first few in list
     // order. A child whose channel list has no recency cannot say which ones moved, so that leg is skipped
     // and the digest says which capability is missing.
-    const recent = listFilters().types && listFilters().sort
-      ? read('mattermost_list_channels', { types: ['D', 'G'], sort: 'recent', limit: MATTERMOST_ATTENTION.maxDmChannels }, signal)
+    const recencyReadable = Boolean(listFilters().types && listFilters().sort);
+    const recent = recencyReadable
+      ? read('mattermost_list_channels', { types: ['D', 'G'], sort: 'recent', limit: MATTERMOST_ATTENTION.maxDmChannels }, halt)
       : Promise.resolve(undefined);
-    const [writtenRead, mentionsRead, recentRead] = await Promise.all([written, mentions, recent]);
+    // Wave one: the two searches and the recency list. Losing it loses the thread seeds with it.
+    const first = await wave([written, mentions, recent]);
+    const [writtenRead, mentionsRead, recentRead] =
+      first.values as [ChildRead | undefined, ChildRead | undefined, ChildRead | undefined];
+    // C-W17: when the budget ends inside this wave, the entries that answered are read below exactly as
+    // the later waves read theirs, and only the legs that did not answer are named in the coverage line.
+    const unanswered = first.complete ? [] : [
+      ...(writtenRead === undefined ? ['own_written'] : []),
+      ...(mentionsRead === undefined ? ['mentions'] : []),
+      ...(recentRead === undefined && recencyReadable ? ['channel_list'] : []),
+    ];
     // The owner's own-author search seeds threads whatever the channel: a thread nobody mentioned the
     // owner in never reaches the handle search.
-    if (!writtenRead.ok) return writtenRead.result;
-    capture(writtenRead.evidence);
-    for (const raw of postsIn(writtenRead.evidence.decodedResult) ?? []) {
-      const post = childPost(raw);
-      if (post !== undefined && post.at >= cutoff) threadCandidate(post);
+    if (writtenRead !== undefined) {
+      if (!writtenRead.ok) return writtenRead.result;
+      capture(writtenRead.evidence);
+      for (const raw of postsIn(writtenRead.evidence.decodedResult) ?? []) {
+        const post = childPost(raw);
+        if (post !== undefined && post.at >= cutoff) threadCandidate(post);
+      }
     }
     // Mentions: the child's own handle search, with the window and the handle itself checked here.
-    if (!mentionsRead.ok) return mentionsRead.result;
-    capture(mentionsRead.evidence);
-    for (const raw of postsIn(mentionsRead.evidence.decodedResult) ?? []) {
-      const post = childPost(raw);
-      if (post === undefined || post.at < cutoff) continue;
-      if (isOwnerPost(who.owner, post.author)) { threadCandidate(post); continue; }
-      if (!mentionsOwner(who.owner, post.text)) continue;
-      push('mention', post);
-      threadCandidate(post);
+    if (mentionsRead !== undefined) {
+      if (!mentionsRead.ok) return mentionsRead.result;
+      capture(mentionsRead.evidence);
+      for (const raw of postsIn(mentionsRead.evidence.decodedResult) ?? []) {
+        const post = childPost(raw);
+        if (post === undefined || post.at < cutoff) continue;
+        if (isOwnerPost(who.owner, post.author)) { threadCandidate(post); continue; }
+        if (!mentionsOwner(who.owner, post.text)) continue;
+        push('mention', post);
+        threadCandidate(post);
+      }
     }
+    // A first wave that lost a leg ends here, after the answers above are kept: never the hard-coded pair.
+    // F2: the two later waves never ran, so they are named with the legs that did not answer; otherwise
+    // docs/connectors.md:32 would be true for one wave and false for the other two.
+    if (unanswered.length > 0) return finish([...unanswered, 'moved_conversations', 'threads']);
     // Direct and group conversations: the owner's own posts await no reply, but they seed the thread rule.
-    let missing: string | undefined;
     if (recentRead === undefined) missing = 'direct messages by recency need the newer chat archive';
     else {
       if (!recentRead.ok) return recentRead.result;
       capture(recentRead.evidence);
       const moved = (parseChannelList(recentRead.evidence.decodedResult) ?? [])
         .filter(channel => channel.id !== undefined && (channel.lastPostAt === undefined || Date.parse(channel.lastPostAt) >= cutoff));
-      const reads = await Promise.all(moved.map(async channel => read('mattermost_search', { query: '', channel: channel.id!, limit: MATTERMOST_ATTENTION.historyLimit, ...windowed }, signal)));
-      for (const history of reads) {
+      // Wave two: the conversations that moved, at the history limit. A budget end keeps the histories
+      // that did answer, then names the wave and the thread seeds it did not reach.
+      const second = await wave(moved.map(async channel => read('mattermost_search', { query: '', channel: channel.id!, limit: MATTERMOST_ATTENTION.historyLimit, ...windowed }, halt)));
+      for (const history of second.values) {
+        if (history === undefined) continue;
         if (!history.ok) return history.result;
         capture(history.evidence);
         for (const raw of postsIn(history.evidence.decodedResult) ?? []) {
@@ -885,12 +949,16 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
           threadCandidate(post);
         }
       }
+      if (!second.complete) return finish(['moved_conversations', 'threads']);
     }
     // Threads the owner started or joined: only a newest post from someone else awaits a reply. The
     // reads run together, and the cap keeps the scan's tail short.
     const roots = [...threads].slice(0, MATTERMOST_ATTENTION.maxThreads);
-    const threadReads = await Promise.all(roots.map(async rootId => read('mattermost_get_thread', { post_id: rootId }, signal)));
-    for (const thread of threadReads) {
+    // Wave three: the candidate threads under the rest of the budget. A budget end keeps the threads
+    // that did answer.
+    const third = await wave(roots.map(async rootId => read('mattermost_get_thread', { post_id: rootId }, halt)));
+    for (const thread of third.values) {
+      if (thread === undefined) continue;
       if (!thread.ok) continue;
       capture(thread.evidence);
       const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(childPost).filter((post): post is ChildPost => post !== undefined);
@@ -898,11 +966,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (newest === undefined || newest.at < cutoff || isOwnerPost(who.owner, newest.author)) continue;
       push('thread', newest);
     }
-    const items = scored.sort((left, right) => right.at - left.at).slice(0, limit).map(entry => entry.item);
-    // The digest stands on the identity read: its provenance is what the projection reports.
-    const composed = {...who.evidence};
-    delete composed[SOURCE_DISPATCH];
-    return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items, ...(missing === undefined ? {} : { missing }) } satisfies MattermostAttention };
+    return finish(third.complete ? [] : ['threads']);
   }
 
   /** C-CHAT: the argument names a child tool declares, so a read sends only what that child understands. */

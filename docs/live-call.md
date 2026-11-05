@@ -243,3 +243,11 @@ At each call start the host supplies a bounded fenced `OPENING_FACTS` data block
 The host withholds family-circle names and aliases from the people roster, subjects named by the authored lore's humour floors, illness, Freya and the boat, and monetary amounts or balances. The persona independently enforces its own floors. After the first spoken assistant turn completes or is interrupted, the host records only its semantic topic/entity keys with the call id and UTC timestamp in `delivered_opening_topics`. Later turns cannot overwrite that opening. Retention is bounded to 30 days and 100 calls; route/history authority still governs which calls seed the next opening. `opener_facts` logs counts only, never the facts or spoken text.
 
 The host's closed illness-word list is a conservative backstop; the persona's floor rule supplies the judgment layer.
+
+### Helper inference attempts
+
+`didi-timeline call <id> --audit` lists each observed unsuccessful inference attempt in order under its task, with its revision and elapsed milliseconds. `superseded` means the next revision cancelled the request, not a provider failure. `failed` names the reason code and closed provider error class; `deadline` means the helper exhausted its budget. Per-call outcome counts summarize these log observations. A persisted settled reason is a fallback, not another attempt. Provider diagnostics include an HTTP status and bounded request id when available, never a new free-text error field.
+
+## How deep an answer is
+
+For information asks, the helper includes every supported fact that matters to the question, in time or relevance order. Overlapping facts appear once; incidental hits stay out. Missing information is named at the end. Length follows the facts, without a target or a recap. There is no preamble or narration of the search. Banter, greetings and remarks without a lookup stay short and in character. Later words can revise an earlier fragment; the answer addresses the latest whole request.

@@ -124,6 +124,10 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   const withIdentity = <T extends { id: string; state: string; next: string }>(rowValue: T): T & { identity?: string } => (identity ? { ...rowValue, identity } : rowValue);
   if (state === 'connected') return withIdentity({ id, state: 'Connected', next: nextStep(id, state).text });
   if (state === 'configured') return withIdentity({ id, state: 'Configured', next: nextStep(id, state).text });
+  const refreshClass = record(row.exception)?.class;
+  const failedRefresh = typeof refreshClass === 'string' && ['refresh_rejected_4xx', 'refresh_rejected_5xx', 'refresh_network', 'refresh_malformed', 'storage', 'lock'].includes(refreshClass);
+  const refreshEndpoint = signInTarget(id);
+  if (refreshEndpoint && failedRefresh) return { id, state: 'Sign-in needed', next: `${signInLabel(refreshEndpoint)} sign-in needed: ${refreshClass}.`, signIn: true, signInEndpoint: refreshEndpoint };
   const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';
   const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : reason === 'needs_sign_in' ? 'Sign-in needed' : 'Failed';
   // W2-R1 / F4: the added reads a refusal names ride to the sentence, closed names only.

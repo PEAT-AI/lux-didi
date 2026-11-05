@@ -158,3 +158,21 @@ test('tool failure keeps the tool repair facts', () => {
   assert.equal(commentary.what_failed, 'synthetic_search');
   assert.equal(commentary.next_step, 'reconnect the synthetic source');
 });
+
+test('long complete answers split at sentences without cutting exact entities', () => {
+  const exact = ['Cedar Research Centre', 'Mira Chen Laboratory', 'TRIAL-2048', 'https://example.test/field/report'];
+  const sentences = exact.map((entity, index) => {
+    const prefix = index === 1 ? 'The confirmed destination is listed as ' : 'The destination is ';
+    const start = `${prefix}${entity} `;
+    return start + 'field detail '.repeat(40).slice(0, 399 - start.length) + '.';
+  });
+  const text = sentences.join(' ');
+  assert.ok(text.length >= 1600 && text.length < 1650);
+  const crossing = text.indexOf(exact[1]!);
+  assert.ok(crossing < 450 && crossing + exact[1]!.length > 450);
+  const parts = splitSpokenText(text, 450, exact);
+  assert.equal(parts.length, 4);
+  assert.ok(parts.every(part => part.length <= 450 && part.endsWith('.')));
+  for (const entity of exact) assert.equal(parts.filter(part => part.includes(entity)).length, 1);
+  assert.equal(parts.join(' '), text);
+});

@@ -189,7 +189,7 @@ function buildTaskAudit(read, lines = [], selection = {}) {
   for (const line of lines) {
     const record = line.record ?? line;
     if (line.stream !== undefined && line.stream !== 'host') continue;
-    if (!['task_lifecycle', 'task_delivery', 'task_tool', 'task_settled'].includes(record.event)) continue;
+    if (!['task_lifecycle', 'task_delivery', 'task_tool', 'task_settled', 'task_inference_failed', 'task_inference_superseded'].includes(record.event)) continue;
     // #1013: a line joins by the identity its envelope carries and by the identity its record carries. A
     // wrapped line keeps its identity inside the record, so reading only the envelope left the task events
     // of a real call unjoined; a line with neither identity is the only unjoined one.
@@ -214,7 +214,16 @@ function buildTaskAudit(read, lines = [], selection = {}) {
     if (record.event === 'task_delivery' && !deliveryStates.has(record.state)) continue;
     if (record.event === 'task_settled' && (!settledStatuses.has(record.status)
       || (record.reason_code !== undefined && !/^[a-z][a-z0-9_]{0,63}$/.test(record.reason_code)))) continue;
+    if (record.event.startsWith('task_inference_') &&
+      (!Number.isSafeInteger(record.elapsed_ms) || record.elapsed_ms < 0 ||
+       (record.event === 'task_inference_failed' &&
+        (!/^[a-z][a-z0-9_]{0,63}$/.test(record.reason_code ?? '') ||
+         !['dns', 'connect', 'reset', 'tls', 'abort', 'body', 'http_4xx', 'http_429', 'http_5xx', 'unknown'].includes(record.provider_error_class ?? 'unknown'))))) continue;
     events.push({ event: record.event, taskId, revision,
+      ...(record.event.startsWith('task_inference_') ? {
+        outcome: record.event === 'task_inference_superseded' ? 'superseded' : record.reason_code === 'deadline' ? 'deadline' : 'failed',
+        ...(record.event === 'task_inference_failed' ? { reason_code: record.reason_code, provider_error_class: record.provider_error_class ?? 'unknown' } : {}),
+        elapsed_ms: record.elapsed_ms } : {}),
       ...(record.event === 'task_lifecycle' ? { phase: record.phase, connectionGeneration: generation,
         ...(Number.isSafeInteger(record.count) && record.count >= 0 ? { count: record.count } : {}),
         ...(Number.isFinite(record.ms) && record.ms >= 0 ? { ms: record.ms } : {}) }
@@ -230,7 +239,9 @@ function buildTaskAudit(read, lines = [], selection = {}) {
       ...(Number.isFinite(line.at) ? { at: line.at } : {}) });
   }
   const deliveryEvents = events.filter(event => event.event === 'task_delivery');
-  const logAudit = { events,
+  const inferenceAttempts = events.filter(event => event.event.startsWith('task_inference_'));
+  const logAudit = { events, inferenceAttempts,
+    inferenceOutcomeCounts: Object.fromEntries(['superseded', 'failed', 'deadline'].map(outcome => [outcome, inferenceAttempts.filter(event => event.outcome === outcome).length])),
     lifecycleCoverage: events.some(event => event.event === 'task_lifecycle') ? 'observed host-log task identities' : 'unavailable: no matching task_lifecycle events with task identity and generation', helperEvents: events.filter(event => event.event === 'task_lifecycle' && ['inference', 'calls', 'dedupe'].includes(event.phase)), lifecycle: events.filter(event => event.event === 'task_lifecycle'), deliveryEvents,
     deliveryStates: Object.fromEntries(['sent', 'accepted', 'heard'].map(state => [state, deliveryEvents.length ? deliveryEvents.filter(event => event.state === state).length : null])),
     deliveryCoverage: deliveryEvents.length ? 'observed host-log events; counts are observations, not complete call coverage' : 'unavailable: no matching task_delivery host-log events',
@@ -298,14 +309,16 @@ module.exports = { buildTaskAudit, renderTaskAudit };
  */
 function renderTaskAudit(audit) {
   const lines = [`coverage: ${audit.coverage}`];
+  if (audit.inferenceOutcomeCounts) lines.push(`inference outcomes: ${Object.entries(audit.inferenceOutcomeCounts).map(([key, count]) => `${key}=${count}`).join(' ')}`);
   const tasks = new Map();
   const task = id => {
-    if (!tasks.has(id)) tasks.set(id, { status: null, revisions: null, current: null, deliveries: {}, phases: [], tools: [], settled: null });
+    if (!tasks.has(id)) tasks.set(id, { status: null, revisions: null, current: null, deliveries: {}, phases: [], tools: [], attempts: [], settled: null });
     return tasks.get(id);
   };
   const operations = new Map((audit.helperCalls ?? []).map(row => [row.operation_id, row]));
   for (const event of audit.events ?? []) {
-    if (event.event === 'task_tool') task(event.taskId).tools.push(event);
+    if (event.event.startsWith('task_inference_')) task(event.taskId).attempts.push(event);
+    else if (event.event === 'task_tool') task(event.taskId).tools.push(event);
     else if (event.event === 'task_settled') task(event.taskId).settled = event;
     else if (event.event === 'task_lifecycle') task(event.taskId).phases.push(`${event.phase}${Number.isFinite(event.at) ? `@${event.at}` : ''}`);
     else task(event.taskId).deliveries[`log:${event.state}`] = (task(event.taskId).deliveries[`log:${event.state}`] ?? 0) + 1;
@@ -324,6 +337,9 @@ function renderTaskAudit(audit) {
     const settled = entry.settled !== null ? ` settled=${entry.settled.status} reason=${entry.settled.reasonCode ?? 'none'}`
       : entry.failureReason === undefined ? '' : ` settled=${entry.status ?? 'unknown'} reason=${entry.failureReason}`;
     lines.push(`task ${id} status=${entry.status ?? 'unknown'} revisions=${entry.revisions ?? '?'}${entry.current === null || entry.current === undefined ? '' : `/${entry.current}`} delivery=${chunks}${settled}`);
+    for (const attempt of entry.attempts) {
+      lines.push(`  attempt revision=${attempt.revision} outcome=${attempt.outcome}${attempt.outcome === 'failed' ? ` ${attempt.reason_code} ${attempt.provider_error_class}` : ''} elapsed_ms=${attempt.elapsed_ms}`);
+    }
     for (const tool of entry.tools) {
       const stored = tool.operationId === undefined ? undefined : operations.get(tool.operationId);
       lines.push(`  tool ${tool.tool} outcome=${tool.category} ms=${tool.ms} cache=${tool.cache}`

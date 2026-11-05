@@ -3,7 +3,8 @@ import { readerFailure } from './results.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
 import type { VaultWriter } from '../tools/vault-write.js';
 import { createHash } from 'node:crypto';
-import type { Store } from '../runtime/store.js';
+import { readPublishedCatalogues, type Store } from '../runtime/store.js';
+import { join } from 'node:path';
 import type { Credentials } from '../adapters/model/types.js';
 import type { WebSearchPort } from '../tools/web-search.js';
 import * as memory from '../domain/memory.js';
@@ -39,7 +40,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
     const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer,
-      timeZone: options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings()), ...(options.log ? { log: options.log } : {}),
+      timeZone: options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings(), readPublishedCatalogues(join(options.store.directory, 'state.sqlite'))), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');
         if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen: exposed ?? false });

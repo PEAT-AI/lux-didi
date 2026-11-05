@@ -23,9 +23,16 @@ export function liveCallInLog(text) {
 export function canaryReceipt(text, callId) {
   const rows = text.split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
   const taskRows = rows.filter(row => ['task_lifecycle', 'task_tool', 'task_settled', 'task_inference_failed'].includes(row.event));
-  const missingIdentity = taskRows.filter(row => !row.liveSessionId).length;
   const call = taskRows.filter(row => row.liveSessionId === callId);
   const starts = new Set(call.filter(row => row.event === 'task_lifecycle' && row.phase === 'start' && typeof row.taskId === 'string').map(row => row.taskId));
+  const callTaskIds = new Set(call.map(row => row.taskId).filter(id => typeof id === 'string'));
+  // The identity census is this call's own work: a row carrying a task id seen with the target session, however
+  // its session field came out. A row with no session and no task this call ever ran is another call's crash
+  // leftover, counted as unknown_scope rather than charged to the canary.
+  const ownScope = row => row.liveSessionId === callId || (typeof row.taskId === 'string' && callTaskIds.has(row.taskId));
+  const scoped = taskRows.filter(ownScope);
+  const missingIdentity = scoped.filter(row => !row.liveSessionId).length;
+  const unknownScope = taskRows.filter(row => !row.liveSessionId && !ownScope(row)).length;
   const joined = call.filter(row => starts.has(row.taskId));
   const tools = joined.filter(row => row.event === 'task_tool');
   const settlements = joined.filter(row => row.event === 'task_settled');
@@ -37,6 +44,7 @@ export function canaryReceipt(text, callId) {
   const safe = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(value) ? value : 'unknown';
   const lines = [...tools, ...settlements].map(row => `CANARY ${row.event === 'task_tool' ? 'TOOL' : 'TASK'} tool=${safe(row.tool ?? 'none')} outcome=${safe(row.category ?? row.status)} code=${safe(row.reason_code ?? 'none')} ms=${Number.isFinite(row.durationMs ?? row.elapsed_ms) ? Math.max(0, row.durationMs ?? row.elapsed_ms) : 0}`);
   if (missingIdentity) lines.push(`CANARY FINDING code=task_call_identity_missing count=${missingIdentity}`);
+  if (unknownScope) lines.push(`CANARY FINDING code=task_call_unknown_scope count=${unknownScope}`);
   return { ok: !code, code: safe(code ?? 'ok'), lines };
 }
 

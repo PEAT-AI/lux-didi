@@ -37,7 +37,7 @@ export interface McpAdapterOptions {
 }
 /** Concurrent dispatched calls allowed per endpoint; callers beyond it queue in arrival order. */
 const DEFAULT_MAX_CONCURRENT_CALLS = 6;
-class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
+class PolicyError extends Error { constructor(readonly reason: string, options?: ErrorOptions) { super(reason, options); } }
 /**
  * #351: a stdio connector closed its pipe before the handshake finished, so it never started. The cause
  * is local and stable (a missing build, a moved binary, a crashed child), never a transient read failure,
@@ -112,7 +112,7 @@ const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp
 
 /** All HTTP egress passes this supported SDK fetch seam; native Host, no global patch. */
 function guardedFetch(session: Session, options: McpAdapterOptions, budgets: McpBudgets, onFatal: () => void,
-  onCredentialRefusal: (endpointId: string, code: string) => void): typeof fetch {
+  onCredentialRefusal: (endpointId: string, code: string, error: unknown) => void): typeof fetch {
   return async (input, init) => {
     const request = new Request(input, init);
     const config = options.registry.endpoint(session.config.id);
@@ -136,7 +136,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
       // as an unclassified fetch error and the endpoint would report an unknown transport failure.
       const token = await bounded(options.resolveCredential(config.credentialRef), signal).catch((error: unknown) => {
         const code = (error as { code?: unknown })?.code;
-        if (typeof code === 'string' && /^credential-[a-z-]{1,40}$/.test(code)) { onCredentialRefusal(session.config.id, code); throw new PolicyError(code); }
+        if (typeof code === 'string' && /^credential-[a-z-]{1,40}$/.test(code)) { onCredentialRefusal(session.config.id, code, error); throw new PolicyError(code, { cause: error }); }
         throw error;
       });
       if (!token || /[\r\n]/.test(token)) throw new PolicyError('credential-unavailable');
@@ -308,7 +308,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
   const suspended = new Set<string>(); const waiters = new Map<string, Set<() => void>>();
   // #502: the credential seam's closed refusal, kept so the connect/discovery classification can name
   // it after the SDK has wrapped the fetch error into an unclassified one.
-  const credentialRefusals = new Map<string, string>();
+  const credentialRefusals = new Map<string, { code: string; class: string; httpStatus?: number }>();
   const schemaValidator = new AjvJsonSchemaValidator();
   let closed = false;
   function suspend(id: string): void {
@@ -372,7 +372,10 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
       };
       transport = stdio;
     } else {
-      transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id), (endpointId, code) => credentialRefusals.set(endpointId, code)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+      transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id), (endpointId, code, error) => {
+        const httpStatus = discoveryExceptionStatus(error);
+        credentialRefusals.set(endpointId, { code, class: discoveryExceptionClass(error), ...(httpStatus !== undefined ? { httpStatus } : {}) });
+      }), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     }
     sessions.set(config.id, session);
     const connectMs = isStdioEndpoint(config) ? stdioConnect : httpConnect;
@@ -453,7 +456,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
         const className = credential !== undefined ? 'CredentialError'
           : error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown';
         const localCodes = ['discovery-invalidated', 'source-egress-not-approved', 'invalid-endpoint-config', 'unknown-endpoint'];
-        if (credential !== undefined) return { state: 'unavailable', reason: credential, exception: { class: 'CredentialError', code: credential } };
+        if (credential !== undefined) return { state: 'unavailable', reason: credential.code, exception: credential };
         if (error instanceof ConnectorStartFailure) return { state: 'unavailable', reason: 'connector-unavailable', exception: { class: error.className, code: error.code } };
         if ((error instanceof PolicyError && error.reason === 'timeout-or-cancelled')
             || (error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout)
@@ -462,7 +465,9 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
         }
         const code = error instanceof PolicyError ? error.reason
           : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';
-        return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception: { class: discoveryExceptionClass(error), code } };
+        const status = discoveryExceptionStatus(error);
+        const exception = { class: discoveryExceptionClass(error), code, ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}) };
+        return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception };
       } finally { releaseExclusive(); }
     },
     visibleTools(endpointId: string) { return options.registry.visibleTools(endpointId); },
@@ -581,7 +586,8 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
 /** C-CONNWAIT: closed diagnostics only; never inspect or publish exception messages. */
 export function discoveryExceptionClass(error: unknown): string {
   for (let depth = 0; depth < 3 && error && typeof error === 'object'; depth++) {
-    const value = error as { code?: unknown; status?: unknown; cause?: unknown; name?: unknown };
+    const value = error as { code?: unknown; status?: unknown; cause?: unknown; name?: unknown; causeClass?: unknown };
+    if (typeof value.causeClass === 'string' && ['refresh_rejected_4xx', 'refresh_rejected_5xx', 'refresh_network', 'refresh_malformed', 'storage', 'lock'].includes(value.causeClass)) return value.causeClass;
     if (value.code === 'ECONNREFUSED') return 'refused';
     if (value.code === 'ENOTFOUND' || value.code === 'EAI_AGAIN') return 'dns';
     if (typeof value.code === 'string' && /^(ERR_TLS_|CERT_|DEPTH_ZERO_|UNABLE_TO_VERIFY_)/.test(value.code)) return 'tls';
@@ -592,4 +598,14 @@ export function discoveryExceptionClass(error: unknown): string {
     error = value.cause;
   }
   return 'unknown';
+}
+
+/** Only a bounded integer survives the same closed cause chain as the failure class. */
+function discoveryExceptionStatus(error: unknown): number | undefined {
+  for (let depth = 0; depth < 3 && error && typeof error === 'object'; depth++) {
+    const value = error as { status?: unknown; cause?: unknown };
+    if (typeof value.status === 'number' && Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) return value.status;
+    error = value.cause;
+  }
+  return undefined;
 }

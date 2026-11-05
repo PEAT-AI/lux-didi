@@ -4,10 +4,23 @@ import { geminiDialect } from '../tools/declarations.js';
 import type { Infer, InferRequest, Inference, ToolCall } from './worker.js';
 import type { Schema } from './tools.js';
 export const PROVIDER_REASONS = ['provider_rejected', 'provider_auth', 'provider_rate_limited', 'provider_unavailable', 'provider_incomplete', 'provider_empty', 'credential_unavailable', 'provider_timeout'] as const;
+export const PROVIDER_ERROR_CLASSES = ['dns', 'connect', 'reset', 'tls', 'abort', 'body', 'http_4xx', 'http_429', 'http_5xx', 'unknown'] as const;
+export type ProviderErrorClass = typeof PROVIDER_ERROR_CLASSES[number];
+function transportClass(error: unknown): ProviderErrorClass {
+  const value = error as { name?: string; code?: string; cause?: { code?: string } } | undefined;
+  const code = value?.code ?? value?.cause?.code ?? '';
+  if (['ENOTFOUND', 'EAI_AGAIN'].includes(code)) return 'dns';
+  if (['ECONNREFUSED', 'EHOSTUNREACH', 'ETIMEDOUT'].includes(code)) return 'connect';
+  if (['ECONNRESET', 'EPIPE'].includes(code)) return 'reset';
+  if (/^(ERR_TLS_|ERR_SSL_|CERT_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE)/.test(code)) return 'tls';
+  return value?.name === 'AbortError' ? 'abort' : 'unknown';
+}
 export class ProviderError extends Error {
   readonly detail: string;
-  constructor(readonly reason_code: typeof PROVIDER_REASONS[number], detail = '', readonly status?: number, readonly request_id?: string) {
+  readonly request_id: string | undefined;
+  constructor(readonly reason_code: typeof PROVIDER_REASONS[number], detail = '', readonly status?: number, request_id?: string, readonly error_class: ProviderErrorClass = status === 429 ? 'http_429' : status !== undefined && status >= 500 ? 'http_5xx' : status !== undefined && status >= 400 ? 'http_4xx' : 'unknown') {
     super(reason_code); this.name = 'ProviderError'; this.detail = redactSecrets(detail).slice(0, 2000);
+    this.request_id = request_id && /^[A-Za-z0-9_-]+$/.test(request_id) ? request_id.slice(0, 64) : undefined;
   }
 }
 export const DEFAULT_WORKER_MODEL = 'gpt-6.1-terra';
@@ -90,7 +103,7 @@ export function createModelPort(options: ModelOptions): Infer {
     }
     let response: Response;
     try { response = await send(url, { method: 'POST', headers, body: JSON.stringify(body), signal }); }
-    catch (error) { throw new ProviderError(signal.aborted ? 'provider_timeout' : 'provider_unavailable', error instanceof Error ? error.message : ''); }
+    catch (error) { throw new ProviderError(signal.aborted ? 'provider_timeout' : 'provider_unavailable', error instanceof Error ? error.message : '', undefined, undefined, transportClass(error)); }
     if (!response.ok) {
       const code = response.status === 401 || response.status === 403 ? 'provider_auth' : response.status === 429 ? 'provider_rate_limited' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected';
       let detail = '';
@@ -99,10 +112,10 @@ export function createModelPort(options: ModelOptions): Infer {
     }
     const requestId = response.headers.get('x-request-id') ?? response.headers.get('request-id') ?? undefined;
     let raw: string;
-    try { raw = await response.text(); } catch { throw new ProviderError(signal.aborted ? 'provider_timeout' : 'provider_unavailable', 'response_body_unavailable', response.status, requestId); }
+    try { raw = await response.text(); } catch { throw new ProviderError(signal.aborted ? 'provider_timeout' : 'provider_unavailable', 'response_body_unavailable', response.status, requestId, 'body'); }
     const detail = redactSecrets(raw.split(key).join('[REDACTED]')).slice(0, 2000);
     let json: Record<string, unknown>;
-    try { json = record(JSON.parse(raw)); } catch { throw new ProviderError('provider_incomplete', detail, response.status, requestId); }
+    try { json = record(JSON.parse(raw)); } catch { throw new ProviderError('provider_incomplete', detail, response.status, requestId, 'body'); }
     const calls: ToolCall[] = []; const texts: string[] = [];
     if (role.provider === 'openai') {
       if (json.status !== 'completed') throw new ProviderError('provider_incomplete', detail, response.status, requestId);

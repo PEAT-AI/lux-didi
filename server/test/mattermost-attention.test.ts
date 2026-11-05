@@ -13,7 +13,8 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy } from '../tools/types.js';
-import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/index.js';
+import { CONNECTOR_DEADLINE_MS } from '../tasks/worker.js';
+import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_ATTENTION_BUDGET_MS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/index.js';
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
 
@@ -51,9 +52,9 @@ async function approve(registry: McpRegistry, adapter: ReturnType<typeof createM
   return approveWithout(registry, adapter, MATTERMOST_TOOLS);
 }
 
-function reader(adapter: ReturnType<typeof createMcpAdapter>, registry: McpRegistry, schemaDigest: string, names: readonly string[] = [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL]) {
+function reader(adapter: ReturnType<typeof createMcpAdapter>, registry: McpRegistry, schemaDigest: string, names: readonly string[] = [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL], budgetMs?: number) {
   // #604: the registry grant holds the published child names; the approved policy names the composite.
-  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names } });
+  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names }, ...(budgetMs === undefined ? {} : { attentionBudgetMs: budgetMs }) });
 }
 
 function digest(result: { state: string; decodedResult?: unknown }): MattermostAttention {
@@ -259,6 +260,82 @@ test('#610: a search asks for at most the child maximum and reads newest first',
   assert.equal(first?.arguments['sort'], 'newest');
 });
 
+// #1016: a slow wave used to end the whole attention read with a task timeout, throwing away every wave
+// that had answered. The scan now ends at its own budget and returns what it found, with the gap named.
+test('#1016: a stalled child yields the waves that answered, with the missing wave named', async t => {
+  const f = setup('stall-thread');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_000);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  // The stalled thread read answers after six seconds, so only the scan's own budget can end it here.
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled child (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from threads/u, 'the coverage line names the wave that did not finish');
+  // The other threads in the same wave answered: their items are kept, never dropped with the stalled one.
+  assert.deepEqual(summaries(view.items), ['thread dana I can take it tomorrow morning', 'dm dana sent you the deck for review', 'mention dana @owner-chat can you confirm the 3k release?'], 'the waves that answered are kept');
+  const rendered = renderAttention(view);
+  assert.match(rendered.text, /^note: .*no answer from threads/u, 'the model reads the coverage line before the items');
+});
+
+// A budget end inside a wave must keep the siblings that answered there, not just the earlier waves.
+test('#1016: a stalled conversation keeps the history that answered in the same wave', async t => {
+  const f = setup('stall-dm');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_000);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled history (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from moved_conversations/u, 'the coverage line names the stalled wave');
+  assert.deepEqual(summaries(view.items), ['dm ravi sent the retest notes', 'mention dana @owner-chat can you confirm the 3k release?'], 'the history that answered is kept');
+});
+
+// The identity read is a child call too: the budget is armed before it, so a slow whoami ends the scan
+// there, named and partial, instead of running the waves past the task's read stop.
+test('#1016: an identity read that spends the budget ends the scan, named', async t => {
+  const f = setup('slow-identity');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 1_000);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  // The identity read answers after two seconds, against a 1,000 ms budget and the child's own 5 s stop.
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not after the waves (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a spent budget is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from the identity read/u, 'the coverage line names the identity read');
+  assert.deepEqual(view.items, [], 'no wave ran once the budget was spent');
+  assert.deepEqual(f.calls().filter(call => call.name === 'mattermost_search'), [], 'no wave child call follows a spent budget');
+});
+
+// The budget must end the scan before the task layer stops the read, or the evidence is thrown away again.
+test('#1016: the attention budget ends the scan below the task read stop', () => {
+  assert.ok(MATTERMOST_ATTENTION_BUDGET_MS < CONNECTOR_DEADLINE_MS, 'the scan ends before the task layer stops the read');
+});
+
+// Owner rule: direct and group conversations only, never the whole channel list.
+test('#1016: attention reads one direct and group page, never the whole channel list', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  await r.attention({});
+  const lists = f.calls().filter(call => call.name === 'mattermost_list_channels');
+  assert.equal(lists.length, 1, 'one filtered page, never an unfiltered list');
+  assert.deepEqual(lists[0]?.arguments, { types: ['D', 'G'], sort: 'recent', limit: MATTERMOST_ATTENTION.maxDmChannels });
+});
+
+// A budget end is partial; a child that fails is a failure, and the two are never confused.
+test('#1016: a failing child is still a failure, never a partial digest', async t => {
+  const f = setup('error-mentions');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  const result = await r.attention({});
+  assert.notEqual(result.state, 'completed', 'an upstream failure stays a failure');
+  assert.equal('decodedResult' in result ? (result.decodedResult as { items?: unknown }).items : undefined, undefined, 'no digest stands in for a failure');
+});
+
 // #604: a fixture that does not publish the thread read leaves the composite ungranted, and the
 // caller hears the connector's own closed reason instead of an unknown tool.
 test('#604: an ungranted composite refuses with tool-not-granted', async t => {
@@ -319,4 +396,31 @@ test('R29 an actual native attention read advances task exposure, while invalid 
   const result = await runtime.runTool('chat_attention', { days: 7, limit: 5 }, { ...revision.identity, operation_id: 'native-read' }, new AbortController().signal);
   assert.notEqual(result.status, 'failed', JSON.stringify(result));
   assert.ok(runtime.taskContext(revision.identity.task_id)?.exposures.includes('company'));
+});
+
+// C-W17: the first wave is the two searches plus the channel list. When the budget ends inside it, the
+// entries that answered are consumed exactly as the later waves consume theirs, and only the leg that did
+// not answer is named: never the hard-coded pair 'mentions, threads', which named a search that answered.
+test('C-W17: a first-wave budget end keeps the answered searches and names only channel_list', async t => {
+  const f = setup('stall-channels');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_000);
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  // The stalled channel list answers after six seconds, so only the scan's own budget can end it here.
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled child (${elapsed} ms)`);
+  assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
+  assert.match(view.missing ?? '', /no answer from channel_list/u, 'the coverage line names the leg that did not answer');
+  // F2: the later waves never ran, so the coverage line must name them too, or docs/connectors.md:32
+  // ("the wave has not answered") would be true for one wave and false for the other two.
+  // One "no answer from" prefixes the whole list, so the later waves are asserted by name.
+  assert.match(view.missing ?? '', /, moved_conversations\b/u, 'the second wave never ran, so it is named');
+  assert.match(view.missing ?? '', /, threads\b/u, 'the third wave never ran, so it is named');
+  assert.doesNotMatch(view.missing ?? '', /mentions|own_written/u, 'the searches answered, so they are never named');
+  // Both searches answered and their evidence is consumed: before the fix the digest dropped every item
+  // and named 'mentions, threads', so a kept mention item is the observable difference.
+  const kept = summaries(view.items);
+  assert.ok(kept.some(item => item.startsWith('mention ')), `the mention search's items are kept (${kept.join(' | ')})`);
+  assert.ok(kept.length > 0, 'the digest carries the answered evidence, never an empty partial');
 });

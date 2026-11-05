@@ -50,7 +50,7 @@ export function validateArguments(tool: TaskTool, value: unknown): { ok: true; a
   const valid = schemaValidator.getValidator(tool.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0])(value).valid;
   return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: structuredClone(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
 }
-export interface Definition { name: string; description: string; fields: Record<string, Schema>; effect?: Effect; outside: boolean; validate?: (args: Record<string, unknown>) => boolean }
+export interface Definition { name: string; description: string; fields: Record<string, Schema>; parameters?: Schema; effect?: Effect; outside: boolean; validate?: (args: Record<string, unknown>) => boolean }
 // Reuse native field bounds and nullable normal form, but keep each capability's schema distinct.
 const chatFields = strictSchema({ type: 'object', ...MATTERMOST_CHAT_PARAMETERS }).properties as Record<string, Schema>;
 const chatPage = Object.fromEntries(['from_date', 'to_date', 'offset', 'limit', 'order'].map(key => [key, chatFields[key]!]));
@@ -105,7 +105,7 @@ export function createRegistry(ports: ToolPorts, configured: readonly Definition
   for (const definition of [...definitions, ...configured]) {
     const effect = definition.effect ?? 'none';
     const tool: TaskTool = {
-      name: definition.name, description: definition.description, parameters: object(definition.fields), effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
+      name: definition.name, description: definition.description, parameters: definition.parameters ?? object(definition.fields), effect, outside_text: definition.outside, ...(definition.validate ? { validate: definition.validate } : {}),
       async run(args, identity, signal, outsideTextSeen = false) {
         const validation = validateArguments(tool, args);
         if (!validation.ok) {

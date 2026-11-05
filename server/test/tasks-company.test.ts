@@ -244,3 +244,26 @@ test('a configured failing CRM endpoint remains reachable through the host regis
   assert.match(JSON.stringify(result), /[Ss]ign-in/);
   assert.equal(crmReads, 0, 'a catalogue-less endpoint returns its repair without dispatching a CRM request');
 });
+
+test('a schema-valid data job call reaches repair for a configured failing data endpoint', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-company-failing-data-'));
+  const store = new Store(directory);
+  const healthy = dataBinding([], []);
+  const healthyJob = configuredCompanyTools([healthy]).find(tool => tool.name === 'data_agent_job')!;
+  let dispatches = 0;
+  const failing: BoundConnector = { connector: 'mongoose', policy: { ...healthy.policy, connectionId: 'configured-failing-data', endpoint: { ...healthy.policy.endpoint, id: 'configured-failing-data' } },
+    reader: { call: async () => { dispatches++; throw new Error('credential-refresh-failed'); } },
+  };
+  const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [failing], timeZone: 'UTC',
+    infer: async () => ({ text: '', calls: [], no_action: true }), effectCheck: async () => true,
+  })('synthetic-data-repair', new FakeDelivery());
+  t.after(() => { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  assert.equal(runtime.registry.has('data_agent_job'), true);
+  const revision = runtime.begin('Continue the synthetic data job', 1, 1);
+  const result = await runtime.runTool('data_agent_job', { job_id: jobId, op: 'get' }, { ...revision.identity, operation_id: 'synthetic-data-repair' }, new AbortController().signal);
+  assert.match(JSON.stringify(result), /not_configured/);
+  assert.match(JSON.stringify(result), /data endpoint/);
+  assert.match(JSON.stringify(result), /[Ss]ign-in/);
+  assert.deepEqual(runtime.registry.get('data_agent_job')!.parameters.properties, healthyJob.fields, 'repair route retains the healthy job argument fields');
+  assert.equal(dispatches, 0);
+});

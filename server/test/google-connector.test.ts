@@ -464,7 +464,9 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
       assert.deepEqual(secondPage.references.map(item => item.id), ['page-two']);
       assert.equal(secondPage.next_cursor, null);
       const before = readFileSync(`${pidFile}.calls`, 'utf8');
-      const badId = await callTool('read_mail', { id: '', cursor: null });
+      const emptyId = await callTool('read_mail', { id: '', cursor: null });
+      assert.equal(emptyId.reason_code, 'bad_argument', 'empty public argument is not a native reference refusal');
+      const badId = await callTool('read_mail', { id: 'x'.repeat(4097), cursor: null });
       assert.equal(badId.reason_code, 'wrong_id');
       assert.match(badId.repair ?? '', /Search again and read an id the search returned/);
       assert.equal(readFileSync(`${pidFile}.calls`, 'utf8'), before, 'malformed reference never reaches the wire');

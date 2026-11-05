@@ -140,7 +140,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const items: RankedItem[] = list.flatMap(raw => {
     const item = record(raw), itemId = String((name === 'search_company' ? item.ref ?? item.id : item.id ?? item.ref) ?? item.file_id ?? '');
     if (!itemId) return [];
-    const subject = name === 'search_mail' && Array.isArray(item.headers) ? item.headers.map(record).find(header => text(header.name).toLowerCase() === 'subject')?.value : undefined;
+    const subject = name === 'search_mail' ? (Array.isArray(item.headers) ? item.headers.map(record).find(header => text(header.name).toLowerCase() === 'subject')?.value : record(item.headers).Subject) : undefined;
     return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
   });
   if (name === 'search_knowledge' || name === 'search_company') return rankedResult(text(args.query), items);

@@ -144,7 +144,9 @@ Ranked connector searches preserve native ids and completeness. A finished mail 
 with the returned ids and no cursor; a paged search is `partial` with the native continuation
 cursor, and the same query plus that cursor reads the next page. Source-reported cuts also remain
 `partial`. Structured evidence retains the same approved outside-text disclosure provenance.
-A reader that cannot resolve a reference returns `wrong_id` and asks the helper to search again
-and read an id the search returned. Connection failures and upstream outages remain `source_down`.
+A native reader's malformed reference refusal returns `wrong_id`; an upstream reference lookup
+that reports no match returns `not_found`. Both ask the helper to search again and read an id the
+search returned, and neither means `source_down`. Empty public arguments remain `bad_argument`.
+Connection failures and upstream outages remain `source_down`.
 Tool-failure diagnostics may include a closed, content-free `connectorCode`, never a source id,
 account, subject or connector error message.

@@ -237,6 +237,35 @@ test('W18: the canary summary counts the asks that verified and the ones that fa
   assert.match(report.lines[0], /^CANARY SUMMARY pass=2 fail=0 asks=2 providerTurns=\d+ callId=/);
 });
 
+// W18 O1: the host-log sink counted every failing settle, so two inside one ask window made `fail` larger than
+// `asks`. Failures are counted per ask now.
+test('W18: two failing settles in one ask window are one failed ask', async () => {
+  const id = '44444444-4444-4444-8444-444444444444';
+  let ready = false;
+  let injected = 0;
+  const live = {
+    create: () => ({ liveSessionId: id }),
+    snapshot: () => ({ lifecycle: 'active', terminal: null }),
+    providerReady: () => ready,
+    text: () => {
+      injected += 1;
+      if (injected === 1) hostLogEvent({ event: 'task_settled', taskId: 'synthetic-task', status: 'complete', findings: 1 });
+      else {
+        hostLogEvent({ event: 'task_inference_failed', taskId: 'synthetic-task', reason_code: 'provider_auth' });
+        hostLogEvent({ event: 'task_inference_failed', taskId: 'synthetic-task', reason_code: 'provider_auth' });
+      }
+    },
+    revoke: () => {},
+  };
+  const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
+  const host = new InstalledCanary(store, live, async () => { ready = true; });
+  host.open([taskAsk, { ...taskAsk, id: 'synthetic-read-second' }], { clientId: 'owner' });
+  const report = await host.run(id, 'owner');
+  assert.equal(report.passed, 1);
+  assert.equal(report.failed, 1);
+  assert.match(report.lines[0], /^CANARY SUMMARY pass=1 fail=1 asks=2 providerTurns=\d+ callId=/);
+});
+
 test('actual HTTP canary opener rejects model-shaped/browser requests and marks only native bearer sessions', async t => {
   const { Store } = await import(built('runtime/store.js'));
   const { listenService } = await import(built('http/server.js'));

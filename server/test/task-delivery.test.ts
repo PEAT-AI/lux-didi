@@ -51,7 +51,7 @@ test('no_action tells an open delegation the situation, and otherwise sends noth
   const f = fixture(); const result = { status: 'no_action' as const, text: '', findings: [] };
   f.delivery.deliver(identity, result); assert.equal(f.sends.length, 0);
   f.delivery.attach(identity, 'd1'); f.delivery.deliver(identity, result);
-  assert.equal(f.sends[0]!.text);
+  assert.match(f.sends[0]!.text, /"kind":"no_action"/);
   f.delivery.accepted(f.sends[0]!.command); assert.equal(f.delivery.waitingAnswer(), undefined);
 });
 test('VOICE-R15: every delivery state and lifecycle identity survives closed safe audit serialization', () => {

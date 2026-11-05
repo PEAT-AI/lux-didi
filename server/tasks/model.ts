@@ -49,7 +49,7 @@ const terminalRule = '\nFor plain conversation with no action, return the JSON o
 /** No credential discovery here: the host supplies its existing reference resolver. */
 export function createModelPort(options: ModelOptions): Infer {
   return async (request, signal) => {
-    if (options.role.provider === 'gemini' && !options.role.model) throw new Error('Configure the Gemini role model explicitly');
+    if (options.role.provider === 'gemini' && !options.role.model) throw new ProviderError('provider_unavailable', 'gemini_model_unconfigured');
     const role: ModelRole = { provider: options.role.provider ?? 'openai', model: options.role.model ?? DEFAULT_WORKER_MODEL, effort: options.role.effort ?? DEFAULT_WORKER_EFFORT, keyReference: options.role.keyReference };
     let key: string | undefined;
     try { key = await options.credentials.resolve(role.keyReference); } catch { throw new ProviderError('credential_unavailable'); }
@@ -97,10 +97,15 @@ export function createModelPort(options: ModelOptions): Infer {
       try { detail = await response.text(); } catch { detail = 'response_body_unavailable'; }
       throw new ProviderError(code, redactSecrets(detail.split(key).join('[REDACTED]')), response.status, response.headers.get('x-request-id') ?? response.headers.get('request-id') ?? undefined);
     }
-    const json = record(await response.json());
+    const requestId = response.headers.get('x-request-id') ?? response.headers.get('request-id') ?? undefined;
+    let raw: string;
+    try { raw = await response.text(); } catch { throw new ProviderError(signal.aborted ? 'provider_timeout' : 'provider_unavailable', 'response_body_unavailable', response.status, requestId); }
+    const detail = redactSecrets(raw.split(key).join('[REDACTED]')).slice(0, 2000);
+    let json: Record<string, unknown>;
+    try { json = record(JSON.parse(raw)); } catch { throw new ProviderError('provider_incomplete', detail, response.status, requestId); }
     const calls: ToolCall[] = []; const texts: string[] = [];
     if (role.provider === 'openai') {
-      if (json.status !== 'completed') throw new ProviderError('provider_incomplete');
+      if (json.status !== 'completed') throw new ProviderError('provider_incomplete', detail, response.status, requestId);
       for (const raw of Array.isArray(json.output) ? json.output : []) {
         const item = record(raw);
         if (item.type === 'function_call' && typeof item.name === 'string' && typeof item.call_id === 'string') calls.push({ id: item.call_id, name: item.name, args: callArgs(item.arguments) });
@@ -111,7 +116,7 @@ export function createModelPort(options: ModelOptions): Infer {
       }
     } else {
       const candidate = record((Array.isArray(json.candidates) ? json.candidates : [])[0]);
-      if (candidate.finishReason !== 'STOP') throw new ProviderError('provider_incomplete');
+      if (candidate.finishReason !== 'STOP') throw new ProviderError('provider_incomplete', detail, response.status, requestId);
       const content = record(candidate.content);
       for (const raw of Array.isArray(content.parts) ? content.parts : []) {
         const part = record(raw), call = record(part.functionCall);
@@ -119,7 +124,7 @@ export function createModelPort(options: ModelOptions): Infer {
         if (typeof call.name === 'string') calls.push({ id: typeof call.id === 'string' ? call.id : `gemini-${request.turns.length}-${calls.length}`, name: call.name, args: call.args });
       }
     }
-    if (!calls.length && !texts.length) throw new ProviderError('provider_empty');
+    if (!calls.length && !texts.join('').trim()) throw new ProviderError('provider_empty', detail, response.status, requestId);
     const items = role.provider === 'openai' ? (Array.isArray(json.output) ? json.output : []) : (record(record((json.candidates as unknown[])[0]).content).parts as unknown[]);
     return { ...terminal(texts.join('\n'), calls), continuation: { provider: role.provider, items } };
   };

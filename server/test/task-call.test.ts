@@ -198,8 +198,8 @@ for (const failedRead of [false, true]) test(`review F1: prior voice speech cann
   const result = await running; assert.equal(reads, 1);
   assert.equal(result.status, failedRead ? 'incomplete' : 'complete');
   assert.equal(result.findings.length, failedRead ? 0 : 1);
-  assert.ok(result.text.trim()); assert.equal(f.sent.length, 1);
-  assert.equal(f.sent[0]!.text, result.text);
+  if (failedRead) { assert.equal(result.text, ''); assert.equal(f.sent.length, 0); }
+  else { assert.ok(result.text.trim()); assert.equal(f.sent.length, 1); assert.equal(f.sent[0]!.text, result.text); }
 });
 
 for (const text of ['', 'Synthetic late answer.']) test(`C-SILENCE: late delegation retains terminal ${JSON.stringify(text)}`, async t => {

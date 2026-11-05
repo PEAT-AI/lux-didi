@@ -317,3 +317,19 @@ and a provider final that arrives after the cut is recognized as the same senten
 twice. The turn's own `first_audible_at` survives a later response inside that turn, and
 `attribution_uncertain` is set only on a turn that replaced one still open, because only then can a
 provider transcript belong to either.
+
+### Helper inference failures
+
+`task_inference_failed` records the task, revision, inference or final stage, closed
+`reason_code`, optional HTTP status, model, tool count, instruction size and elapsed
+milliseconds. Its provider detail is secret-redacted and capped at 2,000 characters.
+Provider rejection, authentication, rate limiting, unavailability, incomplete or empty
+responses, missing credentials and aborts have distinct reason codes. A revision
+expiry is `deadline`. `task_runtime_rejected` identifies an unexpected runtime
+rejection without copying its exception message.
+
+`task_settled` records the actual status and helper failure reason. Lifecycle
+`phase=complete` means complete or no_action, not an inference failure; incomplete
+and cancelled tasks carry those phases. `verifiedStatus.last_task.failure` is host
+fact data, not a sentence for the voice to repeat. Failed inference without findings
+has empty text. Voice commentary for those facts is owned by the delivery layer.

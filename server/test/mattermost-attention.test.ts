@@ -412,7 +412,11 @@ test('C-W17: a first-wave budget end keeps the answered searches and names only 
   assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled child (${elapsed} ms)`);
   assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
   assert.match(view.missing ?? '', /no answer from channel_list/u, 'the coverage line names the leg that did not answer');
-  assert.doesNotMatch(view.missing ?? '', /mentions|own_written|threads/u, 'the searches answered, so they are never named');
+  // F2: the later waves never ran, so the coverage line must name them too, or docs/connectors.md:32
+  // ("the wave has not answered") would be true for one wave and false for the other two.
+  assert.match(view.missing ?? '', /no answer from moved_conversations/u, 'the second wave never ran, so it is named');
+  assert.match(view.missing ?? '', /no answer from threads/u, 'the third wave never ran, so it is named');
+  assert.doesNotMatch(view.missing ?? '', /mentions|own_written/u, 'the searches answered, so they are never named');
   // Both searches answered and their evidence is consumed: before the fix the digest dropped every item
   // and named 'mentions, threads', so a kept mention item is the observable difference.
   const kept = summaries(view.items);

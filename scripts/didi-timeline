@@ -228,11 +228,14 @@ function buildTaskAudit(read, lines = [], selection = {}) {
   let operationColumns = new Set();
   try { operationColumns = new Set(read.all("SELECT name FROM pragma_table_info('task_operations')").map(row => String(row.name))); }
   catch { operationColumns = new Set(); }
-  const reasonColumn = operationColumns.has('reason_code') ? ',reason_code' : ',NULL AS reason_code';
+  // F2: the column reaches a row only when it exists, so a schema without it projects no key at all and the
+  // renderer prints no reason line rather than a confident none.
+  const reasonCode = operationColumns.has('reason_code');
+  const reasonColumn = reasonCode ? ',reason_code' : '';
   try {
     const tasks = project(read.all('SELECT task_id,created_at,updated_at,current_revision,status FROM tasks ORDER BY created_at,task_id'), ['task_id', 'created_at', 'updated_at', 'current_revision', 'status']);
     const revisions = project(read.all('SELECT task_id,task_revision,connection_generation,created_at FROM task_revisions ORDER BY created_at,task_id,task_revision'), ['task_id', 'task_revision', 'connection_generation', 'created_at']);
-    const operations = project(read.all(`SELECT operation_id,task_id,task_revision,connection_generation,tool,effect,state,created_at,updated_at${reasonColumn} FROM task_operations ORDER BY created_at,operation_id`), ['operation_id', 'task_id', 'task_revision', 'connection_generation', 'tool', 'effect', 'state', 'created_at', 'updated_at']);
+    const operations = project(read.all(`SELECT operation_id,task_id,task_revision,connection_generation,tool,effect,state,created_at,updated_at${reasonColumn} FROM task_operations ORDER BY created_at,operation_id`), [...'operation_id task_id task_revision connection_generation tool effect state created_at updated_at'.split(' '), ...(reasonCode ? ['reason_code'] : [])]);
     const deliveries = project(read.all('SELECT attempt_id,task_id,task_revision,connection_generation,state,updated_at FROM task_deliveries ORDER BY updated_at,attempt_id'), ['attempt_id', 'task_id', 'task_revision', 'connection_generation', 'state', 'updated_at']);
     return { ...logAudit, coverage: 'metadata only; store rows are all retained tasks, not joined to this call', tasks, revisions,
       helperCalls: operations,

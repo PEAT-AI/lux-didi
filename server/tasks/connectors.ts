@@ -100,7 +100,8 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     }
     const result = documentResult(document, id, text(args.cursor) || '0');
     const sourceComplete = record(root.bodyCoverage)['complete'];
-    if (name !== 'read_mail' || sourceComplete !== false) return result;
+    // Only a successful page may be relabelled: a stale or foreign cursor is a real failure, not a cut.
+    if (name !== 'read_mail' || result.status === 'failed' || sourceComplete !== false) return result;
     const note = 'The source reports its inline body was cut; the rest is not in this read.';
     return { ...result, status: 'partial', coverage: `${result.coverage} ${note}`, repair: `${note} Open the message in the mail app for the rest.` };
   }

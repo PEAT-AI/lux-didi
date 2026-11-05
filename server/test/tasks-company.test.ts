@@ -245,25 +245,37 @@ test('a configured failing CRM endpoint remains reachable through the host regis
   assert.equal(crmReads, 0, 'a catalogue-less endpoint returns its repair without dispatching a CRM request');
 });
 
-test('a schema-valid data job call reaches repair for a configured failing data endpoint', async t => {
+for (const persisted of [false, true]) test(`a configured failing data endpoint returns repair through the registry with ${persisted ? 'its persisted schema' : 'an open schema when no catalogue exists'}`, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'task-company-failing-data-'));
   const store = new Store(directory);
   const healthy = dataBinding([], []);
-  const healthyJob = configuredCompanyTools([healthy]).find(tool => tool.name === 'data_agent_job')!;
   let dispatches = 0;
-  const failing: BoundConnector = { connector: 'mongoose', policy: { ...healthy.policy, connectionId: 'configured-failing-data', endpoint: { ...healthy.policy.endpoint, id: 'configured-failing-data' } },
+  const endpointId = `configured-failing-data-${persisted}`;
+  const failing: BoundConnector = { connector: 'mongoose', policy: { ...healthy.policy, connectionId: endpointId, endpoint: { ...healthy.policy.endpoint, id: endpointId } },
     reader: { call: async () => { dispatches++; throw new Error('credential-refresh-failed'); } },
   };
+  const persistedSchema = { ...jobSchema, properties: { ...jobSchema.properties, stored_only: { type: 'string' } } };
+  if (persisted) store.savePublishedCatalogue({ endpointId, resource: 'mongoose:data', discoveredAt: 1, schemaDigest: 'synthetic', declarations: JSON.stringify([
+    { name: 'data_agent_job', description: 'Stored synthetic native data job.', parameters: persistedSchema },
+  ]) });
   const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [failing], timeZone: 'UTC',
     infer: async () => ({ text: '', calls: [], no_action: true }), effectCheck: async () => true,
   })('synthetic-data-repair', new FakeDelivery());
   t.after(() => { runtime.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   assert.equal(runtime.registry.has('data_agent_job'), true);
+  const schema = runtime.registry.get('data_agent_job')!.parameters;
+  if (persisted) assert.deepEqual(schema, persistedSchema, 'the actual stored declaration is used verbatim, including stored-only fields');
+  else {
+    assert.equal(schema.additionalProperties, true);
+    assert.deepEqual(schema.required, []);
+  }
   const revision = runtime.begin('Continue the synthetic data job', 1, 1);
-  const result = await runtime.runTool('data_agent_job', { job_id: jobId, op: 'get' }, { ...revision.identity, operation_id: 'synthetic-data-repair' }, new AbortController().signal);
-  assert.match(JSON.stringify(result), /not_configured/);
-  assert.match(JSON.stringify(result), /data endpoint/);
-  assert.match(JSON.stringify(result), /[Ss]ign-in/);
-  assert.deepEqual(runtime.registry.get('data_agent_job')!.parameters.properties, healthyJob.fields, 'repair route retains the healthy job argument fields');
-  assert.equal(dispatches, 0);
+  for (const op of ['get', 'reply']) {
+    const args = { job_id: jobId, op, ...(persisted ? { stored_only: 'synthetic' } : { arbitrary: { nonempty: true } }) };
+    const result = await runtime.runTool('data_agent_job', args, { ...revision.identity, operation_id: `synthetic-data-repair-${op}` }, new AbortController().signal);
+    assert.match(JSON.stringify(result), /not_configured/);
+    assert.match(JSON.stringify(result), /data endpoint/);
+    assert.match(JSON.stringify(result), /[Ss]ign-in/);
+  }
+  assert.equal(dispatches, 0, 'even an op other than get returns repair before healthy-binding op validation');
 });

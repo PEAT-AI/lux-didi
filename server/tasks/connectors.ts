@@ -1,6 +1,7 @@
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
+import type { PublishedCatalogue } from '../runtime/store.js';
 import { MONGOOSE_ENDPOINT_TOOLS, mongooseEndpointName } from '../connectors/mongoose.js';
 import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
@@ -166,7 +167,7 @@ function companySignInRepair(binding: BoundConnector): string {
   return `The Mongoose ${endpoint === 'crm' ? 'CRM' : endpoint ?? 'company'} endpoint is unavailable. Sign-in is needed for that endpoint in Settings.`;
 }
 /** Typed company steps preserve each endpoint's published schema and authoritative grants. */
-export function configuredCompanyTools(bindings: readonly BoundConnector[]): Definition[] {
+export function configuredCompanyTools(bindings: readonly BoundConnector[], catalogues: readonly PublishedCatalogue[] = []): Definition[] {
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy).filter(item => nativeTaskReadGranted(binding.policy, item.name)));
   const typed = Object.entries(companySteps).flatMap(([name, description]) => {
     const declaration = capabilities.find(item => item.name === name);
@@ -177,7 +178,15 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[]): Def
       });
       // A configured endpoint can fail before publishing its schema. Keep a repair-only task route,
       // not an invented remote schema or a capability for an endpoint the owner never configured.
-      return unavailable ? [{ outside: false, name, description: `${companySignInRepair(unavailable)} Call with no arguments for the repair; no company data is read.`, fields: {} }] : [];
+      if (!unavailable) return [];
+      const catalogue = catalogues.find(row => row.endpointId === unavailable.policy.endpoint.id && row.resource === unavailable.policy.endpoint.resource);
+      let parameters: Record<string, unknown> = { type: 'object', properties: {}, required: [], additionalProperties: true };
+      if (catalogue) {
+        const stored = JSON.parse(catalogue.declarations) as { name: string; parameters: Record<string, unknown> }[];
+        const declaration = stored.find(tool => tool.name === name);
+        if (declaration) parameters = declaration.parameters;
+      }
+      return [{ outside: false, name, description: `${companySignInRepair(unavailable)} This route only returns the repair; no company data is read.`, fields: {}, parameters }];
     }
     const fields = strictSchema(declaration.parameters).properties as Record<string, Record<string, unknown>>;
     if (name === 'data_agent_job' && fields.op) fields.op = { type: 'string', enum: ['get'] };

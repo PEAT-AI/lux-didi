@@ -169,7 +169,7 @@ function companySignInRepair(binding: BoundConnector): string {
 /** Typed company steps preserve each endpoint's published schema and authoritative grants. */
 export function configuredCompanyTools(bindings: readonly BoundConnector[], catalogues: readonly PublishedCatalogue[] = []): Definition[] {
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy).filter(item => nativeTaskReadGranted(binding.policy, item.name)));
-  const typed = Object.entries(companySteps).flatMap(([name, description]) => {
+  const typed = Object.entries(companySteps).flatMap<Definition>(([name, description]) => {
     const declaration = capabilities.find(item => item.name === name);
     if (!declaration) {
       const unavailable = bindings.find(binding => {

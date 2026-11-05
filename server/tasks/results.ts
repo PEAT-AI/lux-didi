@@ -35,7 +35,7 @@ export function readerFailure(name: string, category: FailureCategory): ToolResu
   return failed(`${identifier} ${action} This read did not complete; do not infer absence.`, category);
 }
 export type ResultStatus = 'ok' | 'empty' | 'no_match' | 'partial' | 'failed';
-export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour' }
+export interface Reference { id: string; title?: string; url?: string; match?: 'exact' | 'neighbour'; rank?: number }
 export type TaskDisclosure = import('../tools/types.js').ModelSnapshot & { recordReuse?(): void; recordRedaction?(tool: string, count: number): void };
 export interface ToolResult {
   [TASK_DISCLOSURE]?: TaskDisclosure;

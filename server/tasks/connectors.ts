@@ -31,8 +31,8 @@ const mappings: Record<string, Mapping> = {
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: (parameters.properties as { limit: { maximum: number } }).limit.maximum }) },
-  read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: [Number(a.id)] }) },
+  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(6, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'voice', snippet_chars: 600 }) },
+  read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: Array.isArray(a.ids) ? a.ids : [Number(a.id)], include_links: a.include_links ?? true }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
 };
@@ -69,6 +69,15 @@ function eventTime(value: unknown): string {
 export function projectTaskPayload(name: string, raw: unknown, args: Record<string, unknown>): ToolResult {
   const data = payload(raw), root = record(data);
   const id = text(args.id ?? args.ref) || name;
+  if (name === 'search_knowledge' && typeof data === 'string') {
+    const rows = rankedText(data);
+    const empty = !rows.length && /\bNo (?:results|matches|insights)(?: found)?\b/i.test(data);
+    return { status: rows.length ? 'ok' : empty ? 'empty' : 'partial',
+      text: data.slice(0, 24000),
+      references: rows.map((row, index) => ({ id: row.id, title: row.title, rank: index + 1 })), next_cursor: null,
+      coverage: `${rows.length} ranked vault candidates in source order. Semantic retrieval, not exact-name matching.${data.length > 24000 ? ' Source text truncated.' : ''}`,
+      repair: rows.length || empty ? null : 'Unrecognized vault search response; do not infer corpus absence.' };
+  }
   if (typeof data === 'string' && !name.startsWith('read_')) {
     const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
     return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
@@ -143,7 +152,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
         if (binding.project) {
           try {
             const snapshot = binding.project(result);
-            const shaped = projectTaskPayload(name, binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
+            const shaped = projectTaskPayload(name, (binding.connector === 'mattermost' && name === 'search_chat' || binding.connector === 'lux-knowledge') ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
             if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
             return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
           } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }

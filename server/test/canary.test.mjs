@@ -158,15 +158,8 @@ test('synthetic ask example stays inside the public format and paid count cap', 
 test('installed opener injects owner task finals and observes task settlement, not legacy tool names', async () => {
   const finals = [];
   const id = '11111111-1111-4111-8111-111111111111';
-  let tapped;
   let ready = false;
   let waits = 0;
-  const raw = {
-    events: { async *[Symbol.asyncIterator]() {
-      yield { type: 'modelTurnStarted' }; yield { type: 'turnComplete' };
-    } },
-    sendToolResponse: () => 'sent',
-  };
   const live = {
     create: () => ({ liveSessionId: id }),
     snapshot: () => ({ lifecycle: 'active', terminal: null }),
@@ -174,7 +167,6 @@ test('installed opener injects owner task finals and observes task settlement, n
     text: text => {
       finals.push(text);
       hostLogEvent({ event: 'task_settled', taskId: 'synthetic-task', status: 'incomplete', reason_code: 'not_granted' });
-      void (async () => { for await (const _event of tapped.events) { /* consume real tap */ } })();
     },
     revoke: () => {},
   };
@@ -183,12 +175,12 @@ test('installed opener injects owner task finals and observes task settlement, n
     if (!ready) { assert.equal(finals.length, 0); waits++; ready = true; }
   });
   host.open([taskAsk], { clientId: 'owner' });
-  tapped = canarySessions.wrapSession(id, raw);
   assert.equal(canarySessions.isCanary(id), true);
   await assert.rejects(() => host.run(id, 'other-client'), /invalid_canary_session/);
   const report = await host.run(id, 'owner');
   assert.equal(report.failed, 1);
-  assert.equal(report.providerTurns, 1);
+  // Task settlement is observed without a voice-provider turn or old tool reply.
+  assert.equal(report.providerTurns, 0);
   assert.match(report.lines[0], /terminalReason=clean_close/);
   assert.deepEqual(finals, taskAsk.finals);
   assert.equal(waits, 1);

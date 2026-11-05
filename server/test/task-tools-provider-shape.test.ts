@@ -8,13 +8,16 @@ import { FakeAuthority } from '../tasks/authority.js';
 import { configuredCompanyTools, type BoundConnector } from '../tasks/connectors.js';
 import { createRegistry, validateArguments, type TaskTool } from '../tasks/tools.js';
 
-// The keywords OpenAI strict mode accepted for this release's own tool set: the 2026-11-05 probe
-// (reports/didi-1013-1105/PROBE.md) sent all 39 declared tools with these keywords and got 200
-// completed, and got 400 for the request that carried uniqueItems. scripts/check-helper-provider.sh
-// proves the same set through the real provider; a keyword added here needs that smoke's evidence.
+// The keywords OpenAI strict mode accepted for this release's own tool set. The 2026-11-05 probe
+// (reports/didi-1013-1105/PROBE.md) sent all 39 static declarations, which carry every keyword below
+// except default and anyOf, and got 200 completed, and 400 for the request carrying uniqueItems.
+// default and anyOf appear only in the configured company definitions, which the probe sent empty, so
+// scripts/check-helper-provider.sh proves the whole set (company tools included) through the real
+// provider: its PASS line is the evidence a keyword added here needs.
 const PROVIDER_KEYWORDS = new Set([
   'type', 'description', 'enum', 'properties', 'required', 'items', 'additionalProperties',
-  'minimum', 'maximum', 'minItems', 'maxItems', 'minLength',
+  'minimum', 'maximum', 'minItems', 'maxItems', 'minLength', 'maxLength', 'pattern', 'default',
+  'anyOf',
 ]);
 
 const testRoot = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('.', import.meta.url));

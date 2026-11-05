@@ -39,6 +39,17 @@ test('read_mail keeps the quoted reply chain below the new text', () => {
   assert.match(result.text, /Bring the tide tables\./);
 });
 
+test('read_mail strips MIME boilerplate, inline data and tracking links from the received text', () => {
+  const body = 'Content-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: base64\nThe mooring plan is ready.\n<img src="data:image/png;base64,AAAA">\nMore plan text.\nhttps://tracker.example/click?utm_source=x&x=1';
+  const result = projectTaskPayload('read_mail', decodedRead(SENDER, body), { id: 'synthetic-m1' });
+  assert.equal(result.status, 'ok');
+  assert.match(result.text, /The mooring plan is ready\./, 'the message text survives the cleaning');
+  assert.match(result.text, /More plan text\./);
+  assert.equal(result.text.includes('Content-Type'), false, 'MIME boilerplate is removed');
+  assert.equal(result.text.includes('data:image'), false, 'inline image data is removed');
+  assert.equal(result.text.includes('utm_source'), false, 'tracking links are removed');
+});
+
 test('read_mail keeps a Gmail-style forwarded block at the bottom of the message', () => {
   const body = 'FYI\n\n---------- Forwarded message ---------\nFrom: Sam <sam@example.invalid>\nDate: Tue, 6 Oct 2026\nSubject: Tide tables\nTo: Dana <dana@example.invalid>\n\nThe tide tables are in the dock log.';
   const result = projectTaskPayload('read_mail', decodedRead(SENDER, body), { id: 'synthetic-m1' });

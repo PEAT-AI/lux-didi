@@ -2048,7 +2048,7 @@ test('Live emits exact accepted A setup, not a changed caller B instruction', as
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, `SYNTHETIC exact wire A\n\n${NAYA_WORK_DELIVERY}`);
+  assert.equal(frame.setup.systemInstruction.parts[0].text, composeLiveSessionInstruction({ text: 'SYNTHETIC exact wire A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
   attachment.close();
 });
 

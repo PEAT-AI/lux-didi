@@ -33,6 +33,18 @@ Mongoose knowledge, data and CRM are separate OAuth resources with separate sign
 
 Drive setup is optional and requires its own consent. When it is unavailable, a lookup must report that limitation, not turn it into a successful empty search. [mcp-configuration.md](mcp-configuration.md) owns setup details; [debugging.md](debugging.md) owns failure diagnosis.
 
+### A mail read is the whole received mail
+
+`gmail_read_message` has two readers. The live display is shaped by `shapeGmailRead` in `server/tools/live-shape.ts` and keeps the new message only. The task helper reads the message's own structured envelope through `projectTaskPayload` in `server/tasks/connectors.ts`, so a read carries the message text below its header block: the new message plus the quoted chain and any forwarded block. `server/tasks/clean.ts` therefore separates `cleanMailStructure` (MIME boilerplate, inline data, HTML, entities and tracking links only) from `cleanMailBody` (that, plus dropping quotes and a signature, for the display). The helper path builds the received text with `receivedGmailBody` and applies the structural clean once; a leading header block is never read as a quoted-reply marker, and an Outlook-style `From:/Sent:` forward is mail text, so a read never comes back empty because of it.
+
+The inline body the helper returns is bounded by the helper, and `bodyCoverage.complete` says whether it was cut. The task page bound is `DOCUMENT_CHARS` (24000) in `server/tasks/results.ts`: a source body longer than one page continues through the returned cursor, and a source that reports incomplete coverage is shown as `partial` with an omission note rather than a silent short body. `GOOGLE_DEFAULTS.readBodyChars` (4000) records the connector's accepted ceiling for that source body; the external helper enforces its own limit and reports coverage.
+
+A read with no readable body text is `failed`, never `ok`, so the helper can tell an empty read from a successful one.
+
+### A calendar window is the whole window
+
+`calendar_events` asks the connector for the whole window inside the existing 50-event budget (`GOOGLE_DEFAULTS.maxListResults`), and the warm digest's `Today:` line reads the same 50-event budget. Completeness is judged on the structured source, not on the rendered display text: a window reports `partial` only when the source returned a continuation or reported an unread calendar, never because the display text was mistaken for an unranked blob.
+
 ## One owner account, proven before every use
 
 Every identity-bearing connector acts as the one owner email in `ownerIdentity` of `provider-38/mcp.json` (for example `owner@example.invalid`) and never as another account. The comparison is exact and case-insensitive on the EMAIL: a connector that reports an email must match it, so a matching username never carries a different mailbox (`server/connectors/identity.ts`).

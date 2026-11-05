@@ -636,7 +636,7 @@ export async function readCalendarDigest(read: CalendarDigestRead | undefined, i
   const timer = setTimeout(() => controller.abort(), budgetMs);
   let result: GoogleResult;
   try {
-    result = await read.gcalList({ calendarId: 'primary', timeMin: window.timeMin, timeMax: window.timeMax, maxResults: GOOGLE_DEFAULTS.listResults }, controller.signal);
+    result = await read.gcalList({ calendarId: 'primary', timeMin: window.timeMin, timeMax: window.timeMax, maxResults: GOOGLE_DEFAULTS.maxListResults }, controller.signal);
   } catch { return absent(controller.signal.aborted ? 'timeout' : 'failed'); }
   finally { clearTimeout(timer); }
   if (controller.signal.aborted) return absent('timeout');

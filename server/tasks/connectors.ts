@@ -5,8 +5,10 @@ import { composedGrantedNames } from '../connectors/index.js';
 import { TASK_CONNECTOR_FAILURE, connectorFailures, TASK_DISCLOSURE } from './results.js';
 import type { Identity } from './authority.js';
 import { CONNECTOR_DESCRIPTORS, type ConnectorReader } from '../connectors/index.js';
+import { GOOGLE_DEFAULTS } from '../connectors/google.js';
+import { receivedGmailBody } from '../tools/live-shape.js';
 import type { ConnectionPolicy } from '../tools/types.js';
-import { cleanMailBody } from './clean.js';
+import { cleanMailStructure } from './clean.js';
 import { documentResult, failed, readerFailure, failureCategory, rankedResult, type RankedItem, type ToolResult } from './results.js';
 import { strictSchema, type Definition, type ToolPorts } from './tools.js';
 export interface BoundConnector { connector: string; reader: ConnectorReader; policy: ConnectionPolicy; reportFailure?: (tool: string, code: ToolFailureCode) => void; project?: (evidence: import('../connectors/index.js').ConnectorEvidence) => import('./results.js').TaskDisclosure }
@@ -26,7 +28,7 @@ const mappings: Record<string, Mapping> = {
   chat_channel_topics: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'topics' }) },
   search_mail: { connector: 'google', tool: 'gmail_search_messages', args: a => ({ q: a.query, ...(a.cursor === undefined ? {} : { pageToken: a.cursor }) }) },
   read_mail: { connector: 'google', tool: 'gmail_read_message', args: a => ({ id: a.id, format: 'full' }) },
-  calendar_events: { connector: 'google', tool: 'calendar_list_events', args: a => ({ timeMin: a.start, timeMax: a.end }) },
+  calendar_events: { connector: 'google', tool: 'calendar_list_events', args: a => ({ timeMin: a.start, timeMax: a.end, maxResults: GOOGLE_DEFAULTS.maxListResults }) },
   search_drive: { connector: 'google', tool: 'drive_search_files', args: a => ({ query: a.query }) },
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
@@ -66,6 +68,16 @@ function rankedText(raw: string): RankedItem[] {
 function eventTime(value: unknown): string {
   return typeof value === 'string' ? value : text(record(value).dateTime ?? record(value).date);
 }
+const MAIL_HEADER_LINE = /^(subject|from|to|cc|bcc|reply-to|date|labels|attachments)\s*:/i;
+/** The message text below the shaped header block, ignoring bracketed source notes and handle lines. */
+function mailBodyText(shaped: string): string {
+  const lines = shaped.split('\n');
+  let at = 0;
+  while (at < lines.length && MAIL_HEADER_LINE.test(lines[at]!.trim())) at += 1;
+  return lines.slice(at).map(line => line.trim())
+    .filter(line => line && !/^\[[^\]]*\]$/.test(line) && !/^open: L[0-9]{1,4}(?:\s*=|\s|$)/.test(line))
+    .join('\n');
+}
 export function projectTaskPayload(name: string, raw: unknown, args: Record<string, unknown>): ToolResult {
   const data = payload(raw), root = record(data);
   const id = text(args.id ?? args.ref) || name;
@@ -75,15 +87,19 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   }
   if (name.startsWith('read_')) {
     const thread = name === 'read_thread' ? posts(root).map(post => `${text(post.id)} ${text(post.user_id ?? post.author)} ${text(post.create_at ?? post.timestamp)}\n${text(post.message ?? post.text)}`).join('\n\n') : '';
-    const body = typeof data === 'string' ? data : thread || text(root.body ?? root.text ?? root.content);
+    const shaped = typeof data === 'string';
+    const received = !shaped && typeof root['headers'] === 'object' && root['headers'] !== null ? receivedGmailBody(root) : undefined;
+    const body = shaped ? data : thread || (received ?? text(root.body ?? root.text ?? root.content));
     if (!body) return failed('No document body was returned. Search again for a readable identifier; metadata is not a full read.');
+    const document = name === 'read_mail' && !shaped ? cleanMailStructure(body) : body;
+    if (name === 'read_mail' && mailBodyText(document) === '') return failed('The source returned no readable body text for this message. Do not claim the mail is empty without it.');
     if (name === 'read_company') {
       const cursor = text(root.next_cursor) || null;
       const complete = record(root.coverage).complete;
       return { status: cursor || complete === false ? 'partial' : 'ok', text: body, references: [{ id }], next_cursor: cursor,
         coverage: cursor || complete === false ? 'Remote read is incomplete; continue with the returned native cursor when available.' : 'Remote page returned; only the supplied source content is verified.', repair: cursor ? 'Continue read_company with the same ref and depth and the returned cursor verbatim.' : null };
     }
-    return documentResult(name === 'read_mail' ? cleanMailBody(body) : body, id, text(args.cursor) || '0');
+    return documentResult(document, id, text(args.cursor) || '0');
   }
   const list = Array.isArray(data) ? data : [root.items, root.results, root.hits, root.messages, root.files, root.events, root.posts].find(Array.isArray) ?? (name === 'search_chat' ? posts(root) : undefined);
   if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.');
@@ -143,7 +159,12 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
         if (binding.project) {
           try {
             const snapshot = binding.project(result);
-            const shaped = projectTaskPayload(name, binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult : snapshot.response.text ?? snapshot.response, args);
+            // A mail read and a calendar window are judged on the structured source, never on the
+            // rendered display text: the display drops the quoted chain, trims and carries handles.
+            const payloadSource = name === 'read_mail' || name === 'calendar_events' ? result.decodedResult
+              : binding.connector === 'mattermost' && name === 'search_chat' ? result.decodedResult
+              : snapshot.response.text ?? snapshot.response;
+            const shaped = projectTaskPayload(name, payloadSource, args);
             if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
             return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
           } catch { return failure('The connector result could not be safely disclosed. Repair its source policy or use another approved source.', 'invalid_result'); }

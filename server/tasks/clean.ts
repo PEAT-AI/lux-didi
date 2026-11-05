@@ -8,7 +8,7 @@ const QUOTE_MARKERS = [
   /^from:\s.+\r?\n(?:sent|to|subject):/im,
 ];
 const SIGNATURE_MARKERS = [/^--\s*$/m, /^sent from my /im, /^get outlook for /im];
-const TRACKING_QUERY = /[?&](?:utm_|fbclid|gclid|mc_eid|mc_cid|_hsenc|_hsmi|mkt_tok)=/i;
+const TRACKING_QUERY = /[?&](?:utm_[a-z_]+|fbclid|gclid|mc_eid|mc_cid|_hsenc|_hsmi|mkt_tok)=/i;
 const DATA_IMAGE = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi;
 const CID_REF = /\[cid:[^\]]+\]|src=["']cid:[^"']+["']/gi;
 
@@ -71,15 +71,30 @@ export function stripTrackingUrls(text: string): string {
     return cleaned.replace(/[<(]\s*[)>]/g, '').replace(/\s{2,}/g, ' ').trimEnd();
   }).join('\n');
 }
-/** Full mail-body cleaning pipeline: MIME boilerplate, inline data, HTML, quotes, signature, trackers. */
-export function cleanMailBody(raw: string): string {
+/** Structural cleaning only: MIME boilerplate, inline data, HTML, entity decoding and tracking
+ * links. Quoted chains, forwarded blocks and signatures are the mail's own text and stay. */
+export function cleanMailStructure(raw: string): string {
   let body = raw;
   body = body.split('\n').filter(line => !MIME_LINE.test(line.trim())).join('\n');
   body = body.replace(DATA_IMAGE, '').replace(CID_REF, '');
   if (/<\w+[\s>]/.test(body)) body = htmlToText(body);
   else body = decodeEntities(body);
-  body = stripQuotedReply(body);
-  body = stripSignature(body);
   body = stripTrackingUrls(body);
   return body.replace(/\n{3,}/g, '\n\n').trim();
+}
+const HEADER_LINE = /^(subject|from|to|cc|bcc|reply-to|date|labels|attachments)\s*:/i;
+/** Split a leading header block from the text, so a header line that resembles a quoted-reply
+ * marker never cuts the message. A block with no body after it is kept whole. */
+function splitHeaderBlock(text: string): { head: string; body: string } {
+  const lines = text.split('\n');
+  let end = 0;
+  while (end < lines.length && HEADER_LINE.test(lines[end]!.trim())) end += 1;
+  if (end === 0 || end === lines.length) return { head: '', body: text };
+  return { head: lines.slice(0, end).join('\n'), body: lines.slice(end).join('\n') };
+}
+/** Full mail-body cleaning: structural, then the new message only (quotes and signature dropped). */
+export function cleanMailBody(raw: string): string {
+  const { head, body } = splitHeaderBlock(raw);
+  const kept = stripSignature(stripQuotedReply(cleanMailStructure(body)));
+  return head ? `${head}\n\n${kept}`.trim() : kept;
 }

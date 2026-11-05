@@ -95,7 +95,8 @@ for (const code of ['partial_timeout', 'truncated_to_budget', 'empty_after_retry
   'grant_missing', 'provider_failed', 'skipped_by_route']) {
   assert.equal(fullLive.includes(code), false, `the voice never recites the retired coverage code ${code}`);
 }
-for (const rule of ['Say it completely and in order, keeping every name, number, date and qualification',
+for (const rule of ['Reproduce every exact entity verbatim',
+  'Everything else is in your own voice',
   'If a result reports a failure, a gap or a partial answer, say that as given, and give what is there rather than only that it is incomplete.',
   'Say something happened only when a result says it happened.']) {
   assert.equal(fullLive.split(rule).length - 1, 1, `result truth and delivery stay explicit: ${rule}`);

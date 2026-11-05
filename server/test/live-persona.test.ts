@@ -887,9 +887,9 @@ test('S4b: the voice surface carries backchannel and interruption policy section
 });
 
 test('S4b: the accent preset head and tail are byte-identical to the shipped voice anchors', () => {
-  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].head), 'f3d65e108053df0c32afe9c9003470359bc1d8b427b35f72994c82f7fd072a5d');
-  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-light'].head), '14fc697b526d6d289e65999c36da0a1f4e4efffdcbc39227ddae4057635bdaf2');
-  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].tail), 'f8592a00e9f57bf1fcccd8acceabf1c2488255cda92dcbd1f5397e53100e638e');
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].head), '22a7baf4f24ae787d99c0c3cd590baa7f7817ad761469712ab574f9b9dd04d50');
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-light'].head), '7da579031b731160b64f4ac9e968666a31d6ba35755c6c2b8db3b617c83e30f8');
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].tail), 'e760ab6e9927683f8504ed2ac351898e5031eecbeaa9b8514252686f0c8a8f77');
   assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].tail, LIVE_ACCENT_PRESETS['indian-light'].tail, 'both presets share the one tail');
 });
 

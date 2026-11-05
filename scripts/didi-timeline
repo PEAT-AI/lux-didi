@@ -251,10 +251,19 @@ function buildTaskAudit(read, lines = [], selection = {}) {
   try { taskColumns = new Set(read.all("SELECT name FROM pragma_table_info('tasks')").map(row => String(row.name))); }
   catch { taskColumns = new Set(); }
   const sessionColumn = taskColumns.has('live_session_id') ? ',live_session_id' : '';
+  // W2 persists the failure on the task row; it is the settled reason a rotated-away log can still answer.
+  const failureColumn = taskColumns.has('failure') ? ',failure' : '';
   const reasonCode = operationColumns.has('reason_code');
   const reasonColumn = reasonCode ? ',reason_code' : '';
   try {
-    const rows = project(read.all(`SELECT task_id,created_at,updated_at,current_revision,status${sessionColumn} FROM tasks ORDER BY created_at,task_id`), ['task_id', 'created_at', 'updated_at', 'current_revision', 'status', ...(sessionColumn === '' ? [] : ['live_session_id'])]);
+    const rows = project(read.all(`SELECT task_id,created_at,updated_at,current_revision,status${sessionColumn}${failureColumn} FROM tasks ORDER BY created_at,task_id`), ['task_id', 'created_at', 'updated_at', 'current_revision', 'status', ...(sessionColumn === '' ? [] : ['live_session_id']), ...(failureColumn === '' ? [] : ['failure'])]);
+    // Only the closed reason code leaves the row: the failure's other fields are never printed.
+    for (const row of rows) {
+      const stored = row.failure;
+      delete row.failure;
+      if (typeof stored !== 'string') continue;
+      try { const failure = JSON.parse(stored); if (typeof failure?.reason_code === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(failure.reason_code)) row.failure_reason_code = failure.reason_code; } catch { /* a row whose failure is not JSON names no reason */ }
+    }
     // #1013: the audit lists the call's own tasks, never every retained row. A task belongs to the call when
     // the log joins it by the call's identity, or when the row's own column names the call's live session.
     const selected = selection.callId !== undefined || selection.liveSessionId !== undefined;
@@ -303,15 +312,17 @@ function renderTaskAudit(audit) {
   }
   for (const row of audit.tasks ?? []) {
     const entry = task(row.task_id);
-    entry.status = row.status; entry.current = row.current_revision; entry.revisions = 0;
+    entry.status = row.status; entry.current = row.current_revision; entry.revisions = 0; entry.failureReason = row.failure_reason_code;
   }
   for (const row of audit.revisions ?? []) { const entry = task(row.task_id); entry.revisions = (entry.revisions ?? 0) + 1; }
   for (const row of audit.deliveries ?? []) { const entry = task(row.task_id); entry.deliveries[`store:${row.state}`] = (entry.deliveries[`store:${row.state}`] ?? 0) + 1; }
   if (!tasks.size) lines.push('none: no task identity on this call\'s log lines and no retained task rows');
   for (const [id, entry] of tasks) {
     const chunks = Object.entries(entry.deliveries).map(([state, count]) => `${state}=${count}`).join(',') || 'none';
-    // W2's settled line: the status the helper reached and the closed reason it reached it for.
-    const settled = entry.settled === null ? '' : ` settled=${entry.settled.status} reason=${entry.settled.reasonCode ?? 'none'}`;
+    // W2's settled line: the status the helper reached and the closed reason it reached it for, from the
+    // log's own line, else from the failure the store persisted on the row.
+    const settled = entry.settled !== null ? ` settled=${entry.settled.status} reason=${entry.settled.reasonCode ?? 'none'}`
+      : entry.failureReason === undefined ? '' : ` settled=${entry.status ?? 'unknown'} reason=${entry.failureReason}`;
     lines.push(`task ${id} status=${entry.status ?? 'unknown'} revisions=${entry.revisions ?? '?'}${entry.current === null || entry.current === undefined ? '' : `/${entry.current}`} delivery=${chunks}${settled}`);
     for (const tool of entry.tools) {
       const stored = tool.operationId === undefined ? undefined : operations.get(tool.operationId);

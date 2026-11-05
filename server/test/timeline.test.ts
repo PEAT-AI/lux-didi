@@ -1096,10 +1096,12 @@ test('task audit lists one call\'s tasks, its tool rows with reason and its sett
   const session = 'synthetic-session';
   const read = { all: (sql: string) => {
     if (sql.includes("pragma_table_info('task_operations')")) return [{ name: 'operation_id' }, { name: 'reason_code' }];
-    if (sql.includes("pragma_table_info('tasks')")) return [{ name: 'task_id' }, { name: 'live_session_id' }];
+    if (sql.includes("pragma_table_info('tasks')")) return [{ name: 'task_id' }, { name: 'failure' }, { name: 'live_session_id' }];
     if (sql.includes('FROM tasks ')) return [
-      { task_id: 'in-call', created_at: 1, updated_at: 2, current_revision: 1, status: 'failed', live_session_id: session },
-      { task_id: 'other-call', created_at: 3, updated_at: 4, current_revision: 1, status: 'complete', live_session_id: 'another-session' },
+      { task_id: 'in-call', created_at: 1, updated_at: 2, current_revision: 1, status: 'failed', live_session_id: session, failure: null },
+      { task_id: 'other-call', created_at: 3, updated_at: 4, current_revision: 1, status: 'complete', live_session_id: 'another-session', failure: null },
+      // No log line of its own: only the row's column and its persisted failure name this task and its reason.
+      { task_id: 'stored-failure', created_at: 5, updated_at: 6, current_revision: 1, status: 'incomplete', live_session_id: session, failure: JSON.stringify({ stage: 'inference', reason_code: 'no_access', repair: 'SYNTHETIC_REPAIR_NOT_METADATA' }) },
     ];
     if (sql.includes('FROM task_revisions')) return [{ task_id: 'in-call', task_revision: 1, connection_generation: 2, created_at: 1 }];
     if (sql.includes('FROM task_operations')) return [{ operation_id: 'op-1', task_id: 'in-call', task_revision: 1, connection_generation: 2, tool: 'search_knowledge', effect: 'none', state: 'failed', created_at: 1, updated_at: 41, reason_code: 'upstream_error' }];
@@ -1113,12 +1115,14 @@ test('task audit lists one call\'s tasks, its tool rows with reason and its sett
     { stream: 'host', record: { event: 'task_lifecycle', taskId: 'other-call', revision: 1, generation: 2, phase: 'start', liveSessionId: 'another-session' } },
   ];
   const audit = buildTaskAudit(read, lines, { liveSessionId: session });
-  assert.deepEqual(audit.tasks.map((row: { task_id: string }) => row.task_id), ['in-call'], 'the other call\'s task row never joins this audit');
+  assert.deepEqual(audit.tasks.map((row: { task_id: string }) => row.task_id), ['in-call', 'stored-failure'], 'a task without a log line joins by its own column; the other call\'s row never joins');
   assert.equal(audit.tools.length, 1);
   assert.deepEqual(audit.helperCalls.map((row: { operation_id: string }) => row.operation_id), ['op-1']);
   const rendered = renderTaskAudit(audit);
   assert.match(rendered, /task in-call status=failed revisions=1\/1/u);
   assert.match(rendered, /settled=failed reason=upstream_error/u);
   assert.match(rendered, /tool search_knowledge outcome=ok ms=12 cache=miss state=failed reason=upstream_error/u);
+  assert.match(rendered, /task stored-failure status=incomplete revisions=0\/1 delivery=none settled=incomplete reason=no_access/u);
+  assert.equal(rendered.includes('SYNTHETIC_REPAIR_NOT_METADATA'), false, 'only the closed reason code leaves the row');
   assert.equal(rendered.includes('other-call'), false);
 });

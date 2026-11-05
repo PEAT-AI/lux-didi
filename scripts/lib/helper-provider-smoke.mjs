@@ -10,9 +10,10 @@
 //
 //   exit 0  PASS: every configured company set published and the provider answered `completed` with at
 //           least one registered tool, so the full declared set is proved
-//   exit 1  FAIL, not proved: the harness could not run, or the company endpoints this configuration
-//           declares did not publish, so their declarations would ship unproved. Never a PASS.
-//   exit 2  FAIL: the provider rejected the request, or the response named no tool
+//   exit 1  the harness could not run (unreadable modules or configuration)
+//   exit 2  FAIL: the registry is smaller than the configuration requires
+//           (reason=company_bindings_unavailable, one line per endpoint), the provider rejected the
+//           request, or the response named no tool
 //   exit 3  SKIP: nothing to prove here (no configured provider, or a non-OpenAI provider)
 //
 // The owner's config is read, copied to a private temporary directory and handed to the host from
@@ -70,10 +71,10 @@ function stageConfig(sourceDir) {
  * hold this decision without a paid call.
  */
 export function providerShapeRefusal(input) {
-  if (input.expected === 0) return '';
-  if (input.published < input.expected) return 'company-unpublished';
-  if (input.company === 0) return 'company-unpublished';
-  if (input.tools <= input.static) return 'company-unpublished';
+  if (input.expectedEndpoints === 0) return '';
+  if (input.published < input.expectedEndpoints) return 'company_bindings_unavailable';
+  if (input.company === 0) return 'company_bindings_unavailable';
+  if (input.tools !== input.static + input.company) return 'company_bindings_unavailable';
   return '';
 }
 
@@ -84,10 +85,12 @@ export function providerShapeRefusal(input) {
  */
 function declaredCompanyEndpoints(configDir) {
   const file = join(configDir, 'mcp.json');
-  if (!existsSync(file)) return 0;
+  if (!existsSync(file)) return [];
   const doc = JSON.parse(readFileSync(file, 'utf8'));
   const endpoints = Array.isArray(doc?.endpoints) ? doc.endpoints : [];
-  return endpoints.filter(entry => entry && entry.connector === 'mongoose' && entry.enabled !== false).length;
+  return endpoints
+    .filter(entry => entry && entry.connector === 'mongoose' && entry.enabled !== false)
+    .map(entry => String(entry.resource ?? '').replace(/^mongoose:/, '') || String(entry.id ?? 'unknown'));
 }
 
 /** Nothing from a provider body is printed without this: no key, no owner content. */
@@ -139,7 +142,7 @@ async function main(argv) {
     try {
       connectors = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryRepeatMs: false });
       await connectors.start();
-      const expected = declaredCompanyEndpoints(configDir);
+      const expectedEndpoints = declaredCompanyEndpoints(configDir);
       let derived;
       const derive = () => {
         const bindings = connectors.owner.taskBindings(connectors.connectionIds());
@@ -150,7 +153,7 @@ async function main(argv) {
         const tools = [...registry.values()];
         const published = bindings.filter(binding => binding.connector === 'mongoose').length;
         derived = { company, registry, staticOnly, tools, published };
-        return providerShapeRefusal({ expected, published, company: company.length, tools: tools.length, static: staticOnly.size });
+        return providerShapeRefusal({ expectedEndpoints: expectedEndpoints.length, published, company: company.length, tools: tools.length, static: staticOnly.size });
       };
       // Fail closed before the paid request: what the configuration declares must have published. A
       // first round that came up short earns the host's own bounded reconnect, never a silent pass.
@@ -162,10 +165,15 @@ async function main(argv) {
       const { company, registry, staticOnly, tools, published } = derived;
       const seconds = ((Date.now() - started) / 1000).toFixed(1);
       if (refusal) {
-        const state = connectors.status().endpoints.map(endpoint => `${endpoint.id}:${endpoint.state}/${endpoint.tools}/${endpoint.error ?? '-'}`).join(',');
-        process.stderr.write(`HELPER-PROVIDER FAIL reason=${refusal} configured=${expected} published=${published} company=${company.length} tools=${tools.length} static=${staticOnly.size} endpoints=${state} seconds=${seconds}\n`);
-        process.stderr.write('HELPER-PROVIDER FAIL the configured company endpoints did not connect, so their declarations stay unproved\n');
-        return 1;
+        const reported = connectors.status().endpoints;
+        const state = reported.map(endpoint => `${endpoint.id}:${endpoint.state}/${endpoint.tools}/${endpoint.error ?? '-'}`).join(',');
+        process.stderr.write(`HELPER-PROVIDER FAIL reason=${refusal} expected=${staticOnly.size}+${expectedEndpoints.length} observed=${tools.length} company=${company.length} published=${published} endpoints=${state} seconds=${seconds}\n`);
+        // One line per configured endpoint, naming the connector's own failure reason, never a summary.
+        for (const name of expectedEndpoints) {
+          const entry = reported.find(endpoint => endpoint.id === `mongoose-${name}`) ?? reported.find(endpoint => endpoint.id.includes(name));
+          process.stderr.write(`HELPER-PROVIDER FAIL endpoint=${name} state=${entry?.state ?? 'not-connected'} tools=${entry?.tools ?? 0} reason=${entry?.error ?? (entry ? 'no-capability-published' : 'endpoint-not-connected')}\n`);
+        }
+        return 2;
       }
       let rejection = null;
       let usage = { input: 0, output: 0 };
@@ -206,7 +214,7 @@ async function main(argv) {
         process.stderr.write(`HELPER-PROVIDER FAIL status=completed tools=${tools.length} seconds=${seconds} calls=0 no registered tool call in the answer\n`);
         return 2;
       }
-      process.stdout.write(`HELPER-PROVIDER PASS status=completed tools=${tools.length} static=${staticOnly.size} company=${company.length} configured=${expected} model=${role.model} effort=${role.effort} calls=${calls.map(call => call.name).join(',')} input_tokens=${usage.input} output_tokens=${usage.output} seconds=${seconds}\n`);
+      process.stdout.write(`HELPER-PROVIDER PASS status=completed expected=${staticOnly.size}+${company.length} observed=${tools.length} static=${staticOnly.size} company=${company.length} published=${published}/${expectedEndpoints.length} model=${role.model} effort=${role.effort} calls=${calls.map(call => call.name).join(',')} input_tokens=${usage.input} output_tokens=${usage.output} seconds=${seconds}\n`);
       return 0;
     } finally {
       await connectors?.close();

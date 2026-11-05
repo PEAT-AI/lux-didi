@@ -293,15 +293,17 @@ seeds beside the owner's config. The ask is a fixed harmless calendar read; no t
 check prints status, tool count, tokens and wall time and nothing else: never the key, never owner
 content.
 
-- `HELPER-PROVIDER PASS` requires the full set to be proved: every company endpoint the configuration
-  declares must publish, the registry must hold more tools than its static declarations alone, and the
-  response must be `completed` and name at least one registered tool.
-- A configuration that declares company endpoints and a run that publishes none of them is refused
-  before the request, after one bounded `recover()` through the host's own reconnect: exit 1 names
-  `reason=company-unpublished` with the endpoint states, so a discovery or credential failure can never
-  green the gate on the static set. `endpoint:<id>:<state>/<tools>/<error>` is the closed report, never
-  owner content.
-- exit 2 prints the redacted provider error body (bounded to 2 KB): the provider rejected the schema.
+- `HELPER-PROVIDER PASS` requires the full set to be proved: the expected set is every static
+  declaration plus every company tool the configured bindings must publish, and PASS is printed only
+  when the observed registry equals it. Every run prints `expected=<static>+<company> observed=<n>`.
+- A registry smaller than the configuration requires is refused before the request, after one bounded
+  `recover()` through the host's own reconnect: exit 2 names `reason=company_bindings_unavailable` and
+  prints one line per configured endpoint with the connector's own reason, for example
+  `endpoint=knowledge state=error tools=0 reason=credential-refresh-failed`. A discovery or credential
+  failure can therefore never green the gate on a partial registry. These lines carry closed states
+  and codes, never owner content.
+- exit 2 also prints the redacted provider error body (bounded to 2 KB) when the provider rejected the
+  schema.
 - exit 3 prints SKIP when the machine has no provider configuration, or configures a provider that
   does not take the OpenAI strict shape. A machine with nothing configured has nothing to prove.
 - A run costs well under USD 0.01. Do not loop it.

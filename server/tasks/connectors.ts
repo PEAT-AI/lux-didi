@@ -98,7 +98,8 @@ function companyPayload(data: unknown): ToolResult {
 export function projectTaskPayload(name: string, raw: unknown, args: Record<string, unknown>): ToolResult {
   const data = payload(raw), root = record(data);
   const id = text(args.id ?? args.ref) || name;
-  if (name === 'search_company' || name === 'read_company' || name === 'query_company' || Object.hasOwn(companySteps, name)) return companyPayload(data);
+  if ((name === 'search_company' || name === 'read_company' || name === 'query_company' || Object.hasOwn(companySteps, name))
+    && !(name === 'search_company' && typeof data === 'string' && rankedText(data).length)) return companyPayload(data);
   if (['vault_meetings', 'read_vault_meeting', 'list_vault'].includes(name)) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name, text(args.cursor) || '0');
   if (name === 'search_knowledge' && typeof data === 'string') {
     const rows = rankedText(data).slice(0, 12).map(row => ({ ...row, title: row.title.slice(0, 300) }));

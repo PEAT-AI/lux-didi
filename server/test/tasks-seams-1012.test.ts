@@ -49,6 +49,7 @@ test('10.12: real tool results reach the helper without losing mail, vault evide
     { id: 'company', name: 'search_company', args: { query: 'synthetic absent record', mode: 'answer', cursor: null } },
   ];
   let hop = 0;
+  let assertionError: unknown;
   const result = await runWorker({ registry: createRegistry({ execute, authority: new FakeAuthority() }),
     identity: { task_id: 'synthetic-seams', task_revision: 1, connection_generation: 1 },
     input: 'Read my synthetic mail, find shade house advice and check the synthetic company record.',
@@ -56,6 +57,7 @@ test('10.12: real tool results reach the helper without losing mail, vault evide
       style: { text: 'SYNTHETIC STYLE', dataClass: 'ordinary' }, lore: { text: 'SYNTHETIC SEAM LORE', dataClass: 'ordinary' } },
     signal: new AbortController().signal,
     infer: async request => {
+      try {
       assert.match(request.instructions, /SYNTHETIC SEAM LORE/);
       if (hop < calls.length) return { text: '', calls: [calls[hop++]!] };
       const [mail, knowledge, company] = request.outputs.map(output => output.result);
@@ -68,8 +70,10 @@ test('10.12: real tool results reach the helper without losing mail, vault evide
       assert.notEqual(company?.status, 'failed');
       assert.match(company!.text, /no_match/);
       return { text: 'The synthetic results are verified.', calls: [] };
+      } catch (error) { assertionError = error; throw error; }
     },
   });
+  if (assertionError) throw assertionError;
   assert.equal(result.status, 'complete');
   assert.equal(hop, 3);
 });

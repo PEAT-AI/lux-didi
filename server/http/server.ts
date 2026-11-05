@@ -131,6 +131,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   };
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     const requestId = randomUUID();
+    let canaryCallId = 'none';
     const success = (data: unknown) => ({ data, requestId, authorityEpoch: store.authorityEpoch });
     try {
       const protectedHeaders = new Set(['host', 'origin', 'authorization', 'cookie', 'idempotency-key', 'x-didi-authority-epoch', 'x-didi-csrf']);
@@ -155,6 +156,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           send(res, 200, success(canary.open(input['asks'], context, input['deadline'])));
         } else {
           if (Object.keys(input).length !== 1 || typeof input['sessionId'] !== 'string') throw new ServiceError('BAD_REQUEST', 'Invalid canary session');
+          if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input['sessionId'])) canaryCallId = input['sessionId'];
           send(res, 200, success(await canary.run(input['sessionId'], context.clientId)));
         }
         return;
@@ -530,7 +532,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       send(res, 200, response);
     } catch (error) {
       const step = req.url === '/api/v1/live-canary/open' ? 'open' : req.url === '/api/v1/live-canary/run' ? 'run' : undefined;
-      if (step) hostLogEvent({ event: 'canary_route_error', step, code: canaryFailureCode(error), ms: 0 });
+      if (step) hostLogEvent({ event: 'canary_route_error', step, code: canaryFailureCode(error), ms: 0, callId: canaryCallId });
       const typed = error instanceof ServiceError ? error : error instanceof ChatError
         ? new ServiceError(error.code === 'unavailable' ? 'MODEL_NOT_CONFIGURED' : error.code === 'invalid_input' ? 'BAD_REQUEST' : error.code === 'not_found' ? 'NOT_FOUND' : error.code === 'unauthorized' ? 'FORBIDDEN' : 'CONFLICT', error.message,
           error.code === 'invalid_input' ? 400 : error.code === 'not_found' ? 404 : ['unauthorized'].includes(error.code) ? 403 : error.code === 'unavailable' ? 503 : 409)

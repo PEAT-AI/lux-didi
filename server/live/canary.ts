@@ -264,11 +264,11 @@ export class InstalledCanary {
     const readyDeadline = readyStarted + 10_000;
     let detach = () => {};
     try {
-      hostLogEvent({ event: 'canary_step', step: 'ready_wait', callId: id, ms: 0 });
+      hostLogEvent({ event: 'canary_step', step: 'ready_wait', code: 'pending', callId: id, ms: 0 });
       while (!session.abort.signal.aborted && !this.live.providerReady?.(id) && !this.live.snapshot(id).terminal && this.now() < readyDeadline) {
         try { await this.wait(session.abort.signal); } catch (error) { if (!session.abort.signal.aborted) throw error; break; }
       }
-      hostLogEvent({ event: 'canary_step', step: 'ready_waited', callId: id, ms: Math.max(0, this.now() - readyStarted) });
+      hostLogEvent({ event: 'canary_step', step: 'ready_waited', code: this.live.providerReady?.(id) ? 'ready' : 'provider_not_ready', callId: id, ms: Math.max(0, this.now() - readyStarted) });
       if (!this.live.providerReady?.(id)) {
         const terminal = this.live.snapshot(id).terminal;
         const code = terminal && 'code' in terminal ? terminal.code : session.expired ? 'canary_shutdown_timer' : 'provider_not_ready';
@@ -299,7 +299,7 @@ export class InstalledCanary {
         const started = this.now();
         for (const final of ask.finals) {
           this.live.text(final);
-          hostLogEvent({ event: 'canary_step', step: 'ask_injected', callId: id, ms: Math.max(0, this.now() - started) });
+          hostLogEvent({ event: 'canary_step', step: 'ask_injected', code: 'injected', callId: id, ms: Math.max(0, this.now() - started) });
         }
         while (!settled && !session.abort.signal.aborted && !this.live.snapshot(id).terminal && this.now() - started < 60_000) {
           try { await this.wait(session.abort.signal); } catch (error) { if (!session.abort.signal.aborted) throw error; break; }

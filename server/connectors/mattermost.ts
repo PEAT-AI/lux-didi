@@ -925,7 +925,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       }
     }
     // A first wave that lost a leg ends here, after the answers above are kept: never the hard-coded pair.
-    if (unanswered.length > 0) return finish(unanswered);
+    // F2: the two later waves never ran, so they are named with the legs that did not answer; otherwise
+    // docs/connectors.md:32 would be true for one wave and false for the other two.
+    if (unanswered.length > 0) return finish([...unanswered, 'moved_conversations', 'threads']);
     // Direct and group conversations: the owner's own posts await no reply, but they seed the thread rule.
     if (recentRead === undefined) missing = 'direct messages by recency need the newer chat archive';
     else {

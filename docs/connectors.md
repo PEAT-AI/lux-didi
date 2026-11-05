@@ -82,9 +82,13 @@ link mutation or other remote tools are published. Discovery and approval still 
 The helper's typed meeting/list tools are `vault_meetings`, `read_vault_meeting` and
 `list_vault`; list pages and meeting child pages have bounded limits and offsets.
 
-Search wire arguments select `detail="voice"`, `snippet_chars=600` and
+Search wire arguments select `detail="snippets"` and
 `limit=min(6, configured maximum)`. Confidence and supersession are evidence, not
-instructions. The entire accepted text envelope reaches the helper, capped at 24000
+instructions. Voice mode is not used: its secondary rows omit scores and relationship badges.
+Snippet width is the remote renderer's native width, not the voice-only `snippet_chars`
+argument. Full snippet rows carry scores and badges; remote weak title-only rows
+are retained with their ids and ranks, without inventing absent evidence.
+The entire accepted text envelope reaches the helper, capped at 24000
 characters and six bounded references. Source policy validation still precedes delivery;
 structured diagnostics never outrank the accepted MCP text blocks.
 

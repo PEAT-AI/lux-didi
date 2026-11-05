@@ -97,9 +97,10 @@ test('the host fact about overlap reaches the helper as data only', async t => {
   const captured: Captured[] = [];
   const f = fixture(t, capture(() => ({ text: 'The synthetic answer.', calls: [] }), captured));
   hisWordsOverHerSpeech(f.call, true); f.call.finalized('Synthetic words over her speech', 1, 1_200);
-  await Promise.resolve();
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  assert.equal(captured.length, 1);
   hisWordsOverHerSpeech(f.call, false); f.call.finalized('Synthetic words after her speech', 2, 1_200);
-  await Promise.resolve();
+  for (let i = 0; i < 30; i++) await Promise.resolve();
   assert.equal(captured[0]!.input['owner_words_overlapped_her_speech'], true);
   assert.equal(captured[1]!.input['owner_words_overlapped_her_speech'], false, 'the fact does not stick to the next ask');
 });

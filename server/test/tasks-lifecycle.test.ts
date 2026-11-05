@@ -272,15 +272,15 @@ test('the inference deadline still ends a stuck hop while his words wait', async
 
 test('the revision deadline re-anchors on his latest final', async () => {
   const controller = new TaskController(new FakeDelivery(), () => 'synthetic-task'), clock = new FakeClock();
-  const executed: string[] = [], firstHop = deferred<Inference>(), secondHop = deferred<Inference>();
+  const executed: string[] = [], firstHop = deferred<Inference>(), secondHop = deferred<Inference>(), secondHopStarted = deferred<void>();
   let hop = 0;
-  const infer: Infer = () => (++hop === 1 ? firstHop.promise : secondHop.promise);
+  const infer: Infer = () => (++hop === 1 ? firstHop.promise : (secondHopStarted.resolve(), secondHop.promise));
   const first = controller.finalize('synthetic ask', 1);
   const work = hopWork({ controller, revision: first, registry: memoryRegistry(executed), infer, clock });
   clock.advance(20000);
   controller.finalize('synthetic correction', 1);
   firstHop.resolve({ text: '', calls: [{ id: 'read', name: 'search_memory', args: { query: 'synthetic' } }] });
-  for (let tick = 0; tick < 6; tick++) await Promise.resolve();
+  await secondHopStarted.promise;
   clock.advance(20000);
   secondHop.resolve({ text: 'synthetic answer', calls: [] });
   const answer = await work;

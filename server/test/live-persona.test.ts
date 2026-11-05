@@ -887,6 +887,13 @@ test('S4b: the voice surface carries backchannel and interruption policy section
   assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the prior thread only if it still matters\./);
 });
 
+test('S4b: the accent preset head and tail are byte-identical to the shipped voice anchors', () => {
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].head), '22a7baf4f24ae787d99c0c3cd590baa7f7817ad761469712ab574f9b9dd04d50');
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-light'].head), '7da579031b731160b64f4ac9e968666a31d6ba35755c6c2b8db3b617c83e30f8');
+  assert.equal(sha(LIVE_ACCENT_PRESETS['indian-strong'].tail), 'e760ab6e9927683f8504ed2ac351898e5031eecbeaa9b8514252686f0c8a8f77');
+  assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].tail, LIVE_ACCENT_PRESETS['indian-light'].tail, 'both presets share the one tail');
+});
+
 const NOW_3U = Date.UTC(2026, 9, 20, 9, 30);
 
 test('593: an old standing loop carries its age and last-seen date', () => {
@@ -1153,4 +1160,15 @@ test('worker instructions append composed presentation style and private owner l
   assert.ok(result.sections.some(section => section.id === 'previous-openers'));
   assert.ok(result.text.includes('OPENING_FACTS'));
   assert.ok(result.text.length < 60000);
+});
+
+const STILL_NEGATION = /still\s+(?:not|did not|has not|hasn't|to|has to|needs to)/iu;
+
+test('593: standing lines never state an old loop as still unfinished', () => {
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    now: NOW_3U, timeZone: 'UTC',
+    records: [standingRecord('standing-old', 'The owner said the tax form is still not filed.', 'open')] });
+  const line = composed.text.split('\n').find(candidate => candidate.includes('standing-old'))!;
+  assert.ok(!STILL_NEGATION.test(line), `no stale assertion in the standing line: ${line}`);
+  assert.ok(line.includes('is it done:'), 'an old standing loop is a question');
 });

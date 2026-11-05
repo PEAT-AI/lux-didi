@@ -43,3 +43,21 @@ test('vault shaping is bounded and does not change company exact-name matching',
   assert.ok(result.text.length <= 24000);
   assert.equal(projectTaskPayload('search_company', vaultEnvelope, { query: 'orchid watering' }).status, 'no_match');
 });
+
+test('vault exposes only the reviewed read catalogue with bounded valid lookup arguments', async () => {
+  const { CONNECTOR_DESCRIPTORS } = await import('../connectors/index.js');
+  const policy = { bounds: { maxSearchLimit: 25, maxGetIds: 10 } } as import('../tools/types.js').ConnectionPolicy;
+  const descriptor = CONNECTOR_DESCRIPTORS['lux-knowledge']!;
+  assert.deepEqual([...descriptor.envelope], ['search_knowledge', 'get_insight', 'list_meetings', 'get_meeting', 'list_insights']);
+  const tools = descriptor.declarations(policy);
+  for (const [name, valid, invalid] of [
+    ['list_meetings', { participant: 'Synthetic', date_from: '2026-01-01', limit: 10 }, { date_from: '2026-02-30' }],
+    ['get_meeting', { meeting_id: 'synthetic', limit: 10 }, { limit: 10 }],
+    ['list_insights', { count_only: true, limit: 10 }, { limit: 100000 }],
+  ] as const) {
+    const tool = tools.find(tool => tool.name === name);
+    assert.ok(tool, name);
+    assert.equal(tool.validate(valid), true, name);
+    assert.equal(tool.validate(invalid), false, name);
+  }
+});

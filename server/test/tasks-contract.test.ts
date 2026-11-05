@@ -139,9 +139,9 @@ test('real connector wire shapes retain thread bodies, event times and ranked Ma
   const event = projectTaskPayload('calendar_events', { events: [{ id: 'e', summary: 'Synthetic meeting', start: { dateTime: '2026-01-01T10:00:00Z' }, end: { dateTime: '2026-01-01T11:00:00Z' } }] }, {});
   assert.match(event.text, /Synthetic meeting/); assert.match(event.text, /10:00:00Z/);
   const ranked = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Orchid' });
-  assert.equal(ranked.references[0]?.match, 'exact');
+  assert.equal(ranked.references[0]?.rank, 1);
   const neighbour = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Cedar' });
-  assert.equal(neighbour.status, 'no_match'); assert.equal(neighbour.text, '');
+  assert.equal(neighbour.status, 'ok'); assert.match(neighbour.text, /Orchid/);
 });
 
 test('configured schemas reject floats but accept integer bounds', () => {
@@ -514,7 +514,7 @@ test('invalid insight identifiers name search_knowledge and valid insight ids re
   assert.equal(seen.length, 0);
   const valid = await execute('read_knowledge', { id: '63' }, new AbortController().signal);
   assert.equal(valid.text, 'synthetic insight');
-  assert.deepEqual(seen[0], { ids: [63] });
+  assert.deepEqual(seen[0], { ids: [63], include_links: true });
 });
 
 test('a no-tool answer with no completed reads can compose for thirteen seconds', async () => {

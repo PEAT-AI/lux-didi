@@ -122,7 +122,25 @@ test('illness floors withhold concrete diseases, symptoms and treatment facts ac
     assert.deepEqual(result.facts.saved_for_him, [], fact);
     assert.deepEqual(result.facts.exclude_topics, [], fact);
   }
-  const ordinary = ['2026-11-05 Software bug review', '2026-11-05 Cold outreach campaign', '2026-11-05 Database recovery plan', '2027-04-01 Run the marathon'];
+  const ordinary = ['2026-11-05 Software bug review', '2026-11-05 Architecture review', '2027-04-01 Run the marathon'];
   const allowed = buildOpeningFacts({ ...base, savedForHim: ordinary });
   assert.deepEqual(allowed.facts.saved_for_him, ordinary, 'illness screening must not erase ordinary work or the dated marathon');
+});
+
+test('the host illness backstop covers common medical and injury words on case-insensitive boundaries', () => {
+  for (const word of ['flu', 'cold', 'fever', 'cough', 'infection', 'virus', 'covid', 'pneumonia', 'injury', 'pain', 'symptom', 'surgery', 'operation', 'therapy', 'chemo', 'medication', 'doctor', 'clinic', 'recovery', 'treatment']) {
+    const fact = `2026-11-05 ${word.toUpperCase()} update`;
+    const result = buildOpeningFacts({ ...base, day: [fact], openThread: fact, commitments: [fact], savedForHim: [fact], excludeTopics: [fact] });
+    assert.deepEqual([result.facts.day, result.facts.open_thread, result.facts.commitments, result.facts.saved_for_him, result.facts.exclude_topics], [[], '', [], [], []], word);
+  }
+  const control = '2026-11-05 Coldstream architecture review';
+  assert.deepEqual(buildOpeningFacts({ ...base, day: [control] }).facts.day, [control], 'word boundaries do not turn a name into a diagnosis');
+});
+
+test('a dentist calendar fact passes only when authored persona floors do not name dentistry', () => {
+  const fact = '2026-11-05 Dentist appointment';
+  const noDentistFloor = openingContextFloors([], 'Never joke about illness.');
+  assert.deepEqual(buildOpeningFacts({ now, timeZone: 'UTC', ...noDentistFloor, day: [fact] }).facts.day, [fact]);
+  const dentistFloor = openingContextFloors([], 'Never joke about dentist appointments.');
+  assert.deepEqual(buildOpeningFacts({ now, timeZone: 'UTC', ...dentistFloor, day: [fact] }).facts.day, []);
 });

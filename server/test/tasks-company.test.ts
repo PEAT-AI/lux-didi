@@ -124,7 +124,7 @@ test('company coverage blockers and CRM customer lookup are typed native results
     { name: 'get_company', description: 'Read CRM by slug or canonical name.', inputSchema: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'], additionalProperties: false } },
   ];
   const coverage = { decision: 'not_answerable', confidence: 'high', answerable_parts: [], missing_parts: ['synthetic region'], blocker_codes: ['coverage_missing'], suggested_tools: [], route: 'blocked', suggested_ticket: null, external_system: null };
-  const crm = { company_name: 'Synthetic Company', link_status: { hubspot_company_id: null, hubspot_id_source: null, hubspot_id_verified_at: null, status: 'unresolved' } };
+  const crm = { company: 'Synthetic Company', link_status: { hubspot_company_id: null, hubspot_id_source: null, hubspot_id_verified_at: null, status: 'unresolved' } };
   const seen: string[] = [];
   const bindings = schemas.map((schema, index): BoundConnector => {
     const endpoint = index ? 'crm' : 'knowledge', id = `synthetic-${endpoint}`;

@@ -41,6 +41,12 @@ export const taskMigrations: readonly SchemaMigration[] = [{ owner: 'tasks', ver
     endpoint_id TEXT PRIMARY KEY, resource TEXT NOT NULL, discovered_at INTEGER NOT NULL,
     schema_digest TEXT NOT NULL, declarations TEXT NOT NULL
   )`,
+] }, { owner: 'tasks', version: 5, statements: [
+  `CREATE TABLE delivered_opening_topics (
+    call_id TEXT PRIMARY KEY,
+    utc INTEGER NOT NULL, topics TEXT NOT NULL
+  )`,
+  'CREATE INDEX delivered_opening_topics_utc ON delivered_opening_topics(utc)',
 ] }];
 /** Same 30-day content / 90-day metadata policy as trace. Identities and outcome survive content. */
 export function pruneTaskContent(tx: Transaction, now: number): void {
@@ -57,4 +63,9 @@ export interface TaskRecord { task_id: string; task_revision: number; connection
 export interface OperationRecord extends TaskRecord {
   operation_id: string; tool: string; effect: string;
   state: 'pending' | 'committed' | 'failed' | 'unknown'; args: unknown; result: unknown;
+}
+
+export function pruneOpeningTopics(tx: Pick<Transaction, 'run'>, now: number): void {
+  tx.run('DELETE FROM delivered_opening_topics WHERE utc < ?', [now - 30 * 86400000]);
+  tx.run('DELETE FROM delivered_opening_topics WHERE call_id NOT IN (SELECT call_id FROM delivered_opening_topics ORDER BY utc DESC, rowid DESC LIMIT 100)');
 }

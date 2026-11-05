@@ -1,5 +1,5 @@
 import { FAILURE_CATEGORIES, REASON_CODES } from '../tasks/results.js';
-import { taskMigrations, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
+import { taskMigrations, pruneOpeningTopics, pruneTaskContent, type TaskRecord, type OperationRecord } from './task-schema.js';
 import { backfillHistoryTurns } from '../domain/history-turns.js';
 import { DatabaseSync, constants } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
@@ -137,7 +137,7 @@ export class Store {
           all: (sql, params = []) => this.#db!.prepare(sql).all(...params) as SQLRow[],
         };
         const memoryTx = new Tx(sql => this.#db!.prepare(sql));
-        try { backfillHistoryTurns(memoryTx); pruneTaskContent(memoryTx, Date.now()); } finally { memoryTx.expire(); }
+        try { backfillHistoryTurns(memoryTx); pruneTaskContent(memoryTx, Date.now()); pruneOpeningTopics(memoryTx, Date.now()); } finally { memoryTx.expire(); }
         pruneTraceContent(traceExec, Date.now());
         this.#db.prepare("UPDATE task_operations SET state='unknown' WHERE state='pending'").run();
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();

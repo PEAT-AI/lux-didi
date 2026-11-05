@@ -10,7 +10,7 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from '../dist/t
 const approved = JSON.parse(readFileSync(new URL('./fixtures/prompt-final.json', import.meta.url)));
 assert.deepEqual(Object.keys(approved).sort(), [
   'NAYA_CHARACTER', 'NAYA_WORK_DELIVERY', 'WORKER_INSTRUCTIONS',
-  'Text evidence guide', 'Text tool rule replacement',
+  'Text evidence guide', 'Text tool rule replacement', 'Opening facts',
 ].sort(), 'the golden fixture names every shipped policy, with no retired backend block');
 assert.equal(prompt.NAYA_CHARACTER, approved.NAYA_CHARACTER);
 assert.equal(prompt.NAYA_WORK_DELIVERY, approved.NAYA_WORK_DELIVERY);
@@ -142,3 +142,17 @@ for (const retired of ['Actually, the bicycle is balancing itself only', 'See, t
   'This is the thing, no?']) {
   assert.equal(accented.text.includes(retired), false, `the live instruction never recites the retired example: ${retired}`);
 }
+
+assert.match(prompt.NAYA_LIVE_BASE, /Open from OPENING_FACTS/);
+assert.match(prompt.NAYA_LIVE_BASE, /Never open on a subject in exclude_topics/);
+assert.doesNotMatch(prompt.NAYA_LIVE_BASE, /Pick one of these|Never invent beyond these options/);
+const openingFacts = prompt.buildOpeningFacts({ now: Date.UTC(2026, 10, 5), timeZone: 'UTC', familyNames: [], floorSubjects: [] });
+assert.match(openingFacts.section, /OPENING_FACTS/);
+assert.deepEqual(openingFacts.facts.day, []);
+
+const pinnedOpening = prompt.buildOpeningFacts({ now: Date.UTC(2026, 10, 5, 9), timeZone: 'UTC', familyNames: [], floorSubjects: [],
+  day: ['2026-11-05 10:00 Design review'], openThread: '2026-11-04 Architecture proposal',
+  commitments: ['2027-04-01 Run the marathon'], excludeTopics: ['sleep'] });
+const { now: openingTime, ...pinnedOpeningFacts } = pinnedOpening.facts;
+assert.match(openingTime, /2026/);
+assert.deepEqual(pinnedOpeningFacts, approved['Opening facts']);

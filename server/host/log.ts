@@ -1702,14 +1702,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!mb(value.rssMb) || !mb(value.heapUsedMb) || !pct(value.cpuPct)) return;
     return { event: 'host_resources', rssMb: value.rssMb, heapUsedMb: value.heapUsedMb, cpuPct: value.cpuPct };
   }
-  if (value.event === 'opener_plan') {
-    // M1's plan receipt, which rode the debug journal until O1b-A removed it: the kinds offered and the
-    // start counter that chose them, never the owner's text.
-    if (!closedKeys(value, ['event', 'kinds', 'rotation'])) return;
-    const kinds = value.kinds;
-    if (!Array.isArray(kinds) || kinds.length > 4 || kinds.some(kind => !isSafeToken(kind))) return;
-    if (!isSafeCount(value.rotation)) return;
-    return { event: 'opener_plan', kinds, rotation: value.rotation };
+  if (value.event === 'opener_facts') {
+    // Opening diagnostics admit counts only, never facts, topic keys or delivered words.
+    if (!closedKeys(value, ['event', 'day', 'commitments', 'saved_for_him', 'open_thread', 'exclude_topics'])) return;
+    if (![value.day, value.commitments, value.saved_for_him, value.open_thread, value.exclude_topics].every(isSafeCount)) return;
+    return { event: 'opener_facts', day: value.day, commitments: value.commitments,
+      saved_for_him: value.saved_for_him, open_thread: value.open_thread, exclude_topics: value.exclude_topics };
   }
 }
 

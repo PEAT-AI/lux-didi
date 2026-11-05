@@ -219,7 +219,6 @@ The helper returns JSON with `spoken` connected prose and an `exact` list, or `{
 
 Recovery inputs are typed `recovery` envelopes with `cause` (`connection_dropped` or `provider_silent`) and `mid_answer`. They ask for continuation without a greeting or an explanation of the pause. Task identities, attempts, receipts and delivery counters never enter model-visible commentary; the envelope id and part counters only assemble its data.
 
-
 ## Helper failure facts
 
 The commentary cause remains a reason code. The host supplies factual clauses for her to phrase, not spoken lines. A tool failure keeps its own repair text; unknown model failure codes retain the generic model-request description.
@@ -232,3 +231,10 @@ The commentary cause remains a reason code. The host supplies factual clauses fo
 | provider_rate_limited | the provider is rate limiting | ask again in a moment |
 | provider_unavailable | the provider could not be reached | ask again |
 | provider_incomplete, provider_empty | the provider returned no usable answer | ask again |
+### Opening facts and delivered-topic exclusions
+
+At each call start the host supplies a bounded fenced `OPENING_FACTS` data block: local time, today's calendar digest, the last open thread, dated commitments, saved notes and excluded topics from the last three delivered openings. These are facts, not opening kinds, ranked choices or suggested sentences. The model chooses its angle and words under the persona; with no usable facts it opens plainly. It must not open on an excluded topic. Section ids `opening-options` and `previous-openers` remain stable for diagnostics.
+
+The host withholds family-circle names and aliases from the people roster, subjects named by the authored lore's humour floors, illness, Freya and the boat, and monetary amounts or balances. The persona independently enforces its own floors. After the first spoken assistant turn completes or is interrupted, the host records only its semantic topic/entity keys with the call id and UTC timestamp in `delivered_opening_topics`. Later turns cannot overwrite that opening. Retention is bounded to 30 days and 100 calls; route/history authority still governs which calls seed the next opening. `opener_facts` logs counts only, never the facts or spoken text.
+
+The host's closed illness-word list is a conservative backstop; the persona's floor rule supplies the judgment layer.

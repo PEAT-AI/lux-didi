@@ -17,6 +17,9 @@ export interface ExistingExecutors {
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
+  vault_meetings: { connector: 'lux-knowledge', tool: 'list_meetings', args: a => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) },
+  read_vault_meeting: { connector: 'lux-knowledge', tool: 'get_meeting', args: a => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) },
+  list_vault: { connector: 'lux-knowledge', tool: 'list_insights', args: a => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) },
   chat_attention: { connector: 'mattermost', tool: 'mattermost_attention', args: a => ({ ...a }) },
   chat_person: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'person' }) },
   chat_channel: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'channel' }) },
@@ -31,7 +34,7 @@ const mappings: Record<string, Mapping> = {
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(6, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'voice', snippet_chars: 600 }) },
+  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(6, (parameters.properties as { limit: { maximum: number } }).limit.maximum) }) },
   read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: Array.isArray(a.ids) ? a.ids : [Number(a.id)], include_links: a.include_links ?? true }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
@@ -69,6 +72,7 @@ function eventTime(value: unknown): string {
 export function projectTaskPayload(name: string, raw: unknown, args: Record<string, unknown>): ToolResult {
   const data = payload(raw), root = record(data);
   const id = text(args.id ?? args.ref) || name;
+  if (['vault_meetings', 'read_vault_meeting', 'list_vault'].includes(name)) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name, text(args.cursor) || '0');
   if (name === 'search_knowledge' && typeof data === 'string') {
     const rows = rankedText(data);
     const empty = !rows.length && /\bNo (?:results|matches|insights)(?: found)?\b/i.test(data);

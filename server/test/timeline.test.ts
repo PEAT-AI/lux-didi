@@ -192,7 +192,7 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
   assert.equal(older.terminal, null);
 });
 
-test('#1011: a stale server/dist is reported with the build command, and the read never builds (#699, #752)', () => {
+test('#1011: a stale server/dist is warned about with the build command, and the read never builds (#699, #752)', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'didi-timeline-build-')));
   try {
     const script = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
@@ -222,10 +222,12 @@ test('#1011: a stale server/dist is reported with the build command, and the rea
     utimesSync(join(dist, 'timeline.js'), older, older);
     for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), newer, newer);
     const stale = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
-    assert.equal(stale.status, 1, stale.stderr);
+    // C-TRACE: a read command that refuses because a build artifact is older than its source answers
+    // nothing, so the stale build is read with a warning naming the build command, never silently.
+    assert.equal(stale.status, 0, stale.stderr);
     assert.match(stale.stderr, /server\/dist is older than its source/u);
-    assert.match(stale.stderr, /run: npm --prefix server run build/u);
-    assert.equal(stale.stdout, '', 'a stale dist answers nothing');
+    assert.match(stale.stderr, /npm --prefix server run build/u);
+    assert.notEqual(stale.stdout.trim(), '', 'a stale dist still answers, and says so on stderr');
     assert.equal(existsSync(calls), false, 'the read ran no build in the shared checkout');
     // A fresh dist is authority: no build runs, and the real module answers.
     for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), older, older);

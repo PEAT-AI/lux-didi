@@ -106,6 +106,8 @@ interface ActiveSession {
   /** C-TRACE: the words written when a cut utterance was finalized, so the adapter's own final for the
    *  same sentence is recognized instead of appended again. */
   ownerFinalText: string | undefined;
+  /** C-TRACE: the turn just closed, waiting for the boundary journal write that finalizes his cut sentence. */
+  cutOwnerTurnId: string | undefined;
   audioResponseId?: string | undefined;
   traceOutputTurnId?: string | undefined;
   /** C-LOGS11: the turn whose first audible native receipt is already logged, so one turn logs one
@@ -2141,7 +2143,7 @@ export class LiveSessionOwner {
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()), contextToolChars: 0,
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnFirstAudibleAt: undefined, ownerUtteranceTurnId: undefined, ownerFinalJournalId: undefined, ownerFinalText: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnTelugu: 0, turnKannada: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnFirstAudibleAt: undefined, ownerUtteranceTurnId: undefined, ownerFinalJournalId: undefined, ownerFinalText: undefined, cutOwnerTurnId: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnTelugu: 0, turnKannada: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -2981,9 +2983,9 @@ export class LiveSessionOwner {
   #closeTurn(handle: ActiveSession, closeReason: TurnCloseReason, outcome?: TurnOutcome): void {
     const turnId = handle.connection.turnId;
     if (turnId === undefined) return;
-    // C-TRACE: the turn's own summary before it is forgotten, and his cut sentence before its deltas can
-    // be mistaken for the next turn's words.
-    this.#finalizeOwnerUtterance(handle, turnId);
+    // C-TRACE: his cut sentence is finalized by the next journal write of this turn's boundary, inside that
+    // write's own transaction, so a closed turn costs the store no extra commit.
+    handle.cutOwnerTurnId = turnId;
     if (handle.turnFirstAudibleAt !== undefined) this.#receipt(handle, 'turn.summary', { turnId }, { firstAudibleAt: handle.turnFirstAudibleAt });
     handle.connection.turnId = undefined;
     // C-LOGS11: the turn's last line is its own, so the context ends with it.
@@ -3000,29 +3002,27 @@ export class LiveSessionOwner {
    * taken, so an earlier sentence is never repeated. The adapter's own final, when it does arrive, is
    * recognized by `ownerFinalText` and never appended twice.
    */
-  #finalizeOwnerUtterance(handle: ActiveSession, turnId: string): void {
+  #finalizeOwnerUtterance(tx: Transaction, handle: ActiveSession, turnId: string): void {
     try {
-      this.#store.transaction(tx => {
-        if (handle.ownerFinalJournalId === undefined) {
-          const lastFinal = tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1",
-            [handle.liveSessionId]);
-          handle.ownerFinalJournalId = Number(lastFinal?.['id'] ?? 0);
-        }
-        const rows = tx.all("SELECT journal_id,text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND journal_id>? ORDER BY journal_id",
-          [handle.liveSessionId, handle.ownerFinalJournalId]);
-        if (!rows.length) return;
-        const last = Number(rows[rows.length - 1]!['journal_id']);
-        const text = rows.map(row => String(row['text'] ?? '')).join('');
-        handle.ownerFinalJournalId = last;
-        if (!text.trim().length) return;
-        handle.ownerFinalText = text.trim();
-        tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)',
-          [turnId, 'owner', this.#now(), 1, text, last]);
-      });
+      if (handle.ownerFinalJournalId === undefined) {
+        const lastFinal = tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1",
+          [handle.liveSessionId]);
+        handle.ownerFinalJournalId = Number(lastFinal?.['id'] ?? 0);
+      }
+      const rows = tx.all("SELECT journal_id,text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND journal_id>? ORDER BY journal_id",
+        [handle.liveSessionId, handle.ownerFinalJournalId]);
+      if (!rows.length) return;
+      const last = Number(rows[rows.length - 1]!['journal_id']);
+      const text = rows.map(row => String(row['text'] ?? '')).join('');
+      handle.ownerFinalJournalId = last;
+      if (!text.trim().length) return;
+      handle.ownerFinalText = text.trim();
+      tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)',
+        [turnId, 'owner', this.#now(), 1, text, last]);
     } catch { this.#diagnosticFailure(handle, 'trace_write_failed'); }
   }
 
-  /** The words Naya had produced but the owner never heard: kept apart, so a later turn can offer to finish. */
+/** The words Naya had produced but the owner never heard: kept apart, so a later turn can offer to finish. */
   #keepUnheard(handle: ActiveSession, tx: Transaction): void {
     const row = tx.get(
       "SELECT group_concat(text,'') AS text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND journal_id > COALESCE((SELECT MAX(journal_id) FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND finished=1),0)",
@@ -4185,6 +4185,12 @@ export class LiveSessionOwner {
       tx.run('UPDATE live_sessions SET journal_events=?, journal_bytes=?, ready=CASE WHEN ?=1 THEN 1 ELSE ready END, updated_at=? WHERE live_session_id=?',
         [events, total, kind === 'ready' ? 1 : 0, now, handle.liveSessionId]);
       const journalId = Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
+      // C-TRACE: the boundary of a closed turn is where his cut sentence is written as the turn he said, inside
+      // this write's own transaction, so a closed turn costs the store no extra commit.
+      if (kind === 'turnComplete' || kind === 'interrupted' || kind === 'terminal') {
+        const cutTurn = handle.cutOwnerTurnId;
+        if (cutTurn !== undefined) { handle.cutOwnerTurnId = undefined; this.#finalizeOwnerUtterance(tx, handle, cutTurn); }
+      }
       if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
       if (transcription) {
         const owner = transcription.type === 'inputTranscription';

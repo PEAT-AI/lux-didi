@@ -38,11 +38,12 @@ export function persistHistoryTurns(tx: Transaction, liveSessionId: string): num
     const fragments = pending.get(kind) ?? [];
     fragments.push(row); pending.set(kind, fragments);
     if (row.finished !== 1) continue;
+    // C-TRACE: a group the provider never finished is still what he said before her speech cut it, and the
+    // boundary that ended it is the evidence that the utterance was over. A fragment with no boundary after it
+    // is not a finished utterance, so it is left out.
     pending.delete(kind);
     flush(kind, fragments);
   }
-  // C-TRACE: a journal that ends mid-sentence has no boundary to flush it.
-  for (const [kind, fragments] of pending) flush(kind, fragments);
   return inserted;
 }
 

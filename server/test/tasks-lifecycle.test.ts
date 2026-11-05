@@ -1,3 +1,5 @@
+import { ProviderError } from '../tasks/model.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runWorker, INFERENCE_DEADLINE_MS } from '../tasks/worker.js';
@@ -158,5 +160,19 @@ for (const mode of ['inference failure', 'deadline expiry', 'no action'] as cons
   assert.equal(result.findings.length, 1); assert.match(result.findings[0]!.text, /Verified partial synthetic finding/);
   if (mode === 'no action') { assert.equal(result.status, 'no_action'); assert.equal(result.text, ''); }
   else { assert.equal(result.status, 'incomplete'); assert.match(result.text, /Verified partial synthetic finding/);
-    assert.match(result.text, /couldn.t finish|could not finish|incomplete/i, 'partial evidence never sounds like a completed task'); }
+    assert.equal(result.status, 'incomplete', 'partial evidence never claims task completion'); }
+});
+
+test('provider rejection is a typed empty result and emits its closed diagnostic', async () => {
+  const events: Record<string, unknown>[] = [], clock = new FakeClock();
+  const detach = attachHostLogSink({ event: event => { events.push(event as Record<string, unknown>); } });
+  try {
+    const result = await runWorker({ registry: new Map(), identity, input: 'fixture', signal: new AbortController().signal, clock,
+      infer: async () => { throw new ProviderError('provider_rejected', 'uniqueItems is not permitted', 400); } });
+    assert.equal(result.status, 'incomplete'); assert.equal(result.text, '');
+    assert.deepEqual(result.failure, { stage: 'inference', reason_code: 'provider_rejected', detail: 'uniqueItems is not permitted' });
+    const event = events.find(event => event.event === 'task_inference_failed');
+    assert.equal(event?.status, 400); assert.equal(event?.reason_code, 'provider_rejected');
+    assert.equal(event?.elapsed_ms, 0); assert.equal(clock.timers.length, 0);
+  } finally { detach(); }
 });

@@ -181,3 +181,26 @@ test('task review content is stored and pruned while source results never enter 
     assert.equal(store.transaction(tx => tx.get("SELECT arguments FROM task_operations WHERE operation_id='post-prune-operation'"))?.arguments, null);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('provider failure persists closed metadata and logs incomplete, never complete', async () => {
+  const { TaskRuntime } = await import('../tasks/runtime.js');
+  const { FakeDelivery } = await import('../tasks/controller.js');
+  const { ProviderError } = await import('../tasks/model.js');
+  const directory = mkdtempSync(join(tmpdir(), 'task-failure-fixture-'));
+  const store = new Store(directory), events: Record<string, unknown>[] = [];
+  try {
+    const runtime = new TaskRuntime({ store, delivery: new FakeDelivery(), execute: async () => { throw new Error('unexpected tool'); },
+      authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: store.taskEffectJournal() }),
+      infer: async () => { throw new ProviderError('provider_rejected', 'uniqueItems is not permitted', 400); },
+      log: event => { events.push(event as unknown as Record<string, unknown>); } });
+    const { revision, result } = runtime.finalize('synthetic failure', 1);
+    const answer = await result;
+    assert.equal(answer.text, ''); assert.equal(answer.failure?.reason_code, 'provider_rejected');
+    assert.ok(events.some(event => event.phase === 'incomplete')); assert.ok(!events.some(event => event.phase === 'complete'));
+    const row = store.transaction(tx => tx.get('SELECT failure FROM tasks WHERE task_id=?', [revision.identity.task_id]));
+    assert.deepEqual(JSON.parse(String(row?.failure)), { stage: 'inference', reason_code: 'provider_rejected' });
+    const status = JSON.parse(runtime.verifiedStatus(revision.identity));
+    assert.equal(status.last_task.failure.reason_code, 'provider_rejected');
+    runtime.close();
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});

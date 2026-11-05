@@ -1,3 +1,4 @@
+import './model-port-provider-errors.test.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';

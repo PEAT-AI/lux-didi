@@ -1,3 +1,4 @@
+import { hostLogEvent } from '../tools/host-events.js';
 import type { Identity as OperationIdentity } from './authority.js';
 import { failed, redactTaskResult } from './results.js';
 import { redactSecrets } from '../tools/redact.js';
@@ -23,8 +24,9 @@ export class TaskRuntime {
   bindCurrent(check: () => boolean): void { this.#isCurrent = check; }
   readonly #toolsUsed = new Set<string>();
   /** Closed failure codes per task, so the helper can name what failed and why. */
+  readonly #started = new Map<string, number>();
   readonly #taskFailures = new Map<string, { tool: string; code: string }[]>();
-  #lastTask: { status: string; failed_tools: { tool: string; code: string }[] } | undefined;
+  #lastTask: { failure?: WorkerResult['failure']; status: string; failed_tools: { tool: string; code: string }[] } | undefined;
   usedTool(identity: RevisionIdentity): boolean { return this.#toolsUsed.has(identity.task_id); }
   readonly #contexts = new Map<string, { exposures: Set<Exposure>; urls: Set<string> }>();
   taskContext(taskId: string) {
@@ -77,6 +79,7 @@ export class TaskRuntime {
   begin(words: string, generation: number, ownerTurn = 0, overlapped = false): Revision {
     const revision = this.controller.finalize(words, generation, ownerTurn, overlapped), { identity } = revision;
     revision.askAtUtc = (this.options.now ?? Date.now)();
+    this.#started.set(`${identity.task_id}:${identity.task_revision}`, revision.askAtUtc);
     for (const evidence of revision.evidence) this.#capture(identity.task_id, evidence);
     this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence });
     this.log(identity.task_revision === 1 ? 'start' : 'revision', identity.task_revision);
@@ -110,11 +113,12 @@ export class TaskRuntime {
     this.#failures = answer.failures ?? [];
     answer = { ...answer, text: redactSecrets(answer.text), findings: answer.findings.map(result => redactTaskResult(result, 'task_answer')),
       ...(answer.receipts ? { receipts: answer.receipts.map(result => redactTaskResult(result, 'task_answer')) } : {}) };
-    this.#lastTask = { status: answer.status, failed_tools: [...(this.#taskFailures.get(identity.task_id) ?? [])] };
+    this.#lastTask = { ...(answer.failure ? { failure: answer.failure } : {}), status: answer.status, failed_tools: [...(this.#taskFailures.get(identity.task_id) ?? [])] };
     if (this.controller.isCurrent(identity)) {
       this.options.store.finishTask(identity, answer.status, answer);
       this.controller.complete(identity, answer);
-      this.log('complete', identity.task_revision, answer.findings.length, 0, identity);
+      hostLogEvent({ event: 'task_settled', taskId: identity.task_id, revision: identity.task_revision, status: answer.status, reason_code: answer.failure?.reason_code, findings: answer.findings.length, elapsed_ms: Math.max(0, (this.options.now ?? Date.now)() - (this.#started.get(`${identity.task_id}:${identity.task_revision}`) ?? (this.options.now ?? Date.now)())) });
+      this.log(answer.status === 'complete' || answer.status === 'no_action' ? 'complete' : answer.status, identity.task_revision, answer.findings.length, 0, identity);
     } else this.log('stale', identity.task_revision, 0, 0, identity);
     return answer;
   }
@@ -128,7 +132,10 @@ export class TaskRuntime {
     const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, this.verifiedStatus(identity), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
-    }).then(answer => this.settle(identity, answer));
+    }).then(answer => this.settle(identity, answer), () => {
+      hostLogEvent({ event: 'task_runtime_rejected', taskId: identity.task_id, revision: identity.task_revision, reason_code: 'runtime_rejected' });
+      return this.settle(identity, { status: 'incomplete', text: '', findings: [], failure: { stage: 'inference', reason_code: 'runtime_rejected', detail: '' } });
+    });
     return { revision, result };
   }
   attach(identity: RevisionIdentity, binding: string): boolean { return this.controller.attach(identity, binding); }

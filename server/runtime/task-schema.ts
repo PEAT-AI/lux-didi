@@ -28,6 +28,8 @@ export const taskMigrations: readonly SchemaMigration[] = [{ owner: 'tasks', ver
   )`,
 ] }, { owner: 'tasks', version: 2, statements: [
   `CREATE TABLE task_effect_journal (identity_hash TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('pending','succeeded','failed')), value TEXT, updated_at INTEGER NOT NULL)`,
+] }, { owner: 'tasks', version: 3, statements: [
+  'ALTER TABLE tasks ADD COLUMN failure TEXT',
 ] }];
 /** Same 30-day content / 90-day metadata policy as trace. Identities and outcome survive content. */
 export function pruneTaskContent(tx: Transaction, now: number): void {

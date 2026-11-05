@@ -1,3 +1,4 @@
+import { hostLogEvent } from '../tools/host-events.js';
 import type { LiveToolCall, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/types.js';
 import type { Delivery, RevisionIdentity } from './controller.js';
 import { TaskDelivery, type DeliveryState } from './delivery.js';
@@ -41,7 +42,7 @@ export class TaskCall {
       deliver: (identity, answer) => {
         this.#answer = { identity, answer };
         if (ports.provider === 'openai') {
-          const requiresDelegation = (answer.status === 'complete' || answer.status === 'incomplete') && !this.runtime.usedTool(identity) && !answer.findings.length && !answer.receipts?.length && this.#spoken && !this.#delegation;
+          const requiresDelegation = (answer.status === 'complete' && !answer.failure) && !this.runtime.usedTool(identity) && !answer.findings.length && !answer.receipts?.length && this.#spoken && !this.#delegation;
           this.delivery.deliver(identity, answer, requiresDelegation);
         }
         else this.#respond();
@@ -68,7 +69,7 @@ export class TaskCall {
       const result = this.input(input, this.#queuedTurn);
       this.#inputPending = false;
       this.delivery.activity({ outputQuiet: this.#outputQuiet, ownerSpeaking: false });
-      void result.catch(() => {});
+      void result.catch(() => { hostLogEvent({ event: 'task_runtime_rejected', reason_code: 'runtime_rejected' }); });
     };
     const remaining = Math.max(0, 1_200 - quietForMs);
     // Adapter transcript finalization has already consumed part of this same quiet interval.

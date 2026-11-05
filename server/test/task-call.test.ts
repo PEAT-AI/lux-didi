@@ -1,3 +1,4 @@
+import { ProviderError } from '../tasks/model.js';
 import { stripNonLexicalTags } from '../live/index.js';
 import './host-compose-wire.test.js';
 import './continuity-replay.test.js';
@@ -198,8 +199,8 @@ for (const failedRead of [false, true]) test(`review F1: prior voice speech cann
   const result = await running; assert.equal(reads, 1);
   assert.equal(result.status, failedRead ? 'incomplete' : 'complete');
   assert.equal(result.findings.length, failedRead ? 0 : 1);
-  assert.ok(result.text.trim()); assert.equal(f.sent.length, 1);
-  assert.equal(f.sent[0]!.text, result.text);
+  if (failedRead) { assert.equal(result.text, ''); assert.equal(f.sent.length, 0); }
+  else { assert.ok(result.text.trim()); assert.equal(f.sent.length, 1); assert.equal(f.sent[0]!.text, result.text); }
 });
 
 for (const text of ['', 'Synthetic late answer.']) test(`C-SILENCE: late delegation retains terminal ${JSON.stringify(text)}`, async t => {
@@ -264,6 +265,18 @@ test('SILENCE-R1: failed composition speaks plain findings with one incomplete c
   }, 'openai', undefined, async (_name, args) => ({ status: 'ok', text: `${(args as { query: string }).query} finding.`, references: [], next_cursor: null, coverage: 'Synthetic coverage.', repair: null }));
   const answer = await f.call.input('Synthetic two sources', 1);
   assert.equal(answer.status, 'incomplete');
-  assert.equal(answer.text, "I couldn't finish that request. Synthetic first finding. Synthetic coverage. Synthetic second finding. Synthetic coverage.");
+  assert.equal(answer.text, "Synthetic first finding. Synthetic coverage. Synthetic second finding. Synthetic coverage.");
   assert.doesNotMatch(answer.text, /\d+[.)]|\n/);
+});
+
+test('failed inference passes an empty fact immediately without requiring delegation', async t => {
+  const f = fixture(t, async () => { throw new ProviderError('provider_rejected', 'uniqueItems is not permitted', 400); });
+  let delivered: { answer: import('../tasks/worker.js').WorkerResult; requiresDelegation: boolean | undefined } | undefined;
+  f.call.delivery.deliver = (_identity, answer, requiresDelegation) => { delivered = { answer, requiresDelegation }; };
+  f.call.spoke();
+  const result = await f.call.input('synthetic helper request', 1);
+  assert.equal(result.status, 'incomplete'); assert.equal(result.text, '');
+  assert.equal(delivered?.requiresDelegation, false);
+  assert.equal(delivered?.answer.failure?.reason_code, 'provider_rejected');
+  assert.equal(delivered?.answer.text, '');
 });

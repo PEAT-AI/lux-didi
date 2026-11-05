@@ -65,6 +65,14 @@ test('read_mail keeps an Outlook-style From/Sent forward and never returns it em
   assert.match(result.text, /The tide tables are in the dock log\./, 'an Outlook From/Sent block is received text, not a cut marker');
 });
 
+test('read_mail reports a source that cut its inline body as partial, never as a silent short body', () => {
+  const raw = { content: [{ type: 'text', text: JSON.stringify({ data: { id: 'synthetic-m1', threadId: 'synthetic-t1', format: 'full', headers: SENDER, body: 'The mooring plan is ready.', bodyCoverage: { complete: false } } }) }] };
+  const result = projectTaskPayload('read_mail', raw, { id: 'synthetic-m1' });
+  assert.equal(result.status, 'partial');
+  assert.match(result.coverage, /cut|incomplete/i, 'the source cut is named, never silent');
+  assert.match(result.text, /The mooring plan is ready\./);
+});
+
 test('read_mail reports a bodyless message as failed, never as a successful read', () => {
   const result = projectTaskPayload('read_mail', decodedRead(SENDER), { id: 'synthetic-m1' });
   assert.notEqual(result.status, 'ok');

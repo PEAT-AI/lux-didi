@@ -17,7 +17,7 @@ test('no_action is an empty typed outcome, not a sentence to read', () => {
     { kind: 'no_action', exact: [], content: '', cause: '', what_failed: '', next_step: '' });
 });
 test('structured model failure has a closed cause without leaking internal detail', () => {
-  const result = { status: 'incomplete' as const, text: '', findings: [], failure: { stage: 'model', reason_code: 'provider_rejected', detail: 'private internal diagnostics' }, receipts: [{ status: 'resolved' as const, text: 'internal', references: [], next_cursor: null, coverage: '', repair: null }] };
+  const result = { status: 'incomplete' as const, text: '', findings: [], failure: { stage: 'model', reason_code: 'provider_rejected', detail: 'private internal diagnostics' }, receipts: [{ status: 'ok' as const, text: 'internal', references: [], next_cursor: null, coverage: '', repair: null }] };
   const payload = resultCommentary(result);
   assert.equal(payload.kind, 'failure');
   assert.equal(payload.cause, 'provider_rejected');

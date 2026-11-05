@@ -3,7 +3,7 @@ import './task-delivery-envelope.test.js';
 import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TaskDelivery, splitSpokenText } from '../tasks/delivery.js';
+import { TaskDelivery, splitSpokenText, resultCommentary, commentaryItems } from '../tasks/delivery.js';
 const identity = { task_id: 't', task_revision: 1, connection_generation: 1 };
 const answer = (text: string) => ({ status: 'complete' as const, text, findings: [] });
 function fixture() {
@@ -114,4 +114,14 @@ for (const ownerSpeaking of [false, true]) test(`new socket retires old output a
   assert.equal(f.sends.length, ownerSpeaking ? 0 : 1);
   f.delivery.activity({ outputQuiet: true, ownerSpeaking: false }); assert.equal(f.sends.length, 1);
   assert.equal(f.sends[0]!.id, null);
+});
+
+
+test('deadline failure header supplies plain cause and recovery facts', () => {
+  const commentary = resultCommentary({ ...answer(''), failure: { stage: 'model', reason_code: 'deadline', detail: '' } });
+  const header = JSON.parse(commentaryItems(commentary)[0]!.split('\n')[1]!);
+  assert.equal(header.kind, 'failure');
+  assert.equal(header.cause, 'deadline');
+  assert.equal(header.what_failed, 'the helper did not answer within the time allowed');
+  assert.equal(header.next_step, 'ask again');
 });

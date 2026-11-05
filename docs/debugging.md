@@ -254,8 +254,14 @@ task task-synthetic-1 status=complete revisions=2/2 delivery=store:delivered=1
   tool web_fetch outcome=unavailable ms=700 cache=miss state=failed
   tool web_search outcome=ok ms=120 cache=hit state=committed
   lifecycle start@1000 revision@2500
+task task-synthetic-2 status=no_action revisions=1/1 delivery=store:closed=1
+  tool calendar_list outcome=empty ms=300 cache=miss state=committed
+  lifecycle start@5000
 tool rows in call order: 4; unjoined task log events: 0
 ```
+
+The trailing count is the number of `task_tool` rows the call's log lines carry, so it equals the `tool` lines
+printed under every task together, not the lines of one task.
 
 `synthetic` fixture names only: the section never prints owner words, tool arguments, a result body
 or the helper's final answer.

@@ -1,0 +1,174 @@
+#!/usr/bin/env node
+// One real helper request through the packaged model port, so a schema the provider refuses can never
+// ship. The declared tool set of this build is sent to the configured provider with the real
+// credential and the FULL real registry, configured company tools included; the request is a fixed
+// harmless ask that forces one calendar read, and no tool is executed here.
+//
+// Usage: node scripts/lib/helper-provider-smoke.mjs --data-dir DIR [--module-dir DIR]
+//
+//   exit 0  PASS: the provider answered `completed` and asked for at least one registered tool
+//   exit 1  the harness could not run (unreadable modules or configuration)
+//   exit 2  FAIL: the provider rejected the request, or the response named no tool
+//   exit 3  SKIP: nothing to prove here (no configured provider, or a non-OpenAI provider)
+//
+// The owner's config is read, copied to a private temporary directory and handed to the host from
+// there, as server/test/smoke/probes.mjs does (#397): a host is never given a config dir it could
+// journal or seed beside. The copy and the scratch store are removed before exit. Never prints the
+// credential and never prints owner content: only status, tool count, tokens and time.
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, chmodSync, copyFileSync, mkdirSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const CAP_OUTPUT_TOKENS = 256;
+const BODY_LIMIT = 2048;
+const REQUEST_TIMEOUT_MS = 60000;
+const INSTALLED_SETTINGS = 'Library/Application Support/ai.peat.lux-didi-operator/settings.json';
+
+function parseArgs(argv) {
+  const options = { dataDir: '', moduleDir: '' };
+  for (let index = 0; index < argv.length; index += 1) {
+    const flag = argv[index];
+    if (flag === '--data-dir') options.dataDir = argv[++index] ?? '';
+    else if (flag === '--module-dir') options.moduleDir = argv[++index] ?? '';
+    else throw new Error(`helper-provider-smoke: unknown argument ${flag}`);
+  }
+  if (!options.dataDir) throw new Error('helper-provider-smoke: --data-dir is required');
+  return options;
+}
+
+/** The operator-selected config dir the installed app uses, else a provider-config inside the data dir. */
+function configuredDir(dataDir) {
+  const settings = join(homedir(), INSTALLED_SETTINGS);
+  const local = join(resolve(dataDir), 'provider-config');
+  if (existsSync(local)) return local;
+  if (!existsSync(settings)) return '';
+  const selected = JSON.parse(readFileSync(settings, 'utf8')).configDir;
+  return typeof selected === 'string' && existsSync(selected) ? selected : '';
+}
+
+/** A private copy of the config dir: regular files only, each keeping its own mode. */
+function stageConfig(sourceDir) {
+  const staged = mkdtempSync(join(tmpdir(), 'didi-helper-provider-'));
+  chmodSync(staged, 0o700);
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const from = join(sourceDir, entry.name);
+    copyFileSync(from, join(staged, entry.name));
+    chmodSync(join(staged, entry.name), statSync(from).mode & 0o777);
+  }
+  return staged;
+}
+
+/** Nothing from a provider body is printed without this: no key, no owner content. */
+function redacted(text) {
+  return String(text ?? '')
+    .replace(/\b(?:sk|ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_-]{8,}/g, '[redacted]')
+    .replace(/Bearer\s+[A-Za-z0-9._-]{8,}/g, 'Bearer [redacted]')
+    .replace(/[A-Za-z0-9_-]{40,}/g, '[redacted]')
+    .slice(0, BODY_LIMIT);
+}
+
+async function main(argv) {
+  const options = parseArgs(argv);
+  const dataDir = resolve(options.dataDir);
+  const sourceDir = configuredDir(dataDir);
+  if (!sourceDir) {
+    process.stdout.write(`HELPER-PROVIDER SKIP no provider configuration under ${dataDir}\n`);
+    return 3;
+  }
+  const moduleDir = resolve(options.moduleDir);
+  const work = mkdtempSync(join(tmpdir(), 'didi-helper-provider-run-'));
+  chmodSync(work, 0o700);
+  const configDir = stageConfig(sourceDir);
+  const storeDir = join(work, 'store');
+  mkdirSync(storeDir, { mode: 0o700 });
+  const started = Date.now();
+  try {
+    const load = name => import(pathToFileURL(join(moduleDir, name + '.js')).href);
+    const { Store } = await load('runtime/store');
+    const { domainMigrations } = await load('domain/index');
+    const { chatMigrations } = await load('chat/index');
+    const { liveMigrations } = await load('live/index');
+    const { toolsMigrations } = await load('tools/index');
+    const { composeMcpRuntime } = await load('host/mcp');
+    const { credentialsFor } = await load('config/index');
+    const { loadTaskModels } = await load('config/tasks');
+    const { createRegistry } = await load('tasks/tools');
+    const { configuredCompanyTools, connectorExecutor } = await load('tasks/connectors');
+    const { createModelPort } = await load('tasks/model');
+
+    const role = loadTaskModels(configDir).worker;
+    if ((role.provider ?? 'openai') !== 'openai') {
+      process.stdout.write(`HELPER-PROVIDER SKIP provider ${role.provider} does not take the OpenAI strict shape\n`);
+      return 3;
+    }
+
+    const store = new Store(storeDir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+    let connectors;
+    try {
+      connectors = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryRepeatMs: false });
+      await connectors.start();
+      const bindings = connectors.owner.taskBindings(connectors.connectionIds());
+      const company = configuredCompanyTools(bindings);
+      const registry = createRegistry(
+        { authority: { authorize: async () => { throw new Error('helper-provider-smoke executes no tool'); } }, execute: connectorExecutor(bindings) },
+        company,
+      );
+      const tools = [...registry.values()];
+      let rejection = null;
+      let usage = { input: 0, output: 0 };
+      const transport = async (url, init) => {
+        const body = JSON.parse(String(init.body));
+        body.max_output_tokens = CAP_OUTPUT_TOKENS;
+        const response = await fetch(url, { ...init, body: JSON.stringify(body) });
+        if (!response.ok) {
+          rejection = { status: response.status, body: redacted(await response.clone().text()) };
+          return response;
+        }
+        const counts = (await response.clone().json()).usage ?? {};
+        usage = { input: counts.input_tokens ?? 0, output: counts.output_tokens ?? 0 };
+        return response;
+      };
+      const infer = createModelPort({ role, credentials: credentialsFor(configDir), transport });
+      let inference = null;
+      try {
+        inference = await infer({
+          instructions: 'You are a read-only helper proving one tool call. Make the single tool call you are asked for and nothing else.',
+          input: 'Read my calendar for 2026-01-05 using the calendar read tool. You must call that tool; do not answer without it.',
+          outputs: [],
+          turns: [],
+          tools,
+          model: role.model,
+          effort: role.effort,
+        }, AbortSignal.timeout(REQUEST_TIMEOUT_MS));
+      } catch (error) {
+        if (!rejection) throw error;
+      }
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      if (rejection) {
+        process.stderr.write(`HELPER-PROVIDER FAIL status=${rejection.status} tools=${tools.length} seconds=${seconds}\n`);
+        process.stderr.write(`HELPER-PROVIDER FAIL body=${JSON.stringify(rejection.body)}\n`);
+        return 2;
+      }
+      const calls = (inference?.calls ?? []).filter(call => registry.has(call.name));
+      if (!calls.length) {
+        process.stderr.write(`HELPER-PROVIDER FAIL status=completed tools=${tools.length} seconds=${seconds} calls=0 no registered tool call in the answer\n`);
+        return 2;
+      }
+      process.stdout.write(`HELPER-PROVIDER PASS status=completed tools=${tools.length} company=${company.length} model=${role.model} effort=${role.effort} calls=${calls.map(call => call.name).join(',')} input_tokens=${usage.input} output_tokens=${usage.output} seconds=${seconds}\n`);
+      return 0;
+    } finally {
+      await connectors?.close();
+      store.close();
+    }
+  } finally {
+    rmSync(configDir, { recursive: true, force: true });
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+main(process.argv.slice(2)).then(code => { process.exitCode = code; }).catch(error => {
+  process.stderr.write(`HELPER-PROVIDER ERROR ${redacted(error?.message ?? error)}\n`);
+  process.exitCode = 1;
+});

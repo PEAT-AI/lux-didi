@@ -83,6 +83,10 @@ test('read_knowledge refuses duplicate ids without a schema keyword the provider
 // publishes none of them is a refusal, never a PASS on the static set alone (review finding P1).
 const smoke = (await import(resolve(testRoot, '../../scripts/lib/helper-provider-smoke.mjs'))) as {
   providerShapeRefusal(input: { expectedEndpoints: number; published: number; company: number; tools: number; static: number }): string;
+  companyPlan(input: {
+    endpoints: string[]; catalogues: Record<string, unknown[]>; ports: Record<string, unknown>;
+    credentials: { resolve(reference: string): Promise<string | undefined> };
+  }): { missing: string[]; definitions: { name: string }[] };
 };
 
 test('the provider smoke refuses a registry smaller than the configured one', () => {
@@ -92,4 +96,24 @@ test('the provider smoke refuses a registry smaller than the configured one', ()
   assert.equal(smoke.providerShapeRefusal({ expectedEndpoints: 3, published: 3, company: 0, tools: 39, static: 39 }), 'company_bindings_unavailable');
   assert.equal(smoke.providerShapeRefusal({ expectedEndpoints: 3, published: 3, company: 3, tools: 42, static: 39 }), '');
   assert.equal(smoke.providerShapeRefusal({ expectedEndpoints: 0, published: 0, company: 0, tools: 39, static: 39 }), '');
+});
+
+// Ruling W1-R5: the smoke reads the app's cached discovery and never touches a sign-in material, so a
+// credential port that would throw on refresh is never even consulted while the company set is built.
+test('building the company set consults no credential, so no refresh can happen', async () => {
+  const capture = JSON.parse(readFileSync(join(testRoot, 'fixtures/mongoose-tools-list-literal.json'), 'utf8')) as Record<string, unknown[]>;
+  let touched = 0;
+  const credentials = { resolve: async () => { touched += 1; throw new Error('a sign-in material must never be resolved here'); } };
+  const plan = smoke.companyPlan({ endpoints: ['knowledge', 'data', 'crm'], catalogues: capture, ports: { authority: {}, execute: async () => ({}) }, credentials });
+  assert.deepEqual(plan.missing, []);
+  assert.ok(plan.definitions.some(item => item.name === 'get_company'), 'the cached crm discovery is missing from the company set');
+  assert.equal(touched, 0);
+});
+
+// Ruling W1-R5: a configured endpoint with no cached discovery fails closed, and it is never skipped.
+test('a configured endpoint without cached discovery is named, not skipped', async () => {
+  const capture = JSON.parse(readFileSync(join(testRoot, 'fixtures/mongoose-tools-list-literal.json'), 'utf8')) as Record<string, unknown[]>;
+  const plan = smoke.companyPlan({ endpoints: ['knowledge', 'frontier'], catalogues: capture, ports: { authority: {}, execute: async () => ({}) }, credentials: { resolve: async () => undefined } });
+  assert.deepEqual(plan.missing, ['frontier']);
+  assert.deepEqual(plan.definitions, []);
 });

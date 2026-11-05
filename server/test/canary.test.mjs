@@ -376,7 +376,7 @@ test('canary preserves a synchronous provider failure in report and persisted ho
   const id = '11111111-1111-4111-8111-111111111111';
   let revoked = false;
   const live = { create: () => ({ liveSessionId: id }), providerReady: () => true, snapshot: () => ({}), revoke: () => { revoked = true; }, text: () => { throw Object.assign(new Error('private payload must not appear'), { code: 'invalid_request' }); } };
-  const host = new InstalledCanary({ transaction: callback => callback({ all: () => [] }) }, live);
+  const host = new InstalledCanary({ transaction: callback => callback({ get: () => undefined, all: () => [] }) }, live);
   host.open([taskAsk], { clientId: 'owner' });
   const report = await host.run(id, 'owner');
   assert.match(report.lines[0], /code=invalid_request/);

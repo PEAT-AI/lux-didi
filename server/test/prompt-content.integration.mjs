@@ -131,3 +131,14 @@ for (const gone of ['A finished result is already written', 'Say it completely a
   assert.ok(!(prompt.NAYA_WORK_DELIVERY + WORKER_INSTRUCTIONS).includes(gone), gone);
 }
 assert.ok(WORKER_INSTRUCTIONS.includes('one JSON object with spoken'));
+
+// OUTSIDE-A1: the accent is described at meta level only, so no composed instruction quotes an example sentence.
+const accented = prompt.composeLiveInstruction({ base: prompt.NAYA_LIVE_BASE, language: 'en', accentSelection: 'indian-strong' });
+// The accent blocks ship no quoted example sentence and no isolated tag word, and nothing reaches the instruction.
+const accents = Object.values(prompt.LIVE_ACCENT_PRESETS).flatMap(preset => [preset.head, preset.tail]).join('\n\n');
+assert.equal(/"[^"]*"/u.test(accents), false, 'the accent blocks quote no example sentence');
+for (const tag of ['"actually"', '"itself"', '"only"', '"na"', '"no?"']) assert.equal(accents.includes(tag), false, `the accent blocks prescribe no isolated tag word ${tag}`);
+for (const retired of ['Actually, the bicycle is balancing itself only', 'See, the wheels are spinning, na',
+  'This is the thing, no?']) {
+  assert.equal(accented.text.includes(retired), false, `the live instruction never recites the retired example: ${retired}`);
+}

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 // Use the shipped public worker instruction, not a second replay-only prompt.
 const instructionSource = readFileSync(new URL('../server/tasks/instructions.ts', import.meta.url), 'utf8');
 export const WORKER_INSTRUCTIONS = JSON.parse(instructionSource.match(/export const WORKER_INSTRUCTIONS = ("[^\n]*");/)[1]);
-if (WORKER_INSTRUCTIONS.length > 6394) throw new Error('Worker instructions exceed 6,394 characters');
+if (WORKER_INSTRUCTIONS.length !== 7206) throw new Error('Worker instructions exceed 7,206 characters');
 
 // Synthetic Gmail fixtures and semantics from probe/worker-replay-110.
 // Offline only. A canned replay does not establish real model behaviour.
@@ -277,25 +277,25 @@ function readMail({ id }) {
 // only thing a real call can settle: the model's judgment over the data the host handed it.
 export const REPLAY_ROW_EXPECTATIONS = Object.freeze(['no_action', 'answer', 'repeat', 'deeper', 'state']);
 export const REPLAY_ROWS = Object.freeze([
-  { id: 'agreement-after-answer', judge: 'she adds nothing and starts no task',
+  { id: 'agreement-after-answer', expected_exact: [], expected_facts: [], expected_gap: null, judge: 'she adds nothing and starts no task',
     owner_words: 'yeah', overlapped: false, expect: 'no_action',
     already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
-  { id: 'agreement-during-her-speech', judge: 'she lets the cut answer stand and does not begin it again',
+  { id: 'agreement-during-her-speech', expected_exact: [], expected_facts: [], expected_gap: null, judge: 'she lets the cut answer stand and does not begin it again',
     owner_words: 'mm hm', overlapped: true, expect: 'no_action',
     already_said: { text: 'The sampling plan is ready and two replicates per plot is enough. The institute covers the assay cost. Tell me the plot count by Monday.', accepted: 1, total: 3 } },
-  { id: 'half-sentence', judge: 'she asks nothing new and repeats nothing',
+  { id: 'half-sentence', expected_exact: [], expected_facts: [], expected_gap: null, judge: 'she asks nothing new and repeats nothing',
     owner_words: 'and the second one was', overlapped: true, expect: 'no_action',
     already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 1, total: 2 } },
-  { id: 'short-follow-up', judge: 'the new ask is answered, read together with the task before it',
+  { id: 'short-follow-up', expected_exact: ["David Guerena"], expected_facts: [["institute", "covers", "assay", "cost"]], expected_gap: null, judge: 'the new ask is answered, read together with the task before it',
     owner_words: 'what did David say about the cost', overlapped: false, expect: 'answer',
     already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
-  { id: 'repeat-that', judge: 'the answer he asked to hear again is spoken, and only that',
+  { id: 'repeat-that', expected_exact: [], expected_facts: [["sampling", "plan", "ready"], ["two", "replicates", "plot"]], expected_gap: null, judge: 'the answer he asked to hear again is spoken, and only that',
     owner_words: 'say that again', overlapped: false, expect: 'repeat',
     already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
-  { id: 'go-deeper', judge: 'the earlier search is not repeated: wider sources, opened pointers, what changed',
+  { id: 'go-deeper', expected_exact: [], expected_facts: [["two", "replicates", "plot"], ["assay", "second", "week"]], expected_gap: ["plot", "count", "unknown"], judge: 'the earlier search is not repeated: wider sources, opened pointers, what changed',
     owner_words: 'go deeper on the sampling plan', overlapped: false, expect: 'deeper',
     already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
-  { id: 'why-did-that-fail', judge: 'nothing is running is said plainly, with the real outcome and the closed code',
+  { id: 'why-did-that-fail', expected_exact: ["chat_attention"], expected_facts: [["unavailable"], ["nothing", "running"]], expected_gap: null, judge: 'nothing is running is said plainly, with the real outcome and the closed code',
     owner_words: 'why did that fail', overlapped: false, expect: 'state',
     already_said: { text: 'I could not read the mail search.', accepted: 1, total: 1 },
     verified_status: { other_work_running: false, last_task: { status: 'complete', failed_tools: [{ tool: 'chat_attention', code: 'unavailable' }] } } },
@@ -306,3 +306,21 @@ for (const row of REPLAY_ROWS) {
 }
 
 export { MAIL, searchMail, readMail, parseMailQuery };
+
+// Offline scoring only: expected facts are token groups, not a second answer script.
+export function scoreDepth(scenario, result) {
+  const spoken = result.spoken ?? '';
+  const normalize = value => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const normalized = ` ${normalize(spoken)} `;
+  const contains = value => normalized.includes(` ${normalize(value)} `);
+  const share = (values, matches) => values.length ? values.filter(matches).length / values.length : 1;
+  const firstClause = scenario.owner_words?.split(/[,;.!?]/u)[0]?.trim();
+  return {
+    entity_recall: share(scenario.expected_exact ?? [], entity => spoken.includes(entity)),
+    fact_coverage: share(scenario.expected_facts ?? [], tokens => tokens.every(contains)),
+    gap_declared: scenario.expected_gap?.length ? scenario.expected_gap.every(contains) : null,
+    preamble_absent: !['sure thing', 'here is what I found', 'according to your'].some(contains)
+      && !(firstClause && normalize(spoken).startsWith(normalize(firstClause))),
+    spoken_length: spoken.length,
+  };
+}

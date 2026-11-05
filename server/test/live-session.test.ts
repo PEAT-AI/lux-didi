@@ -5463,7 +5463,7 @@ test('barge-in and a finalized correction suppress the old answer and keep only 
   p.emit({ type: 'delegation', delegationId: 'corrected-binding' });
   await h.helperQuiet();
   await settlePort(); release.resolve(); await settlePort();
-  assert.equal(signals[0]?.aborted, true);
+  assert.equal(signals[0]?.aborted, false, 'his correction finishes the running request instead of aborting it');
   assert.equal(inferences, 2);
   await acceptTaskAnswer(p);
   const corrected = commentaryResults(p.taskAnswers);

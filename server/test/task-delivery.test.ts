@@ -118,7 +118,7 @@ for (const ownerSpeaking of [false, true]) test(`new socket retires old output a
 
 
 test('deadline failure header supplies plain cause and recovery facts', () => {
-  const commentary = resultCommentary({ ...answer(''), failure: { stage: 'model', reason_code: 'deadline', detail: '' } });
+  const commentary = resultCommentary({ ...answer(''), failure: { stage: 'inference', reason_code: 'deadline', detail: '' } });
   const header = JSON.parse(commentaryItems(commentary)[0]!.split('\n')[1]!);
   assert.equal(header.kind, 'failure');
   assert.equal(header.cause, 'deadline');

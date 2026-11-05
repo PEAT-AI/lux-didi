@@ -37,7 +37,7 @@ export interface McpAdapterOptions {
 }
 /** Concurrent dispatched calls allowed per endpoint; callers beyond it queue in arrival order. */
 const DEFAULT_MAX_CONCURRENT_CALLS = 6;
-class PolicyError extends Error { constructor(readonly reason: string) { super(reason); } }
+class PolicyError extends Error { constructor(readonly reason: string, options?: ErrorOptions) { super(reason, options); } }
 /**
  * #351: a stdio connector closed its pipe before the handshake finished, so it never started. The cause
  * is local and stable (a missing build, a moved binary, a crashed child), never a transient read failure,
@@ -136,7 +136,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
       // as an unclassified fetch error and the endpoint would report an unknown transport failure.
       const token = await bounded(options.resolveCredential(config.credentialRef), signal).catch((error: unknown) => {
         const code = (error as { code?: unknown })?.code;
-        if (typeof code === 'string' && /^credential-[a-z-]{1,40}$/.test(code)) { onCredentialRefusal(session.config.id, code); throw new PolicyError(code); }
+        if (typeof code === 'string' && /^credential-[a-z-]{1,40}$/.test(code)) { onCredentialRefusal(session.config.id, code); throw new PolicyError(code, { cause: error }); }
         throw error;
       });
       if (!token || /[\r\n]/.test(token)) throw new PolicyError('credential-unavailable');
@@ -462,7 +462,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
         }
         const code = error instanceof PolicyError ? error.reason
           : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';
-        const status = error && typeof error === 'object' && 'status' in error ? error.status : undefined;
+        const status = discoveryExceptionStatus(error);
         const exception = { class: discoveryExceptionClass(error), code, ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}) };
         return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception };
       } finally { releaseExclusive(); }
@@ -595,4 +595,14 @@ export function discoveryExceptionClass(error: unknown): string {
     error = value.cause;
   }
   return 'unknown';
+}
+
+/** Only a bounded integer survives the same closed cause chain as the failure class. */
+function discoveryExceptionStatus(error: unknown): number | undefined {
+  for (let depth = 0; depth < 3 && error && typeof error === 'object'; depth++) {
+    const value = error as { status?: unknown; cause?: unknown };
+    if (typeof value.status === 'number' && Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) return value.status;
+    error = value.cause;
+  }
+  return undefined;
 }

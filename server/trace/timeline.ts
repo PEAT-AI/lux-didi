@@ -669,25 +669,52 @@ export function logHealth(scan: LogScan, top = 10): LogHealth {
   };
 }
 
-export interface CallRow { liveSessionId: string; start: number; durationMs: number; tools: number; maxSilenceMs: number | null; terminal: string | null; lines: number }
+export interface CallRow {
+  liveSessionId: string; start: number; durationMs: number | null;
+  /** Helper `task_tool` operations, one per distinct operation id; a repeated row is one tool. */
+  tools: number;
+  /** The legacy voice path's own tool count, where it recorded one, kept out of `tools`. */
+  voiceTools: number | null;
+  maxSilenceMs: number | null; terminal: string | null; lines: number;
+}
 
-/** One row per session the logs name, newest first, with the window-joined lines counted in. */
+/**
+ * One row per session the logs name, newest first, with the window-joined lines counted in.
+ * The lifetime is the call's own `live_provider_open` to its `live_terminal`: a row tagged after the terminal
+ * belongs to the call's aftermath, not to its duration, and a call with no terminal at all has no duration.
+ */
 export function listCalls(scan: LogScan): CallRow[] {
   const sessions = new Set(scan.lines.map(line => line.liveSessionId).filter((value): value is string => value !== null));
   const rows: CallRow[] = [];
   for (const liveSessionId of sessions) {
-    const { lines, start, end } = attributeLines(scan, { liveSessionId });
-    if (start === null || end === null) continue;
-    let tools = 0, maxSilenceMs: number | null = null, terminal: string | null = null;
+    const { lines } = attributeLines(scan, { liveSessionId });
+    const stamps = lines.map(({ line }) => line.at).filter((value): value is number => value !== null);
+    // Older logs carry no open event: then the call's first line stands in for it and the row says nothing extra.
+    let start: number | null = stamps.length === 0 ? null : Math.min(...stamps);
+    let terminatedAt: number | null = null;
+    const operations = new Set<string>();
+    let voiceTools = 0, maxSilenceMs: number | null = null, terminal: string | null = null;
     for (const { line } of lines) {
+      if (line.event === 'live_provider_open') {
+        start = start === null || line.at === null ? start : Math.min(start, line.at);
+      }
+      if (line.event === 'live_terminal' && (terminatedAt === null || (line.at !== null && line.at < terminatedAt))) {
+        terminatedAt = line.at;
+        terminal = `${name(line.record.state) ?? 'unknown'}/${name(line.record.code) ?? 'unknown'}`;
+      }
+      if (line.event === 'task_tool') {
+        const operationId = name(line.record.operationId);
+        if (operationId !== null) operations.add(operationId);
+      }
       const latency = line.record.toolLatencyMs;
-      if (Array.isArray(latency)) tools += latency.length;
-      else if (line.event === 'live_tool_turn') tools += count(line.record.toolCallsThisTurn) ?? 0;
+      if (Array.isArray(latency)) voiceTools += latency.length;
+      else if (line.event === 'live_tool_turn') voiceTools += count(line.record.toolCallsThisTurn) ?? 0;
       const silence = count(line.record.deadAirMs) ?? (line.event === 'live_heard_silence' ? count(line.record.ms) : null);
       if (silence !== null && (maxSilenceMs === null || silence > maxSilenceMs)) maxSilenceMs = silence;
-      if (line.event === 'live_terminal') terminal = `${name(line.record.state) ?? 'unknown'}/${name(line.record.code) ?? 'unknown'}`;
     }
-    rows.push({ liveSessionId, start, durationMs: end - start, tools, maxSilenceMs, terminal, lines: lines.length });
+    if (start === null) continue;
+    const durationMs = terminatedAt === null ? null : Math.max(0, terminatedAt - start);
+    rows.push({ liveSessionId, start, durationMs, tools: operations.size, voiceTools: voiceTools || null, maxSilenceMs, terminal, lines: lines.length });
   }
   return rows.sort((left, right) => right.start - left.start || left.liveSessionId.localeCompare(right.liveSessionId));
 }
@@ -717,9 +744,10 @@ export function renderLogHealth(health: LogHealth): string {
 }
 
 export function renderCallList(rows: readonly CallRow[]): string {
-  const lines = ['session start dur tools silence terminal'];
+  const lines = ['session start dur tools voice silence terminal'];
   for (const row of rows) {
-    lines.push(`${row.liveSessionId} ${wall(row.start)} ${seconds(row.durationMs)} ${row.tools} ${row.maxSilenceMs === null ? '-' : `${row.maxSilenceMs}ms`} ${row.terminal ?? '-'}`);
+    lines.push(`${row.liveSessionId} ${wall(row.start)} ${seconds(row.durationMs)} ${row.tools} ${row.voiceTools ?? '-'}` +
+      ` ${row.maxSilenceMs === null ? '-' : `${row.maxSilenceMs}ms`} ${row.terminal ?? 'open, no terminal'}`);
   }
   return `${lines.join('\n')}\n`;
 }

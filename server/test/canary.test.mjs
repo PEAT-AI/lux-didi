@@ -187,6 +187,27 @@ test('installed opener injects owner task finals and observes task settlement, n
   assert.equal(canarySessions.isCanary(id), false);
 });
 
+// W18 (#1016): the summary reported pass=0 whatever the asks did. A run whose asks all settled cleanly is two
+// verified asks, and providerTurns stays the provider's own turn count.
+test('W18: the canary summary counts the asks that verified and the ones that failed', async () => {
+  const id = '33333333-3333-4333-8333-333333333333';
+  let ready = false;
+  const live = {
+    create: () => ({ liveSessionId: id }),
+    snapshot: () => ({ lifecycle: 'active', terminal: null }),
+    providerReady: () => ready,
+    text: () => { hostLogEvent({ event: 'task_settled', taskId: 'synthetic-task', status: 'complete', findings: 1 }); },
+    revoke: () => {},
+  };
+  const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
+  const host = new InstalledCanary(store, live, async () => { ready = true; });
+  host.open([taskAsk, { ...taskAsk, id: 'synthetic-read-second' }], { clientId: 'owner' });
+  const report = await host.run(id, 'owner');
+  assert.equal(report.failed, 0);
+  assert.equal(report.passed, 2);
+  assert.match(report.lines[0], /^CANARY SUMMARY pass=2 fail=0 asks=2 providerTurns=\d+ callId=/);
+});
+
 test('actual HTTP canary opener rejects model-shaped/browser requests and marks only native bearer sessions', async t => {
   const { Store } = await import(built('runtime/store.js'));
   const { listenService } = await import(built('http/server.js'));

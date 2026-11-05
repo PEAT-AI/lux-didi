@@ -184,12 +184,53 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
   const [newest, older] = rows;
   assert.ok(newest && older);
   assert.deepEqual(newest, {
-    liveSessionId: fixture.liveSessionId, start: 1792486800000, durationMs: 10400, tools: 1,
+    liveSessionId: fixture.liveSessionId, start: 1792486800000, durationMs: 10000, tools: 0, voiceTools: 1,
     maxSilenceMs: 1744, terminal: 'closed/voice_stop', lines: 16,
   });
   assert.equal(older.liveSessionId, fixture.otherSessionId);
-  assert.equal(older.durationMs, 0);
+  assert.equal(older.durationMs, null);
   assert.equal(older.terminal, null);
+});
+
+// W18: the list's lifetime is the call's own open to its own terminal. Rows the session's id tags after the
+// terminal, and a call the owner revokes before it ever settles, are the two cases #1016 misread as long calls.
+test('W18: a row tagged after the terminal never extends the call\u2019s duration', () => {
+  const t = 1792486800000;
+  const rows = listCalls(scanOf([
+    JSON.stringify({ timestamp: new Date(t).toISOString(), event: 'live_provider_open', liveSessionId: SESSION }),
+    JSON.stringify({ timestamp: new Date(t + 3000).toISOString(), event: 'live_terminal', liveSessionId: SESSION, state: 'closed', code: 'revoked' }),
+    JSON.stringify({ timestamp: new Date(t + 3_600_000).toISOString(), event: 'consumer_detach', liveSessionId: SESSION }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.durationMs, 3000);
+  assert.equal(rows[0]?.terminal, 'closed/revoked');
+});
+
+test('W18: an open with no terminal prints open, no terminal and never a duration', () => {
+  const t = 1792486800000;
+  const rows = listCalls(scanOf([
+    JSON.stringify({ timestamp: new Date(t).toISOString(), event: 'live_provider_open', liveSessionId: SESSION }),
+    JSON.stringify({ timestamp: new Date(t + 1200).toISOString(), event: 'live_provider_ready', liveSessionId: SESSION }),
+  ]));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.durationMs, null);
+  assert.equal(rows[0]?.terminal, null);
+  assert.match(renderCallList(rows), /open, no terminal/);
+});
+
+test('W18: helper tools count once per operation id, and the voice path keeps its own count', () => {
+  const t = 1792486800000;
+  const tool = (operationId: string, cache: string) => JSON.stringify({ timestamp: new Date(t + 500).toISOString(), event: 'task_tool',
+    liveSessionId: SESSION, taskId: 'task-a', revision: 1, operationId, tool: 'read_file', durationMs: 4, category: 'ok', reason_code: null, cache });
+  const rows = listCalls(scanOf([
+    JSON.stringify({ timestamp: new Date(t).toISOString(), event: 'live_provider_open', liveSessionId: SESSION }),
+    tool('op-1', 'miss'),
+    tool('op-1', 'hit'),
+    tool('op-2', 'miss'),
+    JSON.stringify({ timestamp: new Date(t + 600).toISOString(), event: 'live_tool_turn', liveSessionId: SESSION, toolCallsThisTurn: 2 }),
+    JSON.stringify({ timestamp: new Date(t + 2000).toISOString(), event: 'live_terminal', liveSessionId: SESSION, state: 'closed', code: 'voice_stop' }),
+  ]));
+  assert.deepEqual(rows.map(row => [row.tools, row.voiceTools]), [[2, 2]]);
 });
 
 test('#1011: a stale server/dist is warned about with the build command, and the read never builds (#699, #752)', () => {

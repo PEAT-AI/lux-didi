@@ -314,8 +314,12 @@ export class InstalledCanary {
       const terminal = this.live.snapshot(id).terminal;
       const terminalReason = session.expired ? 'canary_shutdown_timer' : terminal ? ('code' in terminal ? terminal.code : terminal.state) : 'clean_close';
       hostLogEvent({ event: 'canary_step', step: 'terminal', callId: id, code: terminalReason, ms: Math.max(0, this.now() - readyStarted) });
-      const lines = [`CANARY SUMMARY pass=0 fail=${failed} providerTurns=${canarySessions.progress(id)?.turns ?? 0} callId=${id} terminalReason=${terminalReason}`, ...askLines];
-      return { lines, passed: 0, failed, providerTurns: canarySessions.progress(id)?.turns ?? 0 };
+      // Each ask that settled without a failure code is a verified ask. providerTurns is the provider's own turn
+      // count, never a count of helper tasks.
+      const providerTurns = canarySessions.progress(id)?.turns ?? 0;
+      const verified = Math.max(0, session.asks.length - failed);
+      const lines = [`CANARY SUMMARY pass=${verified} fail=${failed} asks=${session.asks.length} providerTurns=${providerTurns} callId=${id} terminalReason=${terminalReason}`, ...askLines];
+      return { lines, passed: verified, failed, providerTurns };
     } catch (error) {
       const code = canaryFailureCode(error);
       hostLogEvent({ event: 'canary_step', step: 'terminal', callId: id, code, ms: Math.max(0, this.now() - readyStarted) });

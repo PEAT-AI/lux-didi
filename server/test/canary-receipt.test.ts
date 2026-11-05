@@ -20,6 +20,25 @@ test('receipt requires a real tool and complete findings for the exact call and 
 test('lifecycle complete without a tool is never an install receipt', () => {
   assert.equal(canaryReceipt(log(start, line('task_lifecycle', { phase: 'complete' }), settled), 'call').code, 'task_tool_missing');
 });
+// W18 (#1016): the identity census counted every anonymous row in the log, so another call's crash rows were
+// charged to this canary. Only this call's own task ids are in scope; the rest are reported as unknown_scope.
+test('W18: the identity census charges only the target call and names anonymous rows separately', () => {
+  const anonymous = (event, fields) => JSON.stringify({ event, taskId: 'crash-task', ...fields });
+  const receipt = canaryReceipt(log(start, tool, settled,
+    anonymous('task_lifecycle', { phase: 'stale' }),
+    anonymous('task_tool', { tool: 'web_search', category: 'cancelled', durationMs: 1 }),
+    anonymous('task_tool', { tool: 'web_search', category: 'cancelled', durationMs: 1 })), 'call');
+  assert.equal(receipt.ok, true);
+  assert.doesNotMatch(receipt.lines.join('\n'), /task_call_identity_missing/);
+  assert.match(receipt.lines.join('\n'), /CANARY FINDING code=task_call_unknown_scope count=3/);
+});
+test('W18: one of this call\u2019s own rows without a session is still the identity finding', () => {
+  const orphan = JSON.stringify({ event: 'task_tool', taskId: 'task', tool: 'web_search', category: 'ok', durationMs: 3 });
+  const receipt = canaryReceipt(log(start, tool, settled, orphan), 'call');
+  assert.equal(receipt.ok, true);
+  assert.match(receipt.lines.join('\n'), /CANARY FINDING code=task_call_identity_missing count=1/);
+  assert.doesNotMatch(receipt.lines.join('\n'), /unknown_scope/);
+});
 test('inference failures and incomplete settlement preserve reason codes', () => {
   assert.equal(canaryReceipt(log(start, tool, settled, line('task_inference_failed', { reason_code: 'provider_auth' })), 'call').code, 'provider_auth');
   assert.equal(canaryReceipt(log(start, tool, line('task_settled', { status: 'incomplete', reason_code: 'source_unavailable' })), 'call').code, 'source_unavailable');

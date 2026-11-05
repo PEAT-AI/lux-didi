@@ -123,24 +123,55 @@ function quietClock() {
     advance: (ms: number) => { now += ms; for (const timer of [...timers]) if (timer.at <= now) { timers.delete(timer); timer.callback(); } },
   };
 }
-for (const gap of [600, 1_000, 1_600, 8_000]) test(`C-DELIVERY: fragment gap ${gap} ms merges or revises at host quiet`, async t => {
+for (const gap of [200, 599, 600, 1_600, 8_000]) test(`C-DELIVERY: fragment gap ${gap} ms merges inside the quiet bound or revises the running task`, async t => {
   const clock = quietClock(); const inputs: string[] = [];
   const f = fixture(t, async request => { inputs.push(JSON.stringify(request)); return { text: 'Synthetic answer.', calls: [] }; }, 'openai', clock.after);
   f.call.ownerWords(); f.call.finalized('Synthetic first fragment', 1);
   clock.advance(gap); await Promise.resolve();
-  assert.equal(inputs.length, gap < 1_200 ? 0 : 1);
+  assert.equal(inputs.length, gap < 600 ? 0 : 1);
+  const first = f.call.runtime.controller.current?.identity;
   f.call.ownerWords(); f.call.finalized('Synthetic second fragment', 2);
-  clock.advance(1_199); assert.equal(inputs.length, gap < 1_200 ? 0 : 1);
+  clock.advance(599); assert.equal(inputs.length, gap < 600 ? 0 : 1);
   clock.advance(1); await Promise.resolve();
-  assert.equal(inputs.length, gap < 1_200 ? 1 : 2);
+  assert.equal(inputs.length, gap < 600 ? 1 : 2);
   assert.match(inputs.at(-1)!, /Synthetic second fragment/);
-  if (gap < 1_200) assert.match(inputs[0]!, /Synthetic first fragment/);
+  if (gap < 600) assert.match(inputs[0]!, /Synthetic first fragment/);
+  else { const revised = f.call.runtime.controller.current!.identity;
+    assert.equal(revised.task_id, first!.task_id); assert.equal(revised.task_revision, first!.task_revision + 1); }
+});
+test('C-DELIVERY: the residual wait after a final is at most the literal 600 ms ceiling', async t => {
+  const clock = quietClock(); let runs = 0;
+  const f = fixture(t, async () => { runs++; return { text: 'Synthetic answer.', calls: [] }; }, 'openai', clock.after);
+  f.call.ownerWords(); f.call.finalized('Synthetic prompt final.', 1);
+  clock.advance(599); assert.equal(runs, 0, 'no work starts inside 599 ms of quiet');
+  clock.advance(1); await Promise.resolve(); assert.equal(runs, 1, 'the task starts by 600 ms of quiet');
+});
+test('C-DELIVERY: a fragment at the literal 599 ms joins the same task, and 700 ms of consumed quiet starts at once', async t => {
+  const clock = quietClock(); const inputs: string[] = [];
+  const f = fixture(t, async request => { inputs.push(JSON.stringify(request)); return { text: 'Synthetic answer.', calls: [] }; }, 'openai', clock.after);
+  f.call.ownerWords(); f.call.finalized('Synthetic first fragment', 1);
+  clock.advance(599); f.call.ownerWords(); f.call.finalized('Synthetic second fragment', 2);
+  clock.advance(599); assert.equal(inputs.length, 0, 'the fragment restarts the quiet, so nothing has started');
+  clock.advance(1); await Promise.resolve();
+  assert.equal(inputs.length, 1, 'the two fragments reach one task, never two');
+  assert.match(inputs[0]!, /Synthetic first fragment/); assert.match(inputs[0]!, /Synthetic second fragment/);
+  const credited = fixture(t, async request => { inputs.push(JSON.stringify(request)); return { text: 'Synthetic answer.', calls: [] }; }, 'openai', clock.after);
+  credited.call.ownerWords(); credited.call.finalized('Synthetic ask with 700 ms of quiet behind it', 3, 700);
+  await Promise.resolve(); assert.equal(inputs.length, 2, '700 ms of consumed quiet leaves nothing to wait');
+});
+test('C-DELIVERY: 450 ms of consumed quiet leaves a 150 ms residual, and the old 1,200 ms wait is gone', async t => {
+  const clock = quietClock(); let runs = 0;
+  const f = fixture(t, async () => { runs++; return { text: 'Synthetic answer.', calls: [] }; }, 'openai', clock.after);
+  f.call.ownerWords(); f.call.finalized('Synthetic ask after partial transcription.', 1, 450);
+  clock.advance(149); assert.equal(runs, 0, 'the credited 450 ms leaves exactly 150 ms');
+  clock.advance(1); await Promise.resolve(); assert.equal(runs, 1);
+  clock.advance(600); assert.equal(runs, 1, 'a 1,200 ms wait would already have run later than this');
 });
 test('C-DELIVERY: distinct completed asks each start work after quiet', async t => {
   const clock = quietClock(); let runs = 0;
   const f = fixture(t, async () => { runs++; return { text: 'Synthetic answer.', calls: [] }; }, 'openai', clock.after);
   for (let turn = 1; turn <= 2; turn++) {
-    f.call.ownerWords(); f.call.finalized(`Synthetic separate ask ${turn}`, turn); clock.advance(1_200);
+    f.call.ownerWords(); f.call.finalized(`Synthetic separate ask ${turn}`, turn); clock.advance(600);
     for (let i = 0; i < 10; i++) await Promise.resolve();
     assert.equal(runs, turn);
   }
@@ -178,10 +209,10 @@ test('C-DELIVERY: a correction during a running read revises only after transcri
     : { text: 'Synthetic corrected result.', calls: [] }, 'openai', clock.after,
     async () => { reads++; await read; return { status: 'ok', text: 'Synthetic read result.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null }; });
   t.after(release);
-  f.call.ownerWords(); f.call.finalized('Read the synthetic source.', 1); clock.advance(1_200);
+  f.call.ownerWords(); f.call.finalized('Read the synthetic source.', 1); clock.advance(600);
   for (let i = 0; i < 30; i++) await Promise.resolve();
   assert.equal(reads, 1); const first = f.call.runtime.controller.current!.identity;
-  f.call.ownerWords(); f.call.finalized('Synthetic correction.', 2); clock.advance(1_199);
+  f.call.ownerWords(); f.call.finalized('Synthetic correction.', 2); clock.advance(599);
   assert.equal(f.call.runtime.controller.isCurrent(first), true);
   clock.advance(1); for (let i = 0; i < 30; i++) await Promise.resolve();
   assert.equal(f.call.runtime.controller.isCurrent(first), false); release();

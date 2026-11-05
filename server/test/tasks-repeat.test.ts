@@ -121,7 +121,7 @@ test('verified status names the last task failures with their closed codes', asy
   const captured: Captured[] = [];
   let calls = 0;
   const f = fixture(t, capture(request => {
-    if (request.input.includes('First synthetic ask') && calls++ === 0) return { text: '', calls: [{ id: 'read', name: 'chat_attention', args: { days: 7 } }] };
+    if (request.input.includes('First synthetic ask') && calls++ === 0) return { text: '', calls: [{ id: 'read', name: 'chat_attention', args: { days: 7, limit: 5 } }] };
     return { text: 'The synthetic answer after a failed read.', calls: [] };
   }, captured), async () => failed('Synthetic connector unavailable.', 'unavailable'));
   await f.call.input('First synthetic ask', 1);

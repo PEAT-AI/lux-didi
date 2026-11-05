@@ -132,7 +132,7 @@ function freshDist() {
   // C-TRACE: a read command that refuses because a build artifact is older than its source answers
   // nothing, and a dev machine is often exactly there. The read is metadata over one database, so it
   // runs on the dist it has and says so on stderr; a dist that genuinely cannot answer still refuses.
-  if (build < source) process.stderr.write('didi-timeline: warning: server/dist is older than its source; reading the stale build, run `npm --prefix server run build` for the current shape\n');
+  if (build < source) process.stderr.write(`didi-timeline: warning: server/dist is older than its source (dist ${new Date(build).toISOString()}, source ${new Date(source).toISOString()}); reading the stale build, fix it with: ${BUILD_COMMAND}\n`);
 }
 
 // The module's own surface is the honest freshness test: a view's export missing from the dist refuses the read.
@@ -183,19 +183,28 @@ const TOOL_CACHES = new Set(['miss', 'hit', 'join']);
 function buildTaskAudit(read, lines = [], selection = {}) {
   const lifecyclePhases = new Set(['start', 'revision', 'inference', 'calls', 'dedupe', 'deadline', 'cancel', 'complete', 'stale', 'delivery']);
   const deliveryStates = new Set(['sent', 'accepted', 'heard', 'retry', 'reconnect', 'undelivered']);
+  const settledStatuses = new Set(['complete', 'failed', 'incomplete', 'cancelled']);
   const events = [];
   let unjoined = 0;
   for (const line of lines) {
     const record = line.record ?? line;
     if (line.stream !== undefined && line.stream !== 'host') continue;
-    if (!['task_lifecycle', 'task_delivery', 'task_tool'].includes(record.event)) continue;
+    if (!['task_lifecycle', 'task_delivery', 'task_tool', 'task_settled'].includes(record.event)) continue;
+    // #1013: a line joins by the identity its envelope carries and by the identity its record carries. A
+    // wrapped line keeps its identity inside the record, so reading only the envelope left the task events
+    // of a real call unjoined; a line with neither identity is the only unjoined one.
+    const identity = field => {
+      if (typeof line[field] === 'string' && line[field] !== '') return line[field];
+      return typeof record[field] === 'string' && record[field] !== '' ? record[field] : undefined;
+    };
     const taskId = record.taskId ?? record.task_id;
     const revision = record.revision ?? record.task_revision;
     const generation = record.connectionGeneration ?? record.connection_generation ?? record.generation;
     if (typeof taskId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(taskId) || !Number.isInteger(revision) || revision < 1) continue;
-    if (selection.callId || selection.liveSessionId) {
-      const exact = (selection.callId && line.callId === selection.callId) || (selection.liveSessionId && line.liveSessionId === selection.liveSessionId);
-      if (!exact) { unjoined++; continue; }
+    if (selection.callId !== undefined || selection.liveSessionId !== undefined) {
+      const exact = (selection.callId !== undefined && identity('callId') === selection.callId)
+        || (selection.liveSessionId !== undefined && identity('liveSessionId') === selection.liveSessionId);
+      if (!exact) { if (identity('callId') === undefined && identity('liveSessionId') === undefined) unjoined += 1; continue; }
     }
     if (record.event === 'task_tool'
       && (!TOOL_CATEGORIES.has(record.category) || !TOOL_CACHES.has(record.cache)
@@ -203,6 +212,8 @@ function buildTaskAudit(read, lines = [], selection = {}) {
         || !Number.isFinite(record.durationMs) || record.durationMs < 0)) continue;
     if (record.event === 'task_lifecycle' && (!lifecyclePhases.has(record.phase) || !Number.isInteger(generation) || generation < 0)) continue;
     if (record.event === 'task_delivery' && !deliveryStates.has(record.state)) continue;
+    if (record.event === 'task_settled' && (!settledStatuses.has(record.status)
+      || (record.reason_code !== undefined && !/^[a-z][a-z0-9_]{0,63}$/.test(record.reason_code)))) continue;
     events.push({ event: record.event, taskId, revision,
       ...(record.event === 'task_lifecycle' ? { phase: record.phase, connectionGeneration: generation,
         ...(Number.isSafeInteger(record.count) && record.count >= 0 ? { count: record.count } : {}),
@@ -211,6 +222,10 @@ function buildTaskAudit(read, lines = [], selection = {}) {
         // whether the answer was cached. Metadata only; the arguments and the result never leave the store.
         : record.event === 'task_tool' ? { tool: record.tool, category: record.category, ms: record.durationMs, cache: record.cache,
           ...(typeof record.operationId === 'string' ? { operationId: record.operationId } : {}) }
+          // W2 added the settled line: the status the helper reached and the closed reason it reached it for.
+          : record.event === 'task_settled' ? { status: record.status,
+            ...(typeof record.reason_code === 'string' ? { reasonCode: record.reason_code } : {}),
+            ...(Number.isFinite(record.elapsed_ms) ? { elapsedMs: record.elapsed_ms } : {}) }
           : { state: record.state }),
       ...(Number.isFinite(line.at) ? { at: line.at } : {}) });
   }
@@ -220,7 +235,7 @@ function buildTaskAudit(read, lines = [], selection = {}) {
     deliveryStates: Object.fromEntries(['sent', 'accepted', 'heard'].map(state => [state, deliveryEvents.length ? deliveryEvents.filter(event => event.state === state).length : null])),
     deliveryCoverage: deliveryEvents.length ? 'observed host-log events; counts are observations, not complete call coverage' : 'unavailable: no matching task_delivery host-log events',
     unjoinedTaskEvents: unjoined, promisesWithoutTask: null,
-    gaps: ['Promises without a task remain unavailable: no content-free promise-to-task identity.', 'Task store rows have no call/session key; log events require exact envelope attribution.'] };
+    gaps: ['Promises without a task remain unavailable: no content-free promise-to-task identity.', 'A task row written before tasks.live_session_id joins by the log line\'s own identity; a line with neither an envelope nor a record identity joins nothing.'] };
 
   const project = (rows, keys) => rows.map(row => Object.fromEntries(keys.filter(key => row[key] !== undefined).map(key => [key, row[key]])));
   // C-TRACE: C-FAIL adds reason_code to task_operations in another branch. Read it when it is there and
@@ -230,14 +245,28 @@ function buildTaskAudit(read, lines = [], selection = {}) {
   catch { operationColumns = new Set(); }
   // F2: the column reaches a row only when it exists, so a schema without it projects no key at all and the
   // renderer prints no reason line rather than a confident none.
+  // #1013: the same rule for the task row's own session key: a store written before the column still joins
+  // through the log, and its rows project no key at all.
+  let taskColumns = new Set();
+  try { taskColumns = new Set(read.all("SELECT name FROM pragma_table_info('tasks')").map(row => String(row.name))); }
+  catch { taskColumns = new Set(); }
+  const sessionColumn = taskColumns.has('live_session_id') ? ',live_session_id' : '';
   const reasonCode = operationColumns.has('reason_code');
   const reasonColumn = reasonCode ? ',reason_code' : '';
   try {
-    const tasks = project(read.all('SELECT task_id,created_at,updated_at,current_revision,status FROM tasks ORDER BY created_at,task_id'), ['task_id', 'created_at', 'updated_at', 'current_revision', 'status']);
-    const revisions = project(read.all('SELECT task_id,task_revision,connection_generation,created_at FROM task_revisions ORDER BY created_at,task_id,task_revision'), ['task_id', 'task_revision', 'connection_generation', 'created_at']);
-    const operations = project(read.all(`SELECT operation_id,task_id,task_revision,connection_generation,tool,effect,state,created_at,updated_at${reasonColumn} FROM task_operations ORDER BY created_at,operation_id`), [...'operation_id task_id task_revision connection_generation tool effect state created_at updated_at'.split(' '), ...(reasonCode ? ['reason_code'] : [])]);
-    const deliveries = project(read.all('SELECT attempt_id,task_id,task_revision,connection_generation,state,updated_at FROM task_deliveries ORDER BY updated_at,attempt_id'), ['attempt_id', 'task_id', 'task_revision', 'connection_generation', 'state', 'updated_at']);
-    return { ...logAudit, coverage: 'metadata only; store rows are all retained tasks, not joined to this call', tasks, revisions,
+    const rows = project(read.all(`SELECT task_id,created_at,updated_at,current_revision,status${sessionColumn} FROM tasks ORDER BY created_at,task_id`), ['task_id', 'created_at', 'updated_at', 'current_revision', 'status', ...(sessionColumn === '' ? [] : ['live_session_id'])]);
+    // #1013: the audit lists the call's own tasks, never every retained row. A task belongs to the call when
+    // the log joins it by the call's identity, or when the row's own column names the call's live session.
+    const selected = selection.callId !== undefined || selection.liveSessionId !== undefined;
+    const joined = new Set(events.map(event => event.taskId));
+    const tasks = selected ? rows.filter(row => joined.has(row.task_id)
+      || (selection.liveSessionId !== undefined && row.live_session_id === selection.liveSessionId)) : rows;
+    const scoped = selected ? new Set(tasks.map(row => row.task_id)) : undefined;
+    const inScope = row => scoped === undefined || scoped.has(row.task_id);
+    const revisions = project(read.all('SELECT task_id,task_revision,connection_generation,created_at FROM task_revisions ORDER BY created_at,task_id,task_revision'), ['task_id', 'task_revision', 'connection_generation', 'created_at']).filter(inScope);
+    const operations = project(read.all(`SELECT operation_id,task_id,task_revision,connection_generation,tool,effect,state,created_at,updated_at${reasonColumn} FROM task_operations ORDER BY created_at,operation_id`), [...'operation_id task_id task_revision connection_generation tool effect state created_at updated_at'.split(' '), ...(reasonCode ? ['reason_code'] : [])]).filter(inScope);
+    const deliveries = project(read.all('SELECT attempt_id,task_id,task_revision,connection_generation,state,updated_at FROM task_deliveries ORDER BY updated_at,attempt_id'), ['attempt_id', 'task_id', 'task_revision', 'connection_generation', 'state', 'updated_at']).filter(inScope);
+    return { ...logAudit, coverage: selected ? 'metadata only; the selected call\'s tasks, joined by log identity and by tasks.live_session_id when the store has it' : 'metadata only; store rows are all retained tasks, not joined to this call', tasks, revisions,
       helperCalls: operations,
       // C-TRACE: the helper's tool rows as the call ran them. The log carries the call's own order; the store
       // rows above are every retained task and carry the state and reason the log does not.
@@ -262,12 +291,13 @@ function renderTaskAudit(audit) {
   const lines = [`coverage: ${audit.coverage}`];
   const tasks = new Map();
   const task = id => {
-    if (!tasks.has(id)) tasks.set(id, { status: null, revisions: null, current: null, deliveries: {}, phases: [], tools: [] });
+    if (!tasks.has(id)) tasks.set(id, { status: null, revisions: null, current: null, deliveries: {}, phases: [], tools: [], settled: null });
     return tasks.get(id);
   };
   const operations = new Map((audit.helperCalls ?? []).map(row => [row.operation_id, row]));
   for (const event of audit.events ?? []) {
     if (event.event === 'task_tool') task(event.taskId).tools.push(event);
+    else if (event.event === 'task_settled') task(event.taskId).settled = event;
     else if (event.event === 'task_lifecycle') task(event.taskId).phases.push(`${event.phase}${Number.isFinite(event.at) ? `@${event.at}` : ''}`);
     else task(event.taskId).deliveries[`log:${event.state}`] = (task(event.taskId).deliveries[`log:${event.state}`] ?? 0) + 1;
   }
@@ -280,7 +310,9 @@ function renderTaskAudit(audit) {
   if (!tasks.size) lines.push('none: no task identity on this call\'s log lines and no retained task rows');
   for (const [id, entry] of tasks) {
     const chunks = Object.entries(entry.deliveries).map(([state, count]) => `${state}=${count}`).join(',') || 'none';
-    lines.push(`task ${id} status=${entry.status ?? 'unknown'} revisions=${entry.revisions ?? '?'}${entry.current === null || entry.current === undefined ? '' : `/${entry.current}`} delivery=${chunks}`);
+    // W2's settled line: the status the helper reached and the closed reason it reached it for.
+    const settled = entry.settled === null ? '' : ` settled=${entry.settled.status} reason=${entry.settled.reasonCode ?? 'none'}`;
+    lines.push(`task ${id} status=${entry.status ?? 'unknown'} revisions=${entry.revisions ?? '?'}${entry.current === null || entry.current === undefined ? '' : `/${entry.current}`} delivery=${chunks}${settled}`);
     for (const tool of entry.tools) {
       const stored = tool.operationId === undefined ? undefined : operations.get(tool.operationId);
       lines.push(`  tool ${tool.tool} outcome=${tool.category} ms=${tool.ms} cache=${tool.cache}`

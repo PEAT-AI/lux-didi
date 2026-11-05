@@ -236,9 +236,11 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
         parameters: {
           // A read tool drops an unknown key instead of refusing it, so the schema admits extra
           // keys and names `include_links`; the validator accepts exactly these and drops the rest.
+          // #1013: the provider's strict mode refuses uniqueItems, so a repeated id stays a rule of
+          // normalizeGetInsightArgs, which drops it before dispatch.
           type: 'object', additionalProperties: true, required: ['ids'],
           properties: {
-            ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, uniqueItems: true, items: { type: 'integer', minimum: 1 }, description: 'One or more entry ids from a knowledge search. A single id, an integer-valued numeric string, the "#123"/"lux 123" form, or one such string holding several ids separated by comma, semicolon or whitespace (or JSON array text) is accepted; unreadable ids are dropped and named.' },
+            ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, items: { type: 'integer', minimum: 1 }, description: 'One or more entry ids from a knowledge search. A single id, an integer-valued numeric string, the "#123"/"lux 123" form, or one such string holding several ids separated by comma, semicolon or whitespace (or JSON array text) is accepted; unreadable ids are dropped and named.' },
             include_links: { type: 'boolean', description: 'Ask the knowledge server to include linked entries in the result.' },
           },
         },

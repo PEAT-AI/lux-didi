@@ -55,7 +55,7 @@ For the operational sequence and content-free logs, use [debugging.md](debugging
 
 ## Helper task records
 
-Release 10.10 retains task revisions, reads, operation receipts and delivery state through `server/tasks/runtime.ts` and `Store`. A completed task is not proof that the voice spoke it. A stale revision may retain useful reads and committed writes without being eligible for delivery. Inspect metadata first; retained task arguments are private content, not a safe support attachment. In 10.11, task result bodies are not retained, only their closed category and byte size.
+Release 10.10 retains task revisions, reads, operation receipts and delivery state through `server/tasks/runtime.ts` and `Store`. A completed task is not proof that the voice spoke it. A stale revision may retain useful reads and committed writes without being eligible for delivery. Inspect metadata first; retained task arguments are private content, not a safe support attachment. In 10.11, task result bodies are not retained, only their closed category and byte size. From 10.13 the `tasks` table carries `live_session_id`, the runtime's own native session, so a call's tasks are found in the store alone; the column is nullable and every row written before it joins through the host log instead.
 
 ## Helper task diagnostics (10.11)
 

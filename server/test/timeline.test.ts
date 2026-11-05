@@ -226,7 +226,9 @@ test('#1011: a stale server/dist is warned about with the build command, and the
     // nothing, so the stale build is read with a warning naming the build command, never silently.
     assert.equal(stale.status, 0, stale.stderr);
     assert.match(stale.stderr, /server\/dist is older than its source/u);
+    // #1013: the warning names the one command that fixes it and both timestamps, so nobody guesses.
     assert.match(stale.stderr, /npm --prefix server run build/u);
+    assert.match(stale.stderr, /dist \d{4}-\d{2}-\d{2}T[\d:.]+Z, source \d{4}-\d{2}-\d{2}T[\d:.]+Z/u);
     assert.notEqual(stale.stdout.trim(), '', 'a stale dist still answers, and says so on stderr');
     assert.equal(existsSync(calls), false, 'the read ran no build in the shared checkout');
     // A fresh dist is authority: no build runs, and the real module answers.
@@ -884,7 +886,9 @@ test('task audit reads lifecycle and delivery host events without content', asyn
   assert.equal(JSON.stringify(audit).includes('SYNTHETIC_CONTENT_NOT_METADATA'), false);
   const unrelated = buildTaskAudit({ all: () => [] }, events, { callId: 'another-call' });
   assert.equal(unrelated.deliveryEvents.length, 0);
-  assert.equal(unrelated.unjoinedTaskEvents, 10);
+  // #1013: these lines carry an identity, so they belong to another call, never to the unjoined count;
+  // only a line with no identity anywhere is unjoined.
+  assert.equal(unrelated.unjoinedTaskEvents, 0);
   assert.equal(unrelated.deliveryStates.heard, null);
   assert.match(unrelated.lifecycleCoverage, /unavailable/);
   const missingStore = buildTaskAudit({ all: () => { throw new Error('no such table: tasks'); } }, events);
@@ -1068,4 +1072,53 @@ test('#878: a receipt that joined no turn is named, not left as a bare missing',
       'the audit says the receipts exist and joined no turn');
     assert.match(renderCallAudit(audit), /unattributed=1/u);
   });
+});
+
+// #1013: the installed writer keeps the event under `record`, and an older reader joined only the
+// envelope. A line whose identity sits inside the record must join the call it names.
+test('task audit joins a wrapped record carrying its identity inside the record', async () => {
+  const { createRequire } = await import('node:module');
+  const { buildTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
+  const lines = [{ stream: 'host', record: { event: 'task_tool', taskId: 'synthetic-task', revision: 1, liveSessionId: 'synthetic-session', tool: 'search_knowledge', category: 'ok', cache: 'miss', durationMs: 12 } }];
+  const joined = buildTaskAudit({ all: () => [] }, lines, { liveSessionId: 'synthetic-session' });
+  assert.equal(joined.tools.length, 1, 'the record identity is the join key');
+  assert.equal(joined.unjoinedTaskEvents, 0);
+  const unrelated = buildTaskAudit({ all: () => [] }, lines, { liveSessionId: 'another-session' });
+  assert.equal(unrelated.tools.length, 0);
+  assert.equal(unrelated.unjoinedTaskEvents, 0, 'a line that names another call is not unjoined');
+  const anonymous = buildTaskAudit({ all: () => [] }, [{ stream: 'host', record: { event: 'task_tool', taskId: 'synthetic-task', revision: 1, tool: 'search_knowledge', category: 'ok', cache: 'miss', durationMs: 12 } }], { liveSessionId: 'synthetic-session' });
+  assert.equal(anonymous.unjoinedTaskEvents, 1, 'only a line with no identity anywhere is unjoined');
+});
+
+test('task audit lists one call\'s tasks, its tool rows with reason and its settled status', async () => {
+  const { createRequire } = await import('node:module');
+  const { buildTaskAudit, renderTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
+  const session = 'synthetic-session';
+  const read = { all: (sql: string) => {
+    if (sql.includes("pragma_table_info('task_operations')")) return [{ name: 'operation_id' }, { name: 'reason_code' }];
+    if (sql.includes("pragma_table_info('tasks')")) return [{ name: 'task_id' }, { name: 'live_session_id' }];
+    if (sql.includes('FROM tasks ')) return [
+      { task_id: 'in-call', created_at: 1, updated_at: 2, current_revision: 1, status: 'failed', live_session_id: session },
+      { task_id: 'other-call', created_at: 3, updated_at: 4, current_revision: 1, status: 'complete', live_session_id: 'another-session' },
+    ];
+    if (sql.includes('FROM task_revisions')) return [{ task_id: 'in-call', task_revision: 1, connection_generation: 2, created_at: 1 }];
+    if (sql.includes('FROM task_operations')) return [{ operation_id: 'op-1', task_id: 'in-call', task_revision: 1, connection_generation: 2, tool: 'search_knowledge', effect: 'none', state: 'failed', created_at: 1, updated_at: 41, reason_code: 'upstream_error' }];
+    if (sql.includes('FROM task_deliveries')) return [{ attempt_id: 'attempt-1', task_id: 'in-call', task_revision: 1, connection_generation: 2, state: 'delivered', updated_at: 9 }];
+    throw new Error(`unexpected statement: ${sql}`);
+  } };
+  const lines = [
+    { stream: 'host', record: { event: 'task_lifecycle', taskId: 'in-call', revision: 1, generation: 2, phase: 'start' } },
+    { stream: 'host', record: { event: 'task_tool', taskId: 'in-call', revision: 1, liveSessionId: session, operationId: 'op-1', tool: 'search_knowledge', category: 'ok', cache: 'miss', durationMs: 12, at: 5 } },
+    { stream: 'host', record: { event: 'task_settled', taskId: 'in-call', revision: 1, liveSessionId: session, status: 'failed', reason_code: 'upstream_error', findings: 0, elapsed_ms: 40, at: 6 } },
+    { stream: 'host', record: { event: 'task_lifecycle', taskId: 'other-call', revision: 1, generation: 2, phase: 'start', liveSessionId: 'another-session' } },
+  ];
+  const audit = buildTaskAudit(read, lines, { liveSessionId: session });
+  assert.deepEqual(audit.tasks.map((row: { task_id: string }) => row.task_id), ['in-call'], 'the other call\'s task row never joins this audit');
+  assert.equal(audit.tools.length, 1);
+  assert.deepEqual(audit.helperCalls.map((row: { operation_id: string }) => row.operation_id), ['op-1']);
+  const rendered = renderTaskAudit(audit);
+  assert.match(rendered, /task in-call status=failed revisions=1\/1/u);
+  assert.match(rendered, /settled=failed reason=upstream_error/u);
+  assert.match(rendered, /tool search_knowledge outcome=ok ms=12 cache=miss state=failed reason=upstream_error/u);
+  assert.equal(rendered.includes('other-call'), false);
 });

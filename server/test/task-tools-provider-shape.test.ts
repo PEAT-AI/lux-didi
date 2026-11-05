@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mongoosePublishCatalogue } from '../connectors/mongoose.js';
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 import { FakeAuthority } from '../tasks/authority.js';
 import { configuredCompanyTools, type BoundConnector } from '../tasks/connectors.js';
 import { createRegistry, validateArguments, type TaskTool } from '../tasks/tools.js';
@@ -70,6 +72,32 @@ test('every declared task tool uses only schema keywords the provider accepts', 
     return found;
   });
   assert.deepEqual(offenders, [], 'a rejected schema keyword would make every helper request fail with HTTP 400');
+});
+
+test('every native connector declaration uses only schema keywords the provider accepts', () => {
+  // #1013: a native connector declaration goes to the provider without passing through createRegistry,
+  // so the registry walk above never sees it and every one of them is checked here.
+  const policy = {
+    schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { id: 'fixture', url: 'https://fixture.example.test/mcp', account: 'fixture', resource: 'lux-knowledge:vault', credentialRef: null },
+    toolNames: [], schemaDigest: 'fixture',
+    sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: 'fixture', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
+  } as unknown as ConnectionPolicy;
+  const declarations = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy).map(declaration => ({ descriptor: descriptor.id, declaration })));
+  assert.ok(declarations.length > 0, 'no native connector declaration was found');
+  const offenders = declarations.flatMap(({ descriptor, declaration }) => {
+    const found: string[] = [];
+    keywords(declaration.parameters, `${descriptor}:${declaration.name}`, found);
+    return found;
+  });
+  assert.deepEqual(offenders, [], 'a native declaration with a rejected keyword makes every helper request fail with HTTP 400');
+  const getInsight = declarations.find(item => item.descriptor === 'lux-knowledge' && item.declaration.name === 'get_insight');
+  assert.ok(getInsight, 'the native knowledge reader is missing');
+  const ids = (getInsight.declaration.parameters['properties'] as Record<string, Record<string, unknown>>)['ids']!;
+  assert.equal('uniqueItems' in ids, false, 'a repeated id stays a rule of normalizeGetInsightArgs');
+  assert.deepEqual(getInsight.declaration.normalize?.({ ids: [4, 4] })?.args.ids, [4], 'the duplicate is dropped before dispatch');
 });
 
 test('read_knowledge refuses duplicate ids without a schema keyword the provider rejects', () => {

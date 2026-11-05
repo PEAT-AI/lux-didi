@@ -195,11 +195,13 @@ export class Store {
     finally { this.#inTransaction = false; }
   }
   /** Content capture is explicitly supplied by the host gate, never inferred from model text. */
-  saveTaskRevision(identity: TaskRecord, ownerWords: readonly string[], evidence: unknown, now = Date.now()): void {
+  // #1013: `liveSessionId` is the runtime's own native session, so the row can be found by the call it
+  // belongs to. It is optional: a caller with no native session writes a row that joins through the log.
+  saveTaskRevision(identity: TaskRecord, ownerWords: readonly string[], evidence: unknown, now = Date.now(), liveSessionId?: string): void {
     this.transaction(tx => {
-      tx.run(`INSERT INTO tasks(task_id,created_at,updated_at,current_revision,status) VALUES (?,?,?,?,?)
-        ON CONFLICT(task_id) DO UPDATE SET updated_at=excluded.updated_at,current_revision=excluded.current_revision,status=excluded.status`,
-        [identity.task_id, now, now, identity.task_revision, 'running']);
+      tx.run(`INSERT INTO tasks(task_id,created_at,updated_at,current_revision,status,live_session_id) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(task_id) DO UPDATE SET updated_at=excluded.updated_at,current_revision=excluded.current_revision,status=excluded.status,live_session_id=COALESCE(excluded.live_session_id,tasks.live_session_id)`,
+        [identity.task_id, now, now, identity.task_revision, 'running', liveSessionId ?? null]);
       const retained = tx.get('SELECT content_pruned_at FROM tasks WHERE task_id=?', [identity.task_id])?.content_pruned_at == null;
       tx.run('INSERT INTO task_revisions(task_id,task_revision,connection_generation,created_at,owner_words,evidence) VALUES (?,?,?,?,?,?)',
         [identity.task_id, identity.task_revision, identity.connection_generation, now, retained ? JSON.stringify(ownerWords) : null, taskResultMetadata(evidence)]);

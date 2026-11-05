@@ -26,7 +26,7 @@ _sensitive rows excluded from this search; pass include_sensitive=true to includ
 test('vault semantic hits retain evidence and are successful without exact titles', () => {
   const result = projectTaskPayload('search_knowledge', vaultEnvelope, { query: 'orchid watering' });
   assert.equal(result.status, 'ok');
-  for (const evidence of ['_confidence: medium', 'low_confidence: yes', 'sensitive rows excluded', '[PATTERN]', 'valid from 2026-02-01', 'once a week', 'Score: 0.518', 'superseded', '#90213']) {
+  for (const evidence of ['_confidence: medium', 'low_confidence: yes', 'sensitive rows excluded', '[PATTERN]', 'valid from 2026-02-01', 'once a week', 'Score: 0.518', 'Score: 0.348', 'superseded', '#90213']) {
     assert.ok(result.text.includes(evidence), evidence);
   }
   assert.deepEqual(result.references.map(ref => ref.id), ['115', '89969']);
@@ -121,7 +121,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
     } });
   assert.equal(result.status, 'complete');
   assert.deepEqual(seen, [
-    { tool: 'search_knowledge', args: { query: 'orchid watering', limit: 6, detail: 'voice', snippet_chars: 600 } },
+    { tool: 'search_knowledge', args: { query: 'orchid watering', limit: 6, detail: 'snippets' } },
     { tool: 'get_insight', args: { ids: [115, 89969, 90213], include_links: true } },
   ]);
   console.info('VAULT_FIXTURE_METRICS', JSON.stringify({ helperTurnMs: performance.now() - started, searchShapedBytes: size, searchSourceChars: vaultEnvelope.length }));

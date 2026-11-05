@@ -264,12 +264,12 @@ test('#610: a search asks for at most the child maximum and reads newest first',
 test('#1016: a stalled child yields the waves that answered, with the missing wave named', async t => {
   const f = setup('stall-thread');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_500);
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_000);
   const started = Date.now();
   const view = digest(await r.attention({}));
   const elapsed = Date.now() - started;
   // The stalled thread read answers after six seconds, so only the scan's own budget can end it here.
-  assert.ok(elapsed < 5_000, `the scan ends at its budget, not at the stalled child (${elapsed} ms)`);
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled child (${elapsed} ms)`);
   assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
   assert.match(view.missing ?? '', /no answer from threads/u, 'the coverage line names the wave that did not finish');
   // The other threads in the same wave answered: their items are kept, never dropped with the stalled one.
@@ -282,11 +282,11 @@ test('#1016: a stalled child yields the waves that answered, with the missing wa
 test('#1016: a stalled conversation keeps the history that answered in the same wave', async t => {
   const f = setup('stall-dm');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_500);
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_000);
   const started = Date.now();
   const view = digest(await r.attention({}));
   const elapsed = Date.now() - started;
-  assert.ok(elapsed < 5_000, `the scan ends at its budget, not at the stalled history (${elapsed} ms)`);
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not at the stalled history (${elapsed} ms)`);
   assert.equal(view.sourceIncomplete, true, 'a budget end is partial, never silently complete');
   assert.match(view.missing ?? '', /no answer from moved_conversations/u, 'the coverage line names the stalled wave');
   assert.deepEqual(summaries(view.items), ['dm ravi sent the retest notes', 'mention dana @owner-chat can you confirm the 3k release?'], 'the history that answered is kept');
@@ -297,12 +297,12 @@ test('#1016: a stalled conversation keeps the history that answered in the same 
 test('#1016: an identity read that spends the budget ends the scan, named', async t => {
   const f = setup('slow-identity');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 2_500);
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter), undefined, 1_000);
   const started = Date.now();
   const view = digest(await r.attention({}));
   const elapsed = Date.now() - started;
-  // The identity read answers after three seconds, against a 2,500 ms budget and the child's own 5 s stop.
-  assert.ok(elapsed < 5_000, `the scan ends at its budget, not after the waves (${elapsed} ms)`);
+  // The identity read answers after two seconds, against a 1,000 ms budget and the child's own 5 s stop.
+  assert.ok(elapsed < 3_000, `the scan ends at its budget, not after the waves (${elapsed} ms)`);
   assert.equal(view.sourceIncomplete, true, 'a spent budget is partial, never silently complete');
   assert.match(view.missing ?? '', /no answer from the identity read/u, 'the coverage line names the identity read');
   assert.deepEqual(view.items, [], 'no wave ran once the budget was spent');

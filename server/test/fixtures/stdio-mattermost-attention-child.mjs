@@ -85,7 +85,7 @@ server.setRequestHandler('tools/call', async (request) => {
   // same budget as a concurrent one, and the test stays well under the five second line.
   if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 500));
   // #1016: an identity read that answers after the scan's budget: the budget must already be armed there.
-  if (mode === 'slow-identity' && name === 'mattermost_whoami') await new Promise(resolve => setTimeout(resolve, 3_000));
+  if (mode === 'slow-identity' && name === 'mattermost_whoami') await new Promise(resolve => setTimeout(resolve, 2_000));
   // #1016: a child that answers one thread read long after the scan's budget, so only the budget ends the
   // scan while that wave's other threads answer normally.
   if (mode === 'stall-thread' && name === 'mattermost_get_thread' && args.post_id === 'threadOpenRoot') await new Promise(resolve => setTimeout(resolve, 6_000));

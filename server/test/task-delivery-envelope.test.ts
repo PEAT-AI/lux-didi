@@ -17,7 +17,7 @@ test('no_action is an empty typed outcome, not a sentence to read', () => {
     { kind: 'no_action', exact: [], content: '', cause: '', what_failed: '', next_step: '' });
 });
 test('structured model failure has a closed cause without leaking internal detail', () => {
-  const result = { status: 'incomplete' as const, text: '', findings: [], failure: { stage: 'inference', reason_code: 'provider_rejected', detail: 'private internal diagnostics' }, receipts: [{ status: 'ok' as const, text: 'internal', references: [], next_cursor: null, coverage: '', repair: null }] };
+  const result = { status: 'incomplete' as const, text: '', findings: [], failure: { stage: 'inference' as const, reason_code: 'provider_rejected', detail: 'private internal diagnostics' }, receipts: [{ status: 'ok' as const, text: 'internal', references: [], next_cursor: null, coverage: '', repair: null }] };
   const payload = resultCommentary(result);
   assert.equal(payload.kind, 'failure');
   assert.equal(payload.cause, 'provider_rejected');
@@ -74,7 +74,7 @@ test('W3-R3: empty structured failure delivers immediately without delegation, e
   const sent: string[] = [];
   const delivery = new TaskDelivery({ isCurrent: () => true, append: (_binding, text) => { sent.push(text); return `command${sent.length}`; }, state: () => {} });
   delivery.socket(1);
-  const failure = { stage: 'inference', reason_code: 'provider_rejected', detail: 'private diagnostics' };
+  const failure = { stage: 'inference' as const, reason_code: 'provider_rejected', detail: 'private diagnostics' };
   const answer = { status: 'incomplete' as const, text: '', findings: [], failure };
   delivery.deliver({ task_id: 'failure-task', task_revision: 1, connection_generation: 1 }, answer, true);
   assert.equal(sent.length, 1);

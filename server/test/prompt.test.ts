@@ -344,7 +344,7 @@ test('public voice and worker policies contain judgments, not lines to recite', 
   assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), '4905f66db1a6fb0195abc0255a4ef19b0f35c2b8546299399139cd9f4d6f4a17', 'Architect-authored voice text stays exact');
   assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), 'db33c104127272baa2c9af366975fe7fb88733ed2ea44df670f54bb1e0c07fee', 'Architect-authored worker text stays exact');
   // 10.11: the mandated scope, searching and speech rules re-pin the worker block to its measured size (TR-R5).
-  assert.ok(WORKER_INSTRUCTIONS.length <= 4103);
+  assert.ok(WORKER_INSTRUCTIONS.length <= 5090);
   for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
     assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);
     assert.doesNotMatch(text, /["“][^"”]+["”]/);

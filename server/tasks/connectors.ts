@@ -76,7 +76,7 @@ function companyPayload(data: unknown): ToolResult {
   const references = items.flatMap(item => typeof item.ref === 'string' ? [{ id: item.ref }] : []);
   return {
     status: cursor || incomplete || running ? 'partial' : outcome === 'no_match' ? 'no_match' : 'ok',
-    text: typeof data === 'string' ? data : JSON.stringify(data), references, next_cursor: cursor,
+    text: typeof data === 'string' ? data : typeof root.text === 'string' && !root.outcome ? root.text : JSON.stringify(data), references, next_cursor: cursor,
     coverage: incomplete || cursor ? 'Native company coverage incomplete; continue with the same ref and depth and the native cursor.' : 'Native company outcome; only returned records are verified.',
     repair: running ? 'The data agent is still running. Continue data_agent_job with op get and the returned job_id; do not recompute the answer.' : null,
   };
@@ -133,7 +133,9 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[]): Def
   const typed = Object.entries(companySteps).flatMap(([name, description]) => {
     const declaration = capabilities.find(item => item.name === name);
     if (!declaration) return [];
-    return [{ outside: true, name, description: `${description} ${declaration.description}`, fields: strictSchema(declaration.parameters).properties as Record<string, Record<string, unknown>>, validate: (args: Record<string, unknown>) => declaration.validate(Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null))) }];
+    const fields = strictSchema(declaration.parameters).properties as Record<string, Record<string, unknown>>;
+    if (name === 'data_agent_job' && fields.op) fields.op = { type: 'string', enum: ['get'] };
+    return [{ outside: true, name, description: `${description} ${declaration.description}`, fields, validate: (args: Record<string, unknown>) => (name !== 'data_agent_job' || args.op === 'get') && declaration.validate(Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null))) }];
   });
   // Explores and saved content are navigation only, never a route to compute or verify metrics.
   const navigation = capabilities.filter(item => ['search', 'read', 'list_companies', 'search_content', 'read_content', 'list_content', 'list_explores', 'get_metadata', 'list_verified_content'].includes(item.name));
@@ -153,6 +155,7 @@ export function nativeTaskReadTool(name: string, connector: string, args?: Recor
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}, handoffsRemaining = 2): ToolPorts['execute'] {
   if (handoffsRemaining === 2) console.info('company_bindings', JSON.stringify(Object.fromEntries(['knowledge', 'data', 'crm'].map(endpoint => [endpoint, bindings.some(binding => binding.connector === 'mongoose' && companyEndpoint(binding) === endpoint)]))));
   return async (name, args, signal, outsideTextSeen = false, identity) => {
+    if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const mapping = mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.');

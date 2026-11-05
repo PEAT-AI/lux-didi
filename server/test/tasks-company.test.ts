@@ -93,3 +93,43 @@ test('company job helper only exposes get and refuses mutation operations before
   const result = await connectorExecutor([binding])('data_agent_job', { job_id: jobId, op: 'cancel' }, new AbortController().signal);
   assert.equal(result.status, 'failed'); assert.equal(seen.length, 0);
 });
+
+test('company handoff reaches only the matching configured data endpoint', async () => {
+  const seen: { tool: string; args: Record<string, unknown> }[] = [];
+  const data = dataBinding([job('running')], seen);
+  const knowledge: BoundConnector = { connector: 'mongoose', policy, reader: { call: async () => ({ state: 'completed', decodedResult: { outcome: 'handoff', items: [], next_tool: { endpoint: 'data', url: 'https://fixture.example.test/mcp/data', tool: 'ask_data_agent', arguments: { question: 'Synthetic KPI' } } } }) as unknown as ConnectorEvidence } };
+  const result = await connectorExecutor([knowledge, data])('search_company', { query: 'Synthetic KPI' }, new AbortController().signal);
+  assert.equal(JSON.parse(result.text).job_id, jobId); assert.equal(seen[0]?.tool, 'ask_data_agent');
+  const missing = await connectorExecutor([knowledge])('search_company', { query: 'Synthetic KPI' }, new AbortController().signal);
+  assert.notEqual(missing.status, 'failed'); assert.match(missing.repair!, /endpoint data is not bound/);
+});
+test('company reader follow-up pages reach the helper and preserve final native coverage', async () => {
+  const result = await call('search_company', { outcome: 'evidence', items: [{ ref: 'knowledge:synthetic' }] }, { followUp: { tool: 'read', pages: [
+    { decodedResult: { outcome: 'evidence', items: [{ ref: 'knowledge:synthetic', text: 'page one' }], next_cursor: 'opaque:2', coverage: { depth: 'all', complete: false } } },
+    { decodedResult: { outcome: 'evidence', items: [{ ref: 'knowledge:synthetic', text: 'page two' }], next_cursor: null, coverage: { depth: 'all', complete: true } } },
+  ] } });
+  assert.match(result.text, /page one/); assert.match(result.text, /page two/); assert.equal(result.next_cursor, null); assert.equal(result.status, 'ok');
+});
+// CapabilityAssessment from models.py; CRM link_status from mcp_tools/integrations.py get_company.
+test('company coverage blockers and CRM customer lookup are typed native results', async () => {
+  const schemas = [
+    { name: 'check_data_capability', description: 'Check quantitative coverage.', inputSchema: { type: 'object', properties: { company_name: { type: 'string' } }, additionalProperties: false } },
+    { name: 'get_company', description: 'Read CRM by slug or canonical name.', inputSchema: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'], additionalProperties: false } },
+  ];
+  const coverage = { decision: 'not_answerable', confidence: 'high', answerable_parts: [], missing_parts: ['synthetic region'], blocker_codes: ['coverage_missing'], suggested_tools: [], route: 'blocked', suggested_ticket: null, external_system: null };
+  const crm = { company_name: 'Synthetic Company', link_status: { hubspot_company_id: null, hubspot_id_source: null, hubspot_id_verified_at: null, status: 'unresolved' } };
+  const seen: string[] = [];
+  const bindings = schemas.map((schema, index): BoundConnector => {
+    const endpoint = index ? 'crm' : 'knowledge', id = `synthetic-${endpoint}`;
+    mongoosePublishCatalogue(id, [schema]);
+    return { connector: 'mongoose', policy: { ...policy, toolNames: [schema.name], endpoint: { ...policy.endpoint, id, resource: `mongoose:${endpoint}` } }, reader: { call: async (tool, args) => {
+      seen.push(tool); if (index) assert.equal(args.ref, 'synthetic-company');
+      return { state: 'completed', decodedResult: index ? crm : coverage } as unknown as ConnectorEvidence;
+    } } };
+  });
+  const definitions = configuredCompanyTools(bindings); assert.ok(definitions.some(item => item.name === 'check_data_capability')); assert.ok(definitions.some(item => item.name === 'get_company'));
+  const execute = connectorExecutor(bindings);
+  assert.deepEqual(JSON.parse((await execute('check_data_capability', { company_name: 'Synthetic Company' }, new AbortController().signal)).text), coverage);
+  assert.deepEqual(JSON.parse((await execute('get_company', { ref: 'synthetic-company' }, new AbortController().signal)).text), crm);
+  assert.deepEqual(seen, ['check_data_capability', 'get_company']);
+});

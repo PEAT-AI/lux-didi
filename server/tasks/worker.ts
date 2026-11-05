@@ -102,7 +102,14 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
       return { status: 'incomplete', text: answer.text.trim() || incomplete().text, findings, failures, receipts, ...(answer.exact ? { exact: answer.exact } : {}) };
-    } catch (error) { inferenceFailed(error, 'final'); return options.signal.aborted ? finish() : incomplete(); }
+    } catch (error) {
+      if (options.signal.aborted && !expired) {
+        hostLogEvent({ event: 'task_inference_superseded', taskId: options.identity.task_id,
+          revision: options.identity.task_revision, stage: 'final', elapsed_ms: Math.max(0, clock.now() - start) });
+        return finish();
+      }
+      inferenceFailed(error, 'final'); return options.signal.aborted ? finish() : incomplete();
+    }
     finally { clear(); options.signal.removeEventListener('abort', cancel); }
   }
   async function readBounded(body: (signal: AbortSignal) => Promise<ToolResult>): Promise<ToolResult> {

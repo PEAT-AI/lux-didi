@@ -30,11 +30,11 @@ export function extractExact(content: string): string[] {
   return [...new Set(patterns.flatMap(pattern => [...content.matchAll(pattern)].map(match => match[0].trim())))];
 }
 export function resultCommentary(answer: CommentaryAnswer): Commentary {
-  const noAction = answer.status === 'no_action';
+  const noAction = !answer.failure && (answer.status === 'no_action' || !answer.text.trim());
   const failed = answer.findings.find(finding => finding.status === 'failed');
   const failure = answer.failure;
   return {
-    kind: noAction ? 'no_action' : answer.status === 'incomplete' ? (answer.text.trim() ? 'partial' : 'failure') : 'result',
+    kind: answer.failure ? 'failure' : noAction ? 'no_action' : answer.status === 'incomplete' ? 'partial' : 'result',
     exact: noAction ? [] : answer.exact ?? extractExact(answer.text),
     content: noAction ? '' : answer.text,
     cause: noAction ? '' : failure?.reason_code ?? answer.failures?.[0]?.reason_code ?? failed?.reason_code ?? '',
@@ -141,14 +141,14 @@ export class TaskDelivery implements Delivery {
     this.#binding = binding; this.#delegated = identity; const pending = this.#current(); if (pending) pending.requiresDelegation = false; this.#resume();
   }
   progress(_identity: RevisionIdentity): void {}
-  deliver(identity: RevisionIdentity, answer: WorkerResult, requiresDelegation = false): void {
+  deliver(identity: RevisionIdentity, answer: CommentaryAnswer, requiresDelegation = false): void {
     if (!this.ports.isCurrent(identity) || answer.status === 'cancelled') return;
     const pending = this.#current();
     if (pending && pending.identity.task_id === identity.task_id && pending.identity.task_revision === identity.task_revision) return;
-    const noLookup = answer.status === 'no_action' || !answer.text.trim();
+    const noLookup = !answer.failure && (answer.status === 'no_action' || !answer.text.trim());
     const chunks = commentaryItems(resultCommentary(answer));
     this.#said = { text: answer.text, accepted: 0, total: chunks.length };
-    this.#pending = { identity, answer, chunks, chunk: 0, attempt: 0, started: false, blocked: false, requiresDelegation: (requiresDelegation || noLookup) && !(this.#delegated && this.ports.isCurrent(this.#delegated)) };
+    this.#pending = { identity, answer, chunks, chunk: 0, attempt: 0, started: false, blocked: false, requiresDelegation: !answer.failure && (requiresDelegation || noLookup) && !(this.#delegated && this.ports.isCurrent(this.#delegated)) };
     this.#drain();
   }
   activity(input: { outputQuiet: boolean; ownerSpeaking: boolean }): void {

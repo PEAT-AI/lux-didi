@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../runtime/store.js';
+import { hostTaskFactory } from '../tasks/host.js';
+import { FakeDelivery } from '../tasks/controller.js';
+import { resolveTaskModels } from '../config/tasks.js';
 import { connectorExecutor } from '../tasks/connectors.js';
 import type { BoundConnector } from '../tasks/connectors.js';
 import type { ConnectorEvidence } from '../connectors/index.js';
@@ -200,10 +207,32 @@ test('F1 real projected follow-up retains all admitted native pages', async () =
   assert.match(result.text, /Admitted follow-up one/); assert.match(result.text, /Admitted follow-up two/); assert.equal(result.next_cursor, null); assert.equal(result.references.length, 2);
 });
 
-test('a company CRM ask with no available CRM binding names its endpoint and sign-in repair', async () => {
-  const result = await connectorExecutor([])('get_company', { company: 'synthetic' }, new AbortController().signal);
-  const text = JSON.stringify(result);
-  assert.match(text, /not_configured/);
-  assert.match(text, /Mongoose CRM endpoint is unavailable/);
-  assert.match(text, /Sign-in is needed for that endpoint in Settings/);
+test('a configured failing CRM endpoint remains reachable through the host registry and task runtime', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'task-company-missing-crm-'));
+  const store = new Store(directory);
+  let crmReads = 0;
+  const healthy: BoundConnector[] = [
+    { connector: 'mongoose', policy, reader: { call: async () => ({ state: 'completed', decodedResult: { outcome: 'no_match', items: [] } }) as ConnectorEvidence } },
+    dataBinding([job('completed')], []),
+  ];
+  // This configured endpoint failed credential refresh before publishing its catalogue.
+  const crm: BoundConnector = { connector: 'mongoose', policy: { ...policy, connectionId: 'configured-failing-crm', toolNames: ['get_company'], endpoint: { ...policy.endpoint, id: 'configured-failing-crm', resource: 'mongoose:crm' } },
+    reader: { call: async () => { crmReads++; return { state: 'unavailable', reason: 'credential-refresh-failed' } as ConnectorEvidence; } },
+  };
+  const create = (bindings: readonly BoundConnector[]) => hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => bindings, timeZone: 'UTC',
+    infer: async () => ({ text: '', calls: [], no_action: true }), effectCheck: async () => true,
+  })('synthetic-company', new FakeDelivery());
+  const runtime = create([...healthy, crm]);
+  const unconfigured = create(healthy);
+  t.after(() => { runtime.close(); unconfigured.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  assert.equal(unconfigured.registry.has('get_company'), false, 'an endpoint not configured at all stays absent');
+  assert.equal(runtime.registry.has('ask_data_agent'), true, 'the connected data endpoint remains available');
+  assert.equal(runtime.registry.has('search_company'), true, 'the connected knowledge endpoint remains available');
+  assert.equal(runtime.registry.has('get_company'), true, 'configured CRM must expose its repair through the actual registry');
+  const revision = runtime.begin('Look up Synthetic Company in CRM', 1, 1);
+  const result = await runtime.runTool('get_company', {}, { ...revision.identity, operation_id: 'synthetic-crm-repair' }, new AbortController().signal);
+  assert.match(JSON.stringify(result), /not_configured/);
+  assert.match(JSON.stringify(result), /CRM endpoint/);
+  assert.match(JSON.stringify(result), /[Ss]ign-in/);
+  assert.equal(crmReads, 0, 'a catalogue-less endpoint returns its repair without dispatching a CRM request');
 });

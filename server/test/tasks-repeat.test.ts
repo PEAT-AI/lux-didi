@@ -129,7 +129,7 @@ test('verified status names the last task failures with their closed codes', asy
   assert.deepEqual(verified(captured, 2)['last_task'], { status: 'complete', failed_tools: [{ tool: 'chat_attention', code: 'unavailable' }] });
 });
 
-test('the helper carries the people section and never the owner lore', async t => {
+test('the helper carries people and owner-authorized lore', async t => {
   const { installPeople, parsePeople } = await import('../people/index.js');
   const { workerInstructions, WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   t.after(() => installPeople(null));

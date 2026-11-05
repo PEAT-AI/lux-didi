@@ -112,7 +112,7 @@ const allowedHeaders = new Set(['accept', 'content-type', 'mcp-session-id', 'mcp
 
 /** All HTTP egress passes this supported SDK fetch seam; native Host, no global patch. */
 function guardedFetch(session: Session, options: McpAdapterOptions, budgets: McpBudgets, onFatal: () => void,
-  onCredentialRefusal: (endpointId: string, code: string) => void): typeof fetch {
+  onCredentialRefusal: (endpointId: string, code: string, error: unknown) => void): typeof fetch {
   return async (input, init) => {
     const request = new Request(input, init);
     const config = options.registry.endpoint(session.config.id);
@@ -136,7 +136,7 @@ function guardedFetch(session: Session, options: McpAdapterOptions, budgets: Mcp
       // as an unclassified fetch error and the endpoint would report an unknown transport failure.
       const token = await bounded(options.resolveCredential(config.credentialRef), signal).catch((error: unknown) => {
         const code = (error as { code?: unknown })?.code;
-        if (typeof code === 'string' && /^credential-[a-z-]{1,40}$/.test(code)) { onCredentialRefusal(session.config.id, code); throw new PolicyError(code, { cause: error }); }
+        if (typeof code === 'string' && /^credential-[a-z-]{1,40}$/.test(code)) { onCredentialRefusal(session.config.id, code, error); throw new PolicyError(code, { cause: error }); }
         throw error;
       });
       if (!token || /[\r\n]/.test(token)) throw new PolicyError('credential-unavailable');
@@ -308,7 +308,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
   const suspended = new Set<string>(); const waiters = new Map<string, Set<() => void>>();
   // #502: the credential seam's closed refusal, kept so the connect/discovery classification can name
   // it after the SDK has wrapped the fetch error into an unclassified one.
-  const credentialRefusals = new Map<string, string>();
+  const credentialRefusals = new Map<string, { code: string; class: string; httpStatus?: number }>();
   const schemaValidator = new AjvJsonSchemaValidator();
   let closed = false;
   function suspend(id: string): void {
@@ -372,7 +372,10 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
       };
       transport = stdio;
     } else {
-      transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id), (endpointId, code) => credentialRefusals.set(endpointId, code)), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
+      transport = new StreamableHTTPClientTransport(new URL(config.url), { fetch: guardedFetch(session, options, budgets, () => suspend(config.id), (endpointId, code, error) => {
+        const httpStatus = discoveryExceptionStatus(error);
+        credentialRefusals.set(endpointId, { code, class: discoveryExceptionClass(error), ...(httpStatus !== undefined ? { httpStatus } : {}) });
+      }), redirectPolicy: 'follow', reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 } });
     }
     sessions.set(config.id, session);
     const connectMs = isStdioEndpoint(config) ? stdioConnect : httpConnect;
@@ -453,7 +456,7 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
         const className = credential !== undefined ? 'CredentialError'
           : error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown';
         const localCodes = ['discovery-invalidated', 'source-egress-not-approved', 'invalid-endpoint-config', 'unknown-endpoint'];
-        if (credential !== undefined) return { state: 'unavailable', reason: credential, exception: { class: 'CredentialError', code: credential } };
+        if (credential !== undefined) return { state: 'unavailable', reason: credential.code, exception: credential };
         if (error instanceof ConnectorStartFailure) return { state: 'unavailable', reason: 'connector-unavailable', exception: { class: error.className, code: error.code } };
         if ((error instanceof PolicyError && error.reason === 'timeout-or-cancelled')
             || (error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout)

@@ -199,7 +199,7 @@ test('provider failure persists closed metadata and logs incomplete, never compl
     assert.ok(events.some(event => event.phase === 'incomplete')); assert.ok(!events.some(event => event.phase === 'complete'));
     const row = store.transaction(tx => tx.get('SELECT failure FROM tasks WHERE task_id=?', [revision.identity.task_id]));
     assert.deepEqual(JSON.parse(String(row?.failure)), { stage: 'inference', reason_code: 'provider_rejected' });
-    const status = JSON.parse(runtime.verifiedStatus(runtime.controller.identity()!));
+    const status = JSON.parse(runtime.verifiedStatus(revision.identity));
     assert.equal(status.last_task.failure.reason_code, 'provider_rejected');
     runtime.close();
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }

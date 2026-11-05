@@ -73,6 +73,14 @@ test('read_mail reports a source that cut its inline body as partial, never as a
   assert.match(result.text, /The mooring plan is ready\./);
 });
 
+test('a source cut never rewrites a failed continuation into partial', () => {
+  const foreign = `v1:${'a'.repeat(64)}:0`;
+  const raw = { content: [{ type: 'text', text: JSON.stringify({ data: { id: 'synthetic-m1', threadId: 'synthetic-t1', format: 'full', headers: SENDER, body: 'The mooring plan is ready.', bodyCoverage: { complete: false } } }) }] };
+  const result = projectTaskPayload('read_mail', raw, { id: 'synthetic-m1', cursor: foreign });
+  assert.equal(result.status, 'failed', 'a stale or foreign cursor stays failed, never a partial page');
+  assert.equal(result.text, '');
+});
+
 test('read_mail reports a bodyless message as failed, never as a successful read', () => {
   const result = projectTaskPayload('read_mail', decodedRead(SENDER), { id: 'synthetic-m1' });
   assert.notEqual(result.status, 'ok');

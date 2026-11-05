@@ -23,7 +23,7 @@ export class TaskRuntime {
   bindCurrent(check: () => boolean): void { this.#isCurrent = check; }
   readonly #toolsUsed = new Set<string>();
   /** Closed failure codes per task, so the helper can name what failed and why. */
-  readonly #failures = new Map<string, { tool: string; code: string }[]>();
+  readonly #taskFailures = new Map<string, { tool: string; code: string }[]>();
   #lastTask: { status: string; failed_tools: { tool: string; code: string }[] } | undefined;
   usedTool(identity: RevisionIdentity): boolean { return this.#toolsUsed.has(identity.task_id); }
   readonly #contexts = new Map<string, { exposures: Set<Exposure>; urls: Set<string> }>();
@@ -100,9 +100,9 @@ export class TaskRuntime {
     this.options.store.saveTaskOperation({ ...operation, tool, effect, state, args, result: output });
     if (output) this.#capture(operation.task_id, output, this.registry.get(tool));
     if (output?.status === 'failed') {
-      const failures = this.#failures.get(operation.task_id) ?? [];
+      const failures = this.#taskFailures.get(operation.task_id) ?? [];
       failures.push({ tool, code: output.failure_category ?? 'upstream_error' });
-      this.#failures.set(operation.task_id, failures.slice(-8));
+      this.#taskFailures.set(operation.task_id, failures.slice(-8));
     }
     if (output?.receipt) this.controller.recordReceipt(output);
   }
@@ -110,7 +110,7 @@ export class TaskRuntime {
     this.#failures = answer.failures ?? [];
     answer = { ...answer, text: redactSecrets(answer.text), findings: answer.findings.map(result => redactTaskResult(result, 'task_answer')),
       ...(answer.receipts ? { receipts: answer.receipts.map(result => redactTaskResult(result, 'task_answer')) } : {}) };
-    this.#lastTask = { status: answer.status, failed_tools: [...(this.#failures.get(identity.task_id) ?? [])] };
+    this.#lastTask = { status: answer.status, failed_tools: [...(this.#taskFailures.get(identity.task_id) ?? [])] };
     if (this.controller.isCurrent(identity)) {
       this.options.store.finishTask(identity, answer.status, answer);
       this.controller.complete(identity, answer);

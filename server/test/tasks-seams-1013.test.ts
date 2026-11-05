@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createModelPort } from '../tasks/model.js';
 import { runWorker } from '../tasks/worker.js';
 import { TaskDelivery } from '../tasks/delivery.js';
-import type { TaskTool } from '../tasks/worker.js';
+import type { TaskTool } from '../tasks/tools.js';
 import { commentaryPart } from './commentary-test.js';
 
 // W2 parses the model's JSON answer into Inference.exact; W3 renders WorkerResult.exact into the

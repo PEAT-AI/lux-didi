@@ -211,8 +211,11 @@ test('a configured failing CRM endpoint remains reachable through the host regis
   const directory = mkdtempSync(join(tmpdir(), 'task-company-missing-crm-'));
   const store = new Store(directory);
   let crmReads = 0;
+  mongoosePublishCatalogue('connected-knowledge', [{ name: 'search', description: 'Search synthetic company knowledge.', inputSchema: {
+    type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string' } }, required: ['query'], additionalProperties: false,
+  } }]);
   const healthy: BoundConnector[] = [
-    { connector: 'mongoose', policy, reader: { call: async () => ({ state: 'completed', decodedResult: { outcome: 'no_match', items: [] } }) as ConnectorEvidence } },
+    { connector: 'mongoose', policy: { ...policy, connectionId: 'connected-knowledge', endpoint: { ...policy.endpoint, id: 'connected-knowledge' } }, reader: { call: async () => ({ state: 'completed', decodedResult: { outcome: 'no_match', items: [] } }) as ConnectorEvidence } },
     dataBinding([job('completed')], []),
   ];
   // This configured endpoint failed credential refresh before publishing its catalogue.
@@ -230,6 +233,11 @@ test('a configured failing CRM endpoint remains reachable through the host regis
   assert.equal(runtime.registry.has('search_company'), true, 'the connected knowledge endpoint remains available');
   assert.equal(runtime.registry.has('get_company'), true, 'configured CRM must expose its repair through the actual registry');
   const revision = runtime.begin('Look up Synthetic Company in CRM', 1, 1);
+  const signal = new AbortController().signal;
+  const knowledge = await runtime.runTool('search_company', { query: 'Synthetic Company', mode: 'answer' }, { ...revision.identity, operation_id: 'synthetic-knowledge-read' }, signal);
+  assert.equal(knowledge.status, 'no_match', 'the connected knowledge endpoint still completes a native read');
+  const data = await runtime.runTool('ask_data_agent', { question: 'Synthetic business question' }, { ...revision.identity, operation_id: 'synthetic-data-read' }, signal);
+  assert.equal(data.status, 'ok', 'the connected data endpoint still completes a native read');
   const result = await runtime.runTool('get_company', {}, { ...revision.identity, operation_id: 'synthetic-crm-repair' }, new AbortController().signal);
   assert.match(JSON.stringify(result), /not_configured/);
   assert.match(JSON.stringify(result), /CRM endpoint/);

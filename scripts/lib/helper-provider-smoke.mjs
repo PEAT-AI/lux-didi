@@ -2,13 +2,14 @@
 // One real helper request through the packaged model port, so a schema the provider refuses can never
 // ship. The FULL declared set of this build is sent with the real worker role and the real provider
 // key: the static declarations plus the company tools of every configured endpoint, built from the
-// installed discovery read-only, which today the product does not keep: see the note at --capture. Nothing here resolves a sign-in material, performs an OAuth
+// declarations the host persisted at its last live discovery (W9) and, only when it kept none, from the
+// committed capture with its WARN line. Nothing here resolves a sign-in material, performs an OAuth
 // refresh, or connects a connector; connector liveness is scripts/check-installed-connectors.sh's job.
 //
 // Usage: node scripts/lib/helper-provider-smoke.mjs --data-dir DIR --module-dir DIR [--capture FILE]
 //
-//   --capture FILE  an authorised catalogue of the published company declarations. There is no default:
-//                   see the note above.
+//   --capture FILE  the fallback catalogue of company declarations, used only when the store keeps no
+//                   record: the run then prints its WARN line.
 //
 //   exit 0  PASS: the provider answered `completed`, named a registered tool, and the observed registry
 //           equals the expected one (static declarations plus every cached company definition)
@@ -30,10 +31,9 @@ const CAP_OUTPUT_TOKENS = 256;
 const BODY_LIMIT = 2048;
 const REQUEST_TIMEOUT_MS = 60000;
 const INSTALLED_SETTINGS = 'Library/Application Support/ai.peat.lux-didi-operator/settings.json';
-// W1-R7: the product keeps no offline cache of published company declarations
-// (tool_connections.policy_json carries toolNames and schemaDigest only), so for 10.13 the committed
-// capture is the source of the company declarations. Every run names the file and its capture date and
-// claims no live-discovery parity; persisting the discovered declarations in the store is wave-2.
+// W9: the host keeps the declarations it published at its last live discovery, one row per configured
+// company endpoint in <dataDir>/state.sqlite. Every run names its source: the store with the discovery
+// time, else the committed capture with the WARN line that claims no live-discovery parity.
 const CAPTURE = fileURLToPath(new URL('../../server/test/fixtures/mongoose-tools-list-literal.json', import.meta.url));
 
 
@@ -60,6 +60,46 @@ export function captureStamp(capturePath) {
   } catch {
     return { path: capturePath, captured: 'unknown' };
   }
+}
+
+/**
+ * The persisted discovery record, keyed by endpoint resource name. Declarations arrived from the host's
+ * `runtime/store` accessor, one row per endpoint: `{ endpointId, resource, discoveredAt, schemaDigest,
+ * declarations }`, where `declarations` is a JSON array of `{ name, description, parameters }`.
+ */
+export function storeCatalogue(rows) {
+  const catalogues = {};
+  let discoveredAt = 0;
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const name = String(row?.resource ?? '').replace(/^mongoose:/, '');
+    if (!name) continue;
+    let declarations;
+    try { declarations = JSON.parse(String(row?.declarations ?? '[]')); } catch { continue; }
+    if (!Array.isArray(declarations) || !declarations.length) continue;
+    catalogues[name] = declarations
+      .filter(entry => entry && typeof entry.name === 'string' && entry.name !== '')
+      .map(entry => ({ name: entry.name, description: entry.description, inputSchema: entry.parameters ?? {} }));
+    discoveredAt = Math.max(discoveredAt, Number(row?.discoveredAt ?? 0));
+  }
+  return { catalogues, discoveredAt };
+}
+
+/**
+ * Where the company declarations come from: the host's own record when it kept one, else the committed
+ * capture, whose line is a WARN because it claims no live-discovery parity. The two are never mixed, so
+ * a configured endpoint missing from the record fails closed instead of passing on a stale capture.
+ */
+export function declarationSource({ record, capture, stamp }) {
+  const stored = record?.catalogues ?? {};
+  if (record && record.discoveredAt && Object.keys(stored).length) {
+    const discovered = new Date(record.discoveredAt).toISOString();
+    return { kind: 'store', catalogues: stored, line: `HELPER-PROVIDER source=store discovered_at=${discovered} endpoints=${Object.keys(stored).length}` };
+  }
+  return {
+    kind: 'capture',
+    catalogues: capture ?? {},
+    line: `HELPER-PROVIDER WARN source=capture file=${stamp?.path || 'absent'} captured=${stamp?.captured ?? 'unknown'} live-parity=not-claimed`,
+  };
 }
 
 /** The operator-selected config dir the installed app uses, else a provider-config inside the data dir. */
@@ -108,7 +148,8 @@ export function companyPlan({ endpoints, catalogues, credentials, ports, mcp }) 
   for (const binding of bindings) {
     const name = String(binding.policy.endpoint.resource).replace(/^mongoose:/, '');
     mcp.mongoosePublishCatalogue(binding.policy.endpoint.id, catalogues[name].map(tool => ({
-      name: String(tool.name), description: `Cached discovery of ${String(tool.name)}.`, inputSchema: tool.inputSchema,
+      name: String(tool.name), inputSchema: tool.inputSchema,
+      description: typeof tool.description === 'string' && tool.description.trim() !== '' ? tool.description : `Cached discovery of ${String(tool.name)}.`,
     })));
   }
   // A configured endpoint counts as published only when its own cached declarations produce a tool.
@@ -141,8 +182,6 @@ function redacted(text) {
 async function main(argv) {
   const options = parseArgs(argv);
   const stamp = captureStamp(options.capture);
-  // Every run says where the company declarations came from and how old they are (W1-R7).
-  process.stdout.write(`HELPER-PROVIDER WARN source=committed-capture path=${stamp.path || 'absent'} captured=${stamp.captured} live-parity=not-claimed\n`);
   const dataDir = resolve(options.dataDir);
   const sourceDir = configuredDir(dataDir);
   if (!sourceDir) {
@@ -158,6 +197,7 @@ async function main(argv) {
   const { configuredCompanyTools } = await load('tasks/connectors');
   const { createModelPort } = await load('tasks/model');
   const { mongoosePublishCatalogue } = await load('connectors/mongoose');
+  const { readPublishedCatalogues } = await load('runtime/store');
 
   const role = loadTaskModels(sourceDir).worker;
   if ((role.provider ?? 'openai') !== 'openai') {
@@ -165,8 +205,15 @@ async function main(argv) {
     return 3;
   }
 
+  // W9: the host's own record first, so the paid request proves the set the app really sends; the
+  // committed capture only stands in when the host kept none, and then the run says WARN.
+  const capture = options.capture && existsSync(options.capture) ? JSON.parse(readFileSync(options.capture, 'utf8')) : {};
+  const source = declarationSource({
+    record: storeCatalogue(readPublishedCatalogues(join(dataDir, 'state.sqlite'))), capture, stamp,
+  });
+  process.stdout.write(`${source.line}\n`);
   const endpoints = configuredCompanyEndpoints(sourceDir);
-  const catalogues = options.capture && existsSync(options.capture) ? JSON.parse(readFileSync(options.capture, 'utf8')) : {};
+  const catalogues = source.catalogues;
   const ports = { authority: { authorize: async () => { throw new Error('helper-provider-smoke executes no tool'); } }, execute: async () => { throw new Error('helper-provider-smoke executes no tool'); } };
   const plan = companyPlan({ endpoints: endpoints.map(endpoint => endpoint.name), catalogues, credentials: credentialsFor(sourceDir), ports, mcp: { mongoosePublishCatalogue, configuredCompanyTools } });
   const staticOnly = createRegistry(ports);
@@ -178,7 +225,7 @@ async function main(argv) {
   if (plan.missing.length) {
     process.stderr.write(`HELPER-PROVIDER FAIL reason=discovery_missing expected=${expected} observed=${tools.length} configured=${endpoints.length} seconds=${seconds()}\n`);
     for (const name of plan.missing) process.stderr.write(`HELPER-PROVIDER FAIL endpoint=${name} reason=discovery_missing cache=${options.capture || 'absent'}\n`);
-    process.stderr.write('HELPER-PROVIDER FAIL the host keeps no offline cache of published company declarations (tool_connections.policy_json carries toolNames and schemaDigest only), so no installed discovery exists to read\n');
+    process.stderr.write('HELPER-PROVIDER FAIL no persisted discovery covers this endpoint: the host keeps the declarations it published at its last live connect, and the fallback capture carries none\n');
     return 2;
   }
   const refusal = providerShapeRefusal({ expectedEndpoints: endpoints.length, published: plan.publishedEndpoints, company: plan.definitions.length, tools: tools.length, static: staticOnly.size });

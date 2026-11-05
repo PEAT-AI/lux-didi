@@ -4,7 +4,8 @@
 # An installed check answers one question the build could not: is the release that just landed on this
 # machine actually working? It is a plain executable script named scripts/check-installed-*.sh, it gets
 # the installed target as its only argument, and every one of them runs even when an earlier one failed,
-# so an owner learns all of what is broken, not just the first.
+# so an owner learns all of what is broken, not just the first. scripts/check-helper-provider.sh runs
+# with them, because an installed helper the provider rejects is an install that does not answer.
 #
 # Usage: scripts/run-installed-checks.sh <installed-target> [--checks-dir DIR]
 #   --checks-dir DIR  read the checks from DIR instead of this script's own directory
@@ -32,6 +33,17 @@ for check in "$checks_dir"/check-installed-*.sh; do
     failed=$((failed + 1))
   fi
 done
+# W1 (10.13): the helper's provider contract is not an installed check. It reads the owner's provider
+# configuration rather than the installed bundle, so it is named here and its SKIP (no provider
+# configured, or a provider that does not take the OpenAI strict shape) is not a failure.
+helper_status=0
+bash "$checks_dir/check-helper-provider.sh" "$target" || helper_status=$?
+ran=$((ran + 1))
+case "$helper_status" in
+  0) printf 'INSTALLED-CHECK PASS check-helper-provider.sh\n';;
+  3) printf 'INSTALLED-CHECK SKIP check-helper-provider.sh: no provider to prove on this machine\n';;
+  *) printf 'INSTALLED-CHECK FAIL check-helper-provider.sh\n' >&2; failed=$((failed + 1));;
+esac
 if [ "$failed" -ne 0 ]; then
   printf 'INSTALLED-CHECKS FAIL ran=%d failed=%d\n' "$ran" "$failed" >&2
   exit 1

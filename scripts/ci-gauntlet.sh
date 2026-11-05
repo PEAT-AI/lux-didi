@@ -5,10 +5,11 @@
 # Usage: bash scripts/ci-gauntlet.sh [--ci] [--group <name>]
 #        bash scripts/ci-gauntlet.sh --ci --list-groups
 #
-# No flag runs all thirteen: the twelve gate checks of docs/checks.md in the order it lists
+# No flag runs all fourteen: the thirteen gate checks of docs/checks.md in the order it lists
 # them, then check-package, one at a time. --ci runs the ten that need no macOS, which is
-# exactly what .github/workflows/ci.yml runs on ubuntu; the other three need the Swift toolchain
-# or the managed-host browser lease and stay local (the reason per check is in docs/checks.md).
+# exactly what .github/workflows/ci.yml runs on ubuntu; the other four need the Swift toolchain,
+# the managed-host browser lease or the owner's provider configuration and stay local (the reason
+# per check is in docs/checks.md).
 #
 # --group <name> runs only the checks of one of the three parallel CI groups (docs/checks.md,
 # "Check inventory"). The three groups partition the ten --ci checks: every one runs in exactly
@@ -58,6 +59,7 @@ gate=(
   Tests/DidiMacTests/check-mac.sh:local
   check-host:local
   check-install-smoke
+  check-helper-provider:local
   check-package
 )
 
@@ -96,7 +98,7 @@ for entry in "${gate[@]}"; do
   check="${entry%:local}"
   [ "$check" = "$entry" ] || placement=local
   if [ "$mode" = '--ci' ] && [ "$placement" = 'local' ]; then
-    echo "== skip: $check (needs macOS, see docs/checks.md)"
+    echo "== skip: $check (runs only on this machine, see docs/checks.md)"
     continue
   fi
   if [ -n "$group" ]; then

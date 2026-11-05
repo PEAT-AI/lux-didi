@@ -305,6 +305,17 @@
         "scripts/check-live-voice.sh",
         "scripts/check-live-gateway.sh"
       ]
+    },
+    {
+      "paths": [
+        "server/tasks/tools.ts",
+        "server/test/task-tools-provider-shape.test.ts",
+        "scripts/check-helper-provider.sh",
+        "scripts/lib/helper-provider-smoke.mjs"
+      ],
+      "checks": [
+        "scripts/check-helper-provider.sh"
+      ]
     }
   ]
 }

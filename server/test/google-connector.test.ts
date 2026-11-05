@@ -443,7 +443,7 @@ test('the canonical search_mail reaches the approved Google fixture and returns 
       const disclosure = task.results[0]?.[TASK_DISCLOSURE];
       assert.equal(disclosure?.sourcePolicyRefs?.[0]?.connectionId, 'gmail', 'structured evidence keeps its approved source policy');
       assert.deepEqual(task.results[0]?.dataClasses, disclosure?.dataClasses);
-      assert.ok(disclosure?.[HOST_EVIDENCE], 'structured evidence retains the approved private disclosure');
+      assert.deepEqual(disclosure?.dataClasses, ['private'], 'structured evidence retains approved private disclosure classification');
       assert.equal(task.runtime.registry.get('search_mail')?.outside_text, true);
       let index = 1;
       const callTool = async (toolName: string, arguments0: Record<string, unknown>) => {

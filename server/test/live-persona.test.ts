@@ -1,4 +1,4 @@
-import { installPeople, type Person } from '../people/index.js';
+import { installPeople, renderPeople, type Person } from '../people/index.js';
 import { CONTEXT_BUDGET, estimatedTokens } from '../prompt/context-budget.js';
 import { MEMORY_BACKGROUND, type MemoryBlockInput } from '../prompt/memory-block.js';
 import test from 'node:test';
@@ -8,7 +8,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, 
+  NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS,
   LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS,
@@ -21,7 +21,6 @@ import type { OwnerProfileSnapshot } from '../prompt/types.js';
 /** Root-approved source guide, kept exact in the executing surfaces. */
 
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
-const BUDGET = TRUSTED_SYSTEM_CODE_UNIT_LIMIT;
 
 function writePrivate(dir: string, name: string, text: string): void {
   const path = join(dir, name);
@@ -745,7 +744,6 @@ test('S4b: the accent preset head and tail are byte-identical to the shipped voi
   assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].tail, LIVE_ACCENT_PRESETS['indian-light'].tail, 'both presets share the one tail');
 });
 
-const NOW_3U = Date.UTC(2026, 9, 20, 9, 30);
 
 test('M11: imported explicit notes carry their real local observation date', () => {
   const entries = [{ id: 'old-note', text: 'A synthetic observed state', capturedAt: M11_NOW - 3 * 86_400_000 }];
@@ -990,7 +988,6 @@ test('worker instructions append composed presentation style and private owner l
   assert.ok(result.text.length < 60000);
 });
 
-const STILL_NEGATION = /still\s+(?:not|did not|has not|hasn't|to|has to|needs to)/iu;
 
 test('M11: typed state supersession is applied before text rendering', () => {
   const old: MemoryBlockInput['items'][number] = { id: 'old', kind: 'plan', text: 'The synthetic plan is unfinished', subject: 'plan',
@@ -1026,13 +1023,24 @@ test('compiled start block replaces legacy headings and stable lore precedes run
 
 test('M11-R1: a 52,263-character legacy-shaped fixture protects recent calls and pins lore', () => {
   const fixed = 'F'.repeat(29_736);
-  const paragraphs = Array.from({ length: 18 }, (_, index) => `Lore ${index}: ${'synthetic '.repeat(55)}`);
+  const paragraphs = Array.from({ length: 18 }, (_, index) => {
+    const prefix = `Synthetic lore ${index}: `;
+    return prefix + 'L'.repeat((index === 17 ? 823 : 500) - prefix.length);
+  });
   const lore = paragraphs.join('\n\n');
-  const legacy = { fixed: fixed.length, lore: 9_357, people: 5_858, other: 52_263 - fixed.length - 9_357 - 5_858 };
-  assert.equal(Object.values(legacy).reduce((sum, value) => sum + value, 0), 52_263);
+  assert.equal(lore.length, 9_357);
   const people: Person[] = Array.from({ length: 20 }, (_, index) => ({ id: `person-${index}`, name: `Synthetic Person ${index}`,
-    aliases: [], role: 'Synthetic role', circle: 'external', project: '', tier: 1, email: [], mattermost: '', note: 'detail '.repeat(40) }));
-  installPeople({ version: 1, people, bytes: 0 });
+    aliases: [], role: 'Synthetic role', circle: 'external', project: '', tier: 1, email: [], mattermost: '', note: 'detail '.repeat(20) }));
+  const roster = { version: 1 as const, people, bytes: 0 };
+  const extra = 5_858 - renderPeople(roster, Infinity).text.length;
+  assert.ok(extra > 0);
+  people[people.length - 1] = { ...people[people.length - 1]!, note: people[people.length - 1]!.note + 'P'.repeat(extra) };
+  const rawPeople = renderPeople(roster, Infinity).text;
+  assert.equal(rawPeople.length, 5_858);
+  const legacyPrefix = [fixed, lore, rawPeople].join('\n\n');
+  const legacyRendered = `${legacyPrefix}\n\n${'V'.repeat(52_263 - legacyPrefix.length - 2)}`;
+  assert.equal(legacyRendered.length, 52_263);
+  installPeople(roster);
   try {
     const result = m11Session({ text: fixed, ownerProfile: syntheticOwner('Synthetic style', lore) });
     assert.deepEqual(result.summaryIds, ['recent-one', 'recent-two']);

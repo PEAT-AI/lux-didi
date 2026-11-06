@@ -1,10 +1,17 @@
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as persona from '../prompt/live-persona.js';
 
-const base = {};
-test('other exported persona constants remain byte-identical to base ab76c393', () => {
-  for (const [name, value] of Object.entries(base)) assert.equal((persona as unknown as Record<string, unknown>)[name], value, name);
+// Freeze the whole source outside the one allowed constant, including template constants.
+test('every other persona line is byte-identical to base ab76c393', () => {
+  const root = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('../../test/', import.meta.url));
+  const source = readFileSync(resolve(root, '../prompt/live-persona.ts'), 'utf8');
+  const unchanged = source.replace(/export const NAYA_WORK_DELIVERY = "[^\n]*";/, '');
+  assert.equal(createHash('sha256').update(unchanged).digest('hex'), '55b5199dacb52e80f99000ec36b53ae09dd153c0cbc2fc24a23ba7d90b357329');
 });
 test('delivery speaks provisional findings now, corrects plainly and stays within base budget', () => {
   const value = persona.NAYA_WORK_DELIVERY;

@@ -37,11 +37,12 @@ test('production runtime emits one sourced partial before final and rejects a du
   let step = 0;
   const reached = deferred(), final = deferred();
   const f = fixture(t, async request => {
-    if (step++ === 0) {
+    if (step++ === 0) return { text: '', calls: [{ id: 'read1', name: 'calendar_events', args: { start: '2026-11-10T00:00:00Z', end: '2026-11-11T00:00:00Z' } }] };
+    if (step === 2) {
       assert.ok(request.tools.some(tool => tool.name === 'report_progress'));
       return { text: '', calls: [progress] };
     }
-    if (step === 2) {
+    if (step === 3) {
       assert.match(JSON.stringify(request.outputs), /delivered/);
       assert.match(f.sent.map(item => item.text).join(' '), /Provisional, still checking the attendee replies:/);
       return { text: '', calls: [{ ...progress, id: 'p2' }] };
@@ -49,7 +50,7 @@ test('production runtime emits one sourced partial before final and rejects a du
     assert.match(JSON.stringify(request.outputs), /already_reported/);
     reached.resolve({ text: '', calls: [] });
     return final.promise;
-  });
+  }, async () => ({ status: 'ok', text: 'The synthetic review is Tuesday.', references: [], next_cursor: null, coverage: 'Synthetic calendar record.', repair: null }));
   const pending = f.call.input('Synthetic review question', 1);
   await reached.promise;
   // Accept every part of the progress envelope before asking for the final.
@@ -80,4 +81,76 @@ test('a superseded inference cannot report progress', async t => {
   await f.call.input('Synthetic revised ask', 1);
   old.resolve({ text: '', calls: [progress] }); await first;
   assert.doesNotMatch(f.sent.map(item => item.text).join(' '), /Provisional/);
+});
+
+// No real time passes: timers run only when the test advances this clock.
+function fakeClock() {
+  let now = 0, next = 0;
+  const timers = new Map<number, { due: number; callback: () => void }>();
+  return {
+    now: () => now,
+    timer(callback: () => void, ms: number) { const id = ++next; timers.set(id, { due: now + ms, callback }); return () => { timers.delete(id); }; },
+    advance(ms: number) {
+      now += ms;
+      for (const [id, timer] of [...timers]) if (timer.due <= now) { timers.delete(id); timer.callback(); }
+    },
+    remaining: () => [...timers.values()].map(timer => timer.due - now),
+  };
+}
+
+import { runWorker } from '../tasks/worker.js';
+import type { TaskTool } from '../tasks/tools.js';
+import { TaskDelivery } from '../tasks/delivery.js';
+const syntheticResult = (): ToolResult => ({ status: 'ok', text: 'Synthetic sourced finding.', references: [], next_cursor: null, coverage: 'Synthetic record.', repair: null });
+function reader(run: TaskTool['run']): TaskTool {
+  return { name: 'synthetic_read', description: 'Read a synthetic record', parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false }, effect: 'none', outside_text: false, run };
+}
+const identity = { task_id: 'synthetic-progress-budget', task_revision: 1, connection_generation: 1 };
+
+test('expired revision returns held findings without starting a final inference by 38 seconds', async () => {
+  const clock = fakeClock(), fifth = deferred(); let reads = 0, finals = 0, asks = 0;
+  const tool = reader(async () => {
+    if (++reads === 5) { fifth.resolve({ text: '', calls: [] }); return new Promise(() => {}); }
+    clock.advance(8000); return syntheticResult();
+  });
+  const pending = runWorker({ registry: new Map([[tool.name, tool]]), identity, input: 'Synthetic budget ask', signal: new AbortController().signal, clock,
+    infer: async request => {
+      if (!request.tools.length) { finals++; return { text: 'Wrong late compose.', calls: [] }; }
+      return { text: '', calls: [{ id: `r${++asks}`, name: tool.name, args: { id: String(asks) } }] };
+    } });
+  await fifth.promise;
+  clock.advance(4000);
+  const result = await pending;
+  assert.equal(result.status, 'incomplete'); assert.equal(result.failure?.reason_code, 'deadline');
+  assert.match(result.text, /Synthetic sourced finding/); assert.equal(finals, 0);
+  assert.ok(clock.now() <= 38000);
+});
+
+test('reads finishing at 30 seconds leave at most eight seconds for final composition', async () => {
+  const clock = fakeClock(), composing = deferred(); let asks = 0;
+  const tool = reader(async () => { clock.advance(30000); return syntheticResult(); });
+  const pending = runWorker({ registry: new Map([[tool.name, tool]]), identity, input: 'Synthetic remaining budget', signal: new AbortController().signal, clock,
+    infer: async request => {
+      if (!request.tools.length) { composing.resolve({ text: '', calls: [] }); return new Promise(() => {}); }
+      if (asks++) throw new Error('Synthetic inference failure after reads');
+      return { text: '', calls: [{ id: 'r1', name: tool.name, args: { id: '1' } }] };
+    } });
+  await composing.promise;
+  assert.ok(clock.remaining().includes(8000));
+  assert.ok(!clock.remaining().includes(24000));
+  clock.advance(8000);
+  const result = await pending;
+  assert.equal(result.status, 'incomplete'); assert.equal(result.failure?.reason_code, 'deadline');
+  assert.equal(clock.now(), 38000);
+});
+
+test('final waits behind an unaccepted progress envelope and then delivers as result', () => {
+  const sent: string[] = [];
+  const delivery = new TaskDelivery({ isCurrent: () => true, append: (_binding, text) => { sent.push(text); return `c${sent.length}`; }, state: () => {} });
+  delivery.socket(1);
+  delivery.deliver(identity, { progress: true, status: 'incomplete', text: 'Provisional, still checking replies: Tuesday [calendar].', findings: [] });
+  delivery.deliver(identity, { status: 'complete', text: 'Synthetic final adds the replies.', findings: [] });
+  assert.doesNotMatch(sent.join(' '), /Synthetic final/);
+  for (let i = 0; i < sent.length; i++) { assert.ok(i < 20); delivery.accepted(`c${i + 1}`); }
+  assert.match(sent.join(' '), /Synthetic final/); assert.match(sent.join(' '), /result/);
 });

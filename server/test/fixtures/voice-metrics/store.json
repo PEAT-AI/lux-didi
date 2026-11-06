@@ -1,0 +1,39 @@
+{
+  "note": "SYNTHETIC. Every id, time and word here is invented for scripts/didi-voice-metrics; no owner content, no real call. Times are epoch milliseconds on an invented base.",
+  "turns": [
+    { "turn_id": "a-t1", "live_session_id": "synthetic-call-a", "turn_index": 1, "origin": "owner", "opened_at": 0, "mono_ms": 0, "closed_at": 1200, "first_audible_at": null },
+    { "turn_id": "a-t2", "live_session_id": "synthetic-call-a", "turn_index": 2, "origin": "assistant", "opened_at": 1100, "mono_ms": 1100, "closed_at": 5000, "first_audible_at": 3500 },
+    { "turn_id": "b-t1", "live_session_id": "synthetic-call-b", "turn_index": 1, "origin": "owner", "opened_at": 0, "mono_ms": 0, "closed_at": 1200, "first_audible_at": null },
+    { "turn_id": "b-t2", "live_session_id": "synthetic-call-b", "turn_index": 2, "origin": "assistant", "opened_at": 1100, "mono_ms": 1100, "closed_at": 2500, "first_audible_at": 1300 },
+    { "turn_id": "b-t3", "live_session_id": "synthetic-call-b", "turn_index": 3, "origin": "owner", "opened_at": 4000, "mono_ms": 4000, "closed_at": 5600, "first_audible_at": null },
+    { "turn_id": "b-t4", "live_session_id": "synthetic-call-b", "turn_index": 4, "origin": "assistant", "opened_at": 5600, "mono_ms": 5600, "closed_at": null, "first_audible_at": null }
+  ],
+  "utterances": [
+    { "turn_id": "a-t1", "role": "owner", "at": 900, "final": 1, "text": "" },
+    { "turn_id": "a-t1", "role": "owner", "at": 1000, "final": 1, "text": "" },
+    { "turn_id": "b-t1", "role": "owner", "at": 1000, "final": 1, "text": "" },
+    { "turn_id": "b-t3", "role": "owner", "at": 5500, "final": 1, "text": "" }
+  ],
+  "playbacks": [
+    { "playback_key": "a-p1", "live_session_id": "synthetic-call-a", "source_instance_id": "synthetic-native-a", "segment_seq": 1, "turn_id": "a-t2", "received_at": 3400, "audible_at": 3500, "started_at": 3500, "drained_at": 4000, "termination_reason": "drained" },
+    { "playback_key": "a-p2", "live_session_id": "synthetic-call-a", "source_instance_id": "synthetic-native-a", "segment_seq": 2, "turn_id": "a-t2", "received_at": 9900, "audible_at": 10000, "started_at": 10000, "drained_at": 11000, "termination_reason": "drained" },
+    { "playback_key": "b-p1", "live_session_id": "synthetic-call-b", "source_instance_id": "synthetic-native-b", "segment_seq": 1, "turn_id": "b-t2", "received_at": 1200, "audible_at": 1300, "started_at": 1300, "drained_at": 2000, "termination_reason": "drained" },
+    { "playback_key": "b-p2", "live_session_id": "synthetic-call-b", "source_instance_id": "synthetic-native-b", "segment_seq": 2, "turn_id": "b-t2", "received_at": 2900, "audible_at": 3000, "started_at": 3000, "drained_at": 3500, "termination_reason": "drained" }
+  ],
+  "events": [
+    { "live_session_id": "synthetic-call-b", "turn_id": "b-t2", "kind": "progress.commentary", "source": "host", "at": 1080, "mono_ms": 1080, "received_at": 1080, "schema_version": 3, "detail": "{\"reason\":\"lookup\"}" }
+  ],
+  "tasks": [
+    { "task_id": "a-task-1", "created_at": 2000, "updated_at": 13000, "current_revision": 1, "status": "completed", "live_session_id": "synthetic-call-a" },
+    { "task_id": "b-task-1", "created_at": 1000, "updated_at": 7000, "current_revision": 1, "status": "completed", "live_session_id": "synthetic-call-b" }
+  ],
+  "revisions": [
+    { "task_id": "a-task-1", "task_revision": 1, "connection_generation": 1, "created_at": 2000 },
+    { "task_id": "b-task-1", "task_revision": 1, "connection_generation": 1, "created_at": 1000 }
+  ],
+  "deliveries": [
+    { "attempt_id": "a-attempt-1", "task_id": "a-task-1", "task_revision": 1, "connection_generation": 1, "state": "delivered", "updated_at": 8000 },
+    { "attempt_id": "b-attempt-1", "task_id": "b-task-1", "task_revision": 1, "connection_generation": 1, "state": "delivered", "updated_at": 1080 },
+    { "attempt_id": "b-attempt-2", "task_id": "b-task-1", "task_revision": 1, "connection_generation": 1, "state": "closed", "updated_at": 7000 }
+  ]
+}

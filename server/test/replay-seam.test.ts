@@ -36,8 +36,9 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
       db.prepare('INSERT INTO trace_turn VALUES(?,?,?,?,?,?)').run(turn, 'synthetic', i, 'owner', r.owner_final_at, r.first_audio_at);
       db.prepare('INSERT INTO trace_utterance VALUES(?,?,?,?,?)').run(turn, 'owner', r.owner_final_at, 1, r.owner_words);
       db.prepare('INSERT INTO tasks VALUES(?,?)').run(task, i ? 'synthetic' : null);
-      db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)').run(`op-${i}`, task, 1, i ? 'search_memory' : 'conversation_history', r.retrieval_started_at, r.retrieval_returned_at, 'committed', JSON.stringify({ records: i ? [] : [{ text: 'Synthetic kite' }] }));
+      db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)').run(`op-${i}`, task, 1, i ? 'search_memory' : 'read_memory', r.retrieval_started_at, r.retrieval_returned_at, 'committed', JSON.stringify({ records: i ? [] : [{ text: 'Synthetic kite' }] }));
       db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)').run(`unrelated-revision-${i}`, task, 2, 'search_memory', 1, 2, 'committed', '{}');
+      db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)').run(`historical-${i}`, task, 1, 'conversation_history', 1, 2, 'committed', '{"records":[]}');
       return [
         { event: 'task_lifecycle', phase: 'start', revision: 1, liveSessionId: 'synthetic', turnId: turn, taskId: task, timestamp: new Date(r.helper_started_at).toISOString() },
         { event: 'task_delivery', state: 'accepted', revision: 1, liveSessionId: 'synthetic', taskId: task, timestamp: new Date(i ? 2300 : 1700).toISOString() },
@@ -56,7 +57,8 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
     assert.deepEqual(output.rows.map((r: any) => r.timing), ['late', 'early']);
     assert.equal(output.rows[0].response_create_at, 'missing:response_create_at');
     assert.deepEqual(output.rows.map((r: any) => r.retrievals[0].result), ['found', 'empty']);
-    assert.deepEqual(output.rows.map((r: any) => r.retrievals.length), [1, 1], 'another revision must never be attributed to this turn');
+    assert.deepEqual(output.rows.map((r: any) => r.retrievals.length), [1, 1], 'neither another revision nor historical conversation_history defines the current-helper seam');
+    assert.deepEqual(output.rows.map((r: any) => r.historical_history_operations.length), [1, 1]);
     assert.deepEqual(output.rows.map((r: any) => r.owner_final_to_first_audio_ms), [500, 500]);
     assert.deepEqual(output.rows.map((r: any) => r.helper_start_to_first_commentary_ms), [600, 200]);
     assert.deepEqual(output.rows.map((r: any) => r.audio_preceded_first_commentary), [true, false]);

@@ -17,14 +17,14 @@ assert.equal(prompt.NAYA_WORK_DELIVERY, approved.NAYA_WORK_DELIVERY);
 assert.equal(WORKER_INSTRUCTIONS, approved.WORKER_INSTRUCTIONS);
 assert.equal(EVIDENCE_SOURCES_GUIDE, approved['Text evidence guide']);
 assert.equal(workerInstructions(), approved.WORKER_INSTRUCTIONS);
-assert.ok(WORKER_INSTRUCTIONS.length === 7206);
+assert.ok(WORKER_INSTRUCTIONS.length === 7554);
 for (const name of ['NAYA_VOICE_TOOLS', 'NAYA_TOOLS', 'NAYA_BACKEND_PROCEDURE']) {
   assert.equal(prompt[name], undefined, `the retired export stays removed: ${name}`);
 }
 
 // The old waiting cue is absent; the new policy owns silence and fresh acknowledgement.
-assert.equal(prompt.NAYA_WORK_DELIVERY.split('After a hand-off stay quiet until word comes, and word always comes.').length - 1, 1);
-assert.equal(prompt.NAYA_WORK_DELIVERY.split('A hand-off usually needs no words. When you do speak in it, say only what is true then').length - 1, 1);
+assert.equal(prompt.NAYA_WORK_DELIVERY.split("Say provisional or local recall findings now with limits; don't wait.").length - 1, 1);
+assert.equal(prompt.NAYA_WORK_DELIVERY.split('Acknowledge each ask at once, briefly naming points').length - 1, 1);
 for (const banned of ['Silence while you look something up is fine.', 'never go silent', 'say one short line',
   'Nothing has been sent or booked', 'Before an actual lookup', 'offer to keep looking', 'You can reach his']) {
   assert.equal((prompt.NAYA_CHARACTER + prompt.NAYA_WORK_DELIVERY + WORKER_INSTRUCTIONS).includes(banned), false,
@@ -123,7 +123,7 @@ console.log(JSON.stringify({ case: 'excluded_character_release_subset', excluded
 
 // Typed commentary is data: exact entities survive, phrasing belongs to the voice.
 for (const rule of ['Reproduce every exact entity verbatim', 'Everything else is in your own voice',
-  'Collect every part through final:true before speaking', 'no rounding, dropping or rephrasing',
+  'On confirmation add at most one clause or nothing', 'no rounding, dropping or rephrasing',
   'A no_action means answer from this conversation and your own mind', 'A failure means say the cause and next step',
   'Continue exactly where the conversation was']) assert.ok(prompt.NAYA_WORK_DELIVERY.includes(rule), rule);
 for (const gone of ['A finished result is already written', 'Say it completely and in order',

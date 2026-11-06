@@ -38,7 +38,7 @@ test('live_instruction_sizes keeps a closed section schema of counts only', () =
   assert.equal(safeEvent({ ...SIZE, total: 1.5 }), undefined, 'a non-integer total is refused');
   assert.equal(safeEvent({ ...SIZE, total: -1 }), undefined, 'a negative total is refused');
   for (const id of SECTIONS) {
-    assert.equal(!!safeEvent({ ...SIZE, total: 1, sections: { [id]: 1 } }), true, `${id} is a known section id`);
+    assert.equal(!!safeEvent({ ...SIZE, total: 1, estimatedTokens: 1, stablePrefixChars: 0, stablePrefixEstimatedTokens: 0, fixedChars: 0, fixedEstimatedTokens: 0, sections: { [id]: 1 } }), true, `${id} is a known section id`);
   }
 });
 

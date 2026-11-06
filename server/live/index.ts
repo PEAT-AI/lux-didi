@@ -18,7 +18,7 @@ import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapsh
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, zonedIso, type OpeningFacts } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, zonedIso, type OpeningFacts } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -1668,9 +1668,7 @@ export class LiveSessionOwner {
       if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
       const pickup = pickupJob ? { jobId: pickupJob.id, identity: identity({ state: pickupJob.state, result: pickupJob.result ?? null }) } : undefined;
       type MemoryRecords = ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
-      type Earlier = ReturnType<typeof buildEarlierConversationsSection>;
       let records: MemoryRecords = [];
-      let earlier: Earlier = { section: '', selectedIds: [], omitted: [] };
       // PV1: the accent selection is read at this session start, so a saved accent takes effect without a
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       const earlierOpeners = previousOpeners(tx, assistantId, this.#profile.route.dataClasses).previous;
@@ -1711,7 +1709,7 @@ export class LiveSessionOwner {
           items: admittedRecords.flatMap(record => record.memoryItem ? [record.memoryItem] : []),
           entries: admittedRecords.filter(record => !record.memoryItem).map(record => ({ id: record.id, text: record.text, ...(record.capturedAt === undefined ? {} : { capturedAt: record.capturedAt }) })),
           sources: Object.fromEntries(admittedRecords.filter(record => record.memoryItem).map(record => [record.id, record.sourceSessionIds ?? []])),
-          summaries: seededSummaries.map(summary => ({ id: summary.liveSessionId, startedAt: summary.endedAt, text: summary.summary })),
+          summaries: seededSummaries.map(summary => ({ id: summary.id, sessionId: summary.liveSessionId, startedAt: summary.endedAt, text: summary.summary })),
         },
         records: admittedRecords, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         now, timeZone,
@@ -1723,8 +1721,6 @@ export class LiveSessionOwner {
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
         const result = composeSession(this.#calendar);
-        earlier = { section: result.sections.find(section => section.id === 'memory') ? result.text : '',
-          selectedIds: result.summaryIds, omitted: [] };
         this.#sections = { persona: configuredPrompt.system, memory: [],
           summary: undefined, summaryIds: [...result.summaryIds], summaryOmitted: [], calendar: this.#calendar };
         this.#warm.adopt(this.#sections);
@@ -1734,6 +1730,8 @@ export class LiveSessionOwner {
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, estimatedTokens: composed.estimatedTokens, stablePrefixChars: composed.stablePrefixChars, stablePrefixEstimatedTokens: composed.stablePrefixEstimatedTokens, fixedChars: composed.fixedChars, fixedEstimatedTokens: composed.fixedEstimatedTokens, overTarget: composed.overTarget, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      const summaryIds = new Set(seededSummaries.map(summary => summary.id));
+      const summaryOmissions = composed.itemOmissions.filter(item => summaryIds.has(item.id));
       for (const omission of composed.itemOmissions) console.error(JSON.stringify({ event: 'live_context_item_omitted', id: omission.id, reason: omission.reason }));
       if (composed.overTarget) console.error(JSON.stringify({ event: 'live_context_target_overrun', estimatedTokens: composed.estimatedTokens, fixedEstimatedTokens: composed.fixedEstimatedTokens, sections: composed.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) }));
       // M2: what the standing section did with its own budget, once per build, including the build that
@@ -1742,7 +1740,7 @@ export class LiveSessionOwner {
         reasons: { class: summarySelection.coverage.classFiltered + records.length - admittedRecords.length,
           yield: composed.yielded.length, legacy: summarySelection.coverage.legacyUnavailable,
           source: summarySelection.coverage.sourceUnavailable,
-          budget: composed.omitted.length + earlier.omitted.length }, yielded: composed.yielded });
+          budget: composed.omitted.length + summaryOmissions.length }, yielded: composed.yielded });
       hostLogEvent({ event: 'standing_memory_selection', selected: composed.standing.selected,
         omitted: composed.standing.omitted, chars: composed.standing.chars });
       // R7: the digest's own state, so a suppressed or failed read is a line and not a silence. Metadata
@@ -1754,12 +1752,12 @@ export class LiveSessionOwner {
       hostLogEvent({ event: 'opener_facts', day: opening.facts.day.length, commitments: opening.facts.commitments.length, saved_for_him: opening.facts.saved_for_him.length, open_thread: Number(opening.facts.open_thread.length > 0), exclude_topics: opening.facts.exclude_topics.length });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
-      const injectedSummaryIds = [...new Set([...(composed.earlierConversationsIncluded ? earlier.selectedIds : []),
+      const injectedSummaryIds = [...new Set([...(composed.earlierConversationsIncluded ? composed.summaryIds : []),
         ...(composed.sections.some(section => section.id === 'opening-options') && seededSummaries[0] ? [seededSummaries[0].id] : [])])];
       const injectedOpeners = composed.sections.some(section => section.id === 'previous-openers') ? earlierOpeners : [];
       const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
       const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...admittedRecords.flatMap(record => composed.selectedIds.includes(record.id) && record.dataClass !== 'unknown' ? [record.dataClass] : [])]);
-      if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
+      if (injectedSummaryIds.length || summaryOmissions.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: summaryOmissions.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
       const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz,label FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
       // #107: a missed alarm is said once, in her own words, with its time and what it was for.
       const missedNote = missedAlarms.length ? '\n\n[missed alarm] Say each missed alarm once, early in your opening, in your own words, with its time and what it was for, like "You missed your 10:30 reminder: sport." Missed: '

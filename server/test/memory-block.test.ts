@@ -29,8 +29,8 @@ test('background block contains all parts, applies supersession and expiry befor
 
 test('already admitted summaries have no age or data-class filter and pack newest first', () => {
   const summaries = [
-    { id: 'old-call', startedAt: now - 100 * 86_400_000, text: 'An older admitted conversation' },
-    { id: 'recent-call', startedAt: now, text: 'The latest admitted conversation' },
+    { id: 'old-call', sessionId: 'old-call', startedAt: now - 100 * 86_400_000, text: 'An older admitted conversation' },
+    { id: 'recent-call', sessionId: 'recent-call', startedAt: now, text: 'The latest admitted conversation' },
   ];
   const result = compileMemoryBlock({ ...input, items: [], summaries });
   assert.ok(result.text.indexOf('[session:recent-call]') < result.text.indexOf('[session:old-call]'));
@@ -49,7 +49,7 @@ test('explicit owner authority outranks salience, duplicate facts render once, u
 });
 
 test('floor mode retains all headings and whole recent summaries without truncation', () => {
-  const summaries = Array.from({ length: 10 }, (_, index) => ({ id: `call-${index}`, startedAt: now - index, text: `${index} ${'summary '.repeat(80)}` }));
+  const summaries = Array.from({ length: 10 }, (_, index) => ({ id: `call-${index}`, sessionId: `call-${index}`, startedAt: now - index, text: `${index} ${'summary '.repeat(80)}` }));
   const result = compileMemoryBlock({ ...input, items: [], summaries, floors: true });
   assert.ok(result.text.includes('# Last conversations'));
   assert.ok(result.summaryIds.length >= 2);

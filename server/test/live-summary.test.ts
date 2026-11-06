@@ -635,7 +635,8 @@ test('an armed alarm reaches the next seed from the alarms table though the summ
       // The real start composes over a frozen accepted prompt, which carries the public base and a separator.
       const frozen = `${NAYA_LIVE_BASE}\n\n`;
       const native = composeLiveSessionInstruction({ text: frozen, tools: [], records: [], trustedChars: 60_000,
-        alarms: note, earlierConversations: guarded[0]!.summary });
+        alarms: note, memoryBlockInput: { now: SUMMARY_NOW, timeZone: 'UTC', clock: 'Synthetic clock', items: [], entries: [],
+          summaries: guarded.map(summary => ({ id: summary.id, sessionId: summary.liveSessionId, startedAt: summary.endedAt, text: summary.summary })) } });
       const bare = composeLiveSessionInstruction({ text: 'Synthetic base instruction.', tools: [], records: [], trustedChars: 4_000,
         alarms: note });
       assert.match(bare.text, /Armed alarms: \d\d:\d\d wake up for the standup/,

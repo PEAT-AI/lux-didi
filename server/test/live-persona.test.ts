@@ -37,8 +37,8 @@ const M11_NOW = Date.UTC(2026, 10, 7, 0);
 function m11Context(patch: Partial<MemoryBlockInput> = {}): MemoryBlockInput {
   return { now: M11_NOW, timeZone: 'UTC', clock: 'Sat 7 Nov 2026, 00:00 UTC', items: [], entries: [],
     summaries: [
-      { id: 'recent-one', startedAt: M11_NOW - 1000, text: 'Synthetic recent conversation one.' },
-      { id: 'recent-two', startedAt: M11_NOW - 2000, text: 'Synthetic recent conversation two.' },
+      { id: 'recent-one', sessionId: 'recent-one', startedAt: M11_NOW - 1000, text: 'Synthetic recent conversation one.' },
+      { id: 'recent-two', sessionId: 'recent-two', startedAt: M11_NOW - 2000, text: 'Synthetic recent conversation two.' },
     ], ...patch };
 }
 function m11Session(patch: Partial<Parameters<typeof composeLiveSessionInstruction>[0]> = {}) {
@@ -1004,7 +1004,7 @@ test('M11: typed state supersession is applied before text rendering', () => {
 
 test('M0-R1 intent under M11: pinned lore selection protects all admitted recent summaries', () => {
   const lore = Array.from({ length: 25 }, (_, index) => `Lore paragraph ${index}: ${'synthetic '.repeat(60)}`).join('\n\n');
-  const summaries = Array.from({ length: 3 }, (_, index) => ({ id: `admitted-${index}`, startedAt: M11_NOW - index, text: `Synthetic admitted call ${index}.` }));
+  const summaries = Array.from({ length: 3 }, (_, index) => ({ id: `admitted-${index}`, sessionId: `admitted-${index}`, startedAt: M11_NOW - index, text: `Synthetic admitted call ${index}.` }));
   const result = m11Session({ text: 'F'.repeat(29_736), ownerProfile: syntheticOwner('Synthetic style', lore), memoryBlockInput: m11Context({ summaries }) });
   assert.deepEqual(result.summaryIds, summaries.map(summary => summary.id));
   assert.ok(result.itemOmissions.some(item => item.id.startsWith('lore:')));

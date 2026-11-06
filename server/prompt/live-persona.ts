@@ -689,9 +689,10 @@ export function composeLiveSessionInstruction(input: {
   const now = input.now ?? Date.now();
   const timeZone = input.timeZone ?? 'UTC';
   const blockInput: MemoryBlockInput = input.memoryBlockInput ?? { now, timeZone,
-    clock: new Intl.DateTimeFormat('en-GB', { timeZone, dateStyle: 'full', timeStyle: 'short' }).format(now),
+    clock: input.runtimeContext?.split('\n').filter(line => /^(Now:|Days:)/u.test(line)).join('\n')
+      || new Intl.DateTimeFormat('en-GB', { timeZone, dateStyle: 'full', timeStyle: 'short' }).format(now),
     items: [], entries: input.records.map(record => ({ id: record.id, text: record.text, ...(record.capturedAt === undefined ? {} : { capturedAt: record.capturedAt }) })), summaries: [] };
-  const calendarItems: BudgetItem[] = [input.calendar, input.alarms].filter((text): text is string => Boolean(text?.trim()))
+  const calendarItems: BudgetItem[] = [input.calendar, input.alarms?.trim() ? `Armed alarms: ${input.alarms}` : undefined].filter((text): text is string => Boolean(text?.trim()))
     .flatMap(text => text.split(/\n|; /u)).filter(Boolean).map((text, index) => ({ id: `calendar:${index}`, text }));
   const snapshot = peopleSnapshot();
   const mentioned = [...blockInput.summaries.map(summary => ({ at: summary.startedAt, text: summary.text })),
@@ -741,10 +742,11 @@ export function composeLiveSessionInstruction(input: {
   const recordIds = new Set(input.records.map(record => record.id));
   return { text: rendered.text,
     selectedIds: rendered.block.selectedIds.filter(id => recordIds.has(id)),
-    omitted: rendered.block.omitted.filter(item => item.reason === 'budget').map(item => ({ id: item.id, reason: 'budget' as const })),
+    omitted: rendered.block.omitted.filter(item => recordIds.has(item.id) && item.reason === 'budget').map(item => ({ id: item.id, reason: 'budget' as const })),
     sections: rendered.sections.map(section => ({ id: section.id, chars: section.text.length, estimatedTokens: estimatedTokens(section.text) })),
     earlierConversationsIncluded: rendered.block.summaryIds.length > 0,
     summaryIds: rendered.block.summaryIds,
+    conversationChars: rendered.block.parts[3]!.chars,
     yielded: original.flatMap(section => {
       const after = rendered.sections.find(item => item.id === section.id)?.text.length ?? 0;
       return after < section.text.length ? [{ id: section.id, before: section.text.length, after }] : [];

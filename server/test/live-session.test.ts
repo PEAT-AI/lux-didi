@@ -682,7 +682,7 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   assert.deepEqual(snapshot.memory.selectedIds, ['b']);
   assert.deepEqual(snapshot.memory.omitted, [{ id: 'a', reason: 'budget' }]);
   assert.ok(!snapshot.system.includes('x'.repeat(128)));
-  assert.ok(snapshot.system.includes('"text":"Fixture overflow note"'), 'the selected record survives byte for byte');
+  assert.ok(snapshot.system.includes('Fixture overflow note'), 'the selected record survives byte for byte');
   const failed = await harness(t, { memoryFailure: true });
   assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
   assert.equal(failed.requests.length, 0);

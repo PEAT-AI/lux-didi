@@ -1,3 +1,4 @@
+import { HostLog, safeEvent } from '../host/log.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 // W-LSUM: the browser-safe Live summary for the page. The operator-only status route refuses a
@@ -133,10 +134,10 @@ test('the distiller is given the persona name this route reports, from one owner
 // on the first attempt, once the bounded budget or the age cap is spent. A permanent refusal is never retried.
 const SUMMARY_NOW = 1_700_000_000_000;
 
-function summarizerFixture(): { store: Store; cleanup: () => void } {
+function summarizerFixture(): { store: Store; dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-summary-worker-'));
   const store = new Store(dir, [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
-  return { store, cleanup: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
+  return { store, dir, cleanup: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 function seedConversation(store: Store, id: string, endedAt = SUMMARY_NOW): void {
@@ -964,8 +965,8 @@ test('M0: route admission preserves private notes, derives metadata and logs exc
           endedAt: SUMMARY_NOW - (i + 1) * 60_000, dataClass: source.dataClass, sourceRevision: source.revision, now: SUMMARY_NOW });
       });
     }
-    const events: Record<string, unknown>[] = [];
-    const detach = attachHostLogSink({ event: raw => { events.push(raw as Record<string, unknown>); } });
+    const log = new HostLog(h.dir);
+    const detach = attachHostLogSink(log);
     const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store,
       voice: { ...fake.port, capabilities: { ...fake.port.capabilities, provider } }, profile, now: () => SUMMARY_NOW, timeZone: 'UTC',
       memorySource: () => [{ id: 'private-note', text: 'SYNTHETIC PRIVATE NOTE', dataClass: 'private' }, { id: 'unknown-note', text: 'UNKNOWN NOTE', dataClass: 'unknown' }] });
@@ -978,9 +979,29 @@ test('M0: route admission preserves private notes, derives metadata and logs exc
       assert.equal(/# Memory[\s\S]*SYNTHETIC PRIVATE NOTE/u.test(frozen.system), provider === 'openai');
       for (let i = 0; i < 3; i++) assert.equal(frozen.system.includes(`[session:m0-prior-${i}]`), provider === 'openai');
       assert.deepEqual(frozen.dataClasses, provider === 'openai' ? ['ordinary', 'private', 'sensitive'] : ['ordinary']);
+      const events = readFileSync(join(h.dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
       const excluded = events.filter(event => event['event'] === 'memory_excluded');
       assert.equal(excluded.length, 1, 'idempotent create logs exclusions only once');
       assert.deepEqual(excluded[0]!['reasons'], { class: provider === 'openai' ? 1 : 5, yield: 0, legacy: 0, source: 0, budget: 0 });
     } finally { detach(); await owner.shutdown(); h.cleanup(); }
   }
+});
+
+
+test('M0: memory_excluded accepts counts and yield sizes only, rejecting content and malformed reasons', () => {
+  const event = { event: 'memory_excluded', liveSessionId: '11111111-1111-4111-8111-111111111111',
+    reasons: { class: 1, yield: 1, legacy: 2, source: 3, budget: 4 },
+    yielded: [{ id: 'owner-lore', before: 14_000, after: 12_000 }] };
+  assert.deepEqual(safeEvent(event), event);
+  for (const invalid of [
+    { ...event, text: 'SYNTHETIC NOTE CONTENT' },
+    { ...event, reasons: { ...event.reasons, class: -1 } },
+    { ...event, reasons: { ...event.reasons, source: 0.5 } },
+    { ...event, reasons: { ...event.reasons, content: 'SYNTHETIC CONTENT' } },
+    { ...event, reasons: { class: 0, yield: 1 } },
+    { ...event, reasons: { ...event.reasons, yield: 0 } },
+    { ...event, yielded: [{ id: 'memory', before: 5, after: 0 }] },
+    { ...event, yielded: [{ id: 'owner-lore', before: 5, after: 6 }] },
+    { ...event, yielded: [{ ...event.yielded[0], text: 'SYNTHETIC CONTENT' }] },
+  ]) assert.equal(safeEvent(invalid), undefined);
 });

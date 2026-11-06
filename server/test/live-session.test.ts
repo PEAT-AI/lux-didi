@@ -649,7 +649,7 @@ test('Live memory is frozen at CREATE, fresh at the next CREATE, and covered by 
   assert.equal(h.store.transaction(tx => tx.get('SELECT fingerprint FROM live_sessions WHERE live_session_id=?', [first.liveSessionId])!['fingerprint']), createHash('sha256').update(JSON.stringify({ inputClass: 'ordinary', profile: first.profileIdentity, prompt: first.promptIdentity, pickupJobId: null })).digest('hex'));
 });
 
-test('Live memory recalls ordinary entries only, including parent labels, and reports an empty selection', async t => {
+test('Live memory admits its route set from effective entry and parent labels and reports an empty selection', async t => {
   const h = await harness(t);
   const empty = h.owner.create({ idempotencyKey: 'empty-memory', inputClass: 'ordinary' }, h.ctx);
   assert.equal(accepted(h, empty.liveSessionId).memory.status, 'empty');
@@ -662,7 +662,8 @@ test('Live memory recalls ordinary entries only, including parent labels, and re
   assert.match(snapshot.system, /Fixture ordinary note/);
   for (const forbidden of ['Fixture private canary', 'Fixture sensitive canary', 'Fixture parent private canary']) assert.ok(!snapshot.system.includes(forbidden));
   assert.deepEqual(snapshot.memory.selectedIds, ['ordinary']);
-  assert.deepEqual(h.store.transaction(resolveLiveMemory).map(record => record.id), ['ordinary']);
+  assert.deepEqual(h.store.transaction(resolveLiveMemory).map(record => [record.id, record.dataClass]).sort(),
+    [['ordinary', 'ordinary'], ['private', 'private'], ['private-parent', 'private'], ['sensitive', 'sensitive']]);
   assert.deepEqual(h.owner.profileProjection().memory, { status: 'selected', selected: 1, omitted: 0 });
   assert.deepEqual(h.owner.current().memory, { status: 'selected', selected: 1, omitted: 0 });
 });

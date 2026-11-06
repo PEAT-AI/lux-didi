@@ -398,7 +398,7 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
             authorityEpoch: identity.authorityEpoch,
             revision: 1,
             allowedClasses: ['ordinary'],
-          }, { query: item.query, limit: TOP_K, from: '1970-01-01T00:00', to: new Date(cutoffMs).toISOString().slice(0, 16) });
+          }, { query: item.query, limit: TOP_K, from: new Date(0).toISOString(), to: new Date(cutoffMs).toISOString() });
           const hits = Array.isArray(result.response['hits'])
             ? (result.response['hits'] as { sessionId?: string }[]).map(hit => String(hit.sessionId ?? '')).filter(id => id !== '')
             : [];

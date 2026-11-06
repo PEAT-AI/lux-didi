@@ -1,0 +1,204 @@
+{
+  "note": "Synthetic memory-eval fixture (issue #912 part B). No private data: every name, number and address here is invented. Ten live calls, each with its own memory session, entries and (for nine of them) a distilled summary, plus twelve golden items. Two defects are planted: the live-03 summary leaks a stale landline number into the start block, and the recorded first answer for the plumber question denies before the search ran. The clean variant repairs exactly those two.",
+  "timeZone": "UTC",
+  "liveSessions": [
+    {
+      "id": "live-01",
+      "startedAt": "2026-10-20T09:00:00Z",
+      "endedAt": "2026-10-20T09:20:00Z",
+      "turns": [
+        { "id": 101, "role": "owner", "text": "Morning. I drink my coffee black, one espresso, no milk.", "at": "2026-10-20T09:04:00Z" },
+        { "id": 102, "role": "assistant", "text": "Noted: one espresso, black.", "at": "2026-10-20T09:04:20Z" }
+      ],
+      "memorySession": {
+        "id": "mem-01",
+        "title": "morning routine",
+        "entries": [
+          { "id": "e-01", "text": "Rob prefers his coffee black, one espresso, no milk.", "capturedAt": "2026-10-20T09:05:00Z" }
+        ]
+      },
+      "summary": {
+        "defect": "Rob talked through his morning routine and his coffee.",
+        "clean": "Rob talked through his morning routine and his coffee."
+      }
+    },
+    {
+      "id": "live-02",
+      "startedAt": "2026-10-22T18:00:00Z",
+      "endedAt": "2026-10-22T18:12:00Z",
+      "turns": [
+        { "id": 201, "role": "owner", "text": "The rear brake pads on the bike are gone. The shop on King Street did them last time.", "at": "2026-10-22T18:03:00Z" },
+        { "id": 202, "role": "assistant", "text": "Then it is the shop on King Street again.", "at": "2026-10-22T18:03:30Z" }
+      ],
+      "memorySession": {
+        "id": "mem-02",
+        "title": "bike",
+        "entries": [
+          { "id": "e-09", "text": "The bike shop on King Street replaced the rear brake pads.", "capturedAt": "2026-10-22T18:04:00Z" },
+          { "id": "e-12", "text": "Rob's gym is Fitness First in Clifton.", "capturedAt": "2026-10-22T18:05:00Z", "forget": true }
+        ]
+      },
+      "summary": {
+        "defect": "The owner's bike needed new rear brake pads; a shop on King Street did the work.",
+        "clean": "The owner's bike needed new rear brake pads; a shop on King Street did the work."
+      }
+    },
+    {
+      "id": "live-03",
+      "startedAt": "2026-10-24T08:00:00Z",
+      "endedAt": "2026-10-24T08:10:00Z",
+      "turns": [
+        { "id": 301, "role": "owner", "text": "Dentist on the twelfth of November at half past eight.", "at": "2026-10-24T08:02:00Z" },
+        { "id": 302, "role": "assistant", "text": "Dentist, twelfth of November, eight thirty.", "at": "2026-10-24T08:02:30Z" }
+      ],
+      "memorySession": {
+        "id": "mem-03",
+        "title": "appointments",
+        "entries": [
+          { "id": "e-02", "text": "Dentist on 12 November at 08:30.", "capturedAt": "2026-10-24T08:03:00Z" },
+          { "id": "e-03", "text": "The landline number is 555-0100.", "capturedAt": "2026-10-24T08:04:00Z", "defectOnly": true }
+        ]
+      },
+      "summary": {
+        "defect": "The owner gave his landline as 555-0100.",
+        "clean": "The owner gave his landline as 555-0199 after the old line was cut off."
+      }
+    },
+    {
+      "id": "live-04",
+      "startedAt": "2026-10-27T12:00:00Z",
+      "endedAt": "2026-10-27T12:15:00Z",
+      "turns": [
+        { "id": 401, "role": "owner", "text": "The old landline is dead. The new number is 555-0199.", "at": "2026-10-27T12:02:00Z" },
+        { "id": 402, "role": "assistant", "text": "Landline 555-0199 from today.", "at": "2026-10-27T12:02:30Z" }
+      ],
+      "memorySession": {
+        "id": "mem-04",
+        "title": "contact details",
+        "entries": [
+          { "id": "e-04", "text": "The landline number is 555-0199 as of 27 October.", "capturedAt": "2026-10-27T12:03:00Z" }
+        ]
+      },
+      "summary": {
+        "defect": "The owner corrected his landline number and asked for the old one to be dropped.",
+        "clean": "The owner corrected his landline number and asked for the old one to be dropped."
+      }
+    },
+    {
+      "id": "live-05",
+      "startedAt": "2026-10-29T17:00:00Z",
+      "endedAt": "2026-10-29T17:20:00Z",
+      "turns": [
+        { "id": 501, "role": "owner", "text": "Who was the plumber I used for the boiler?", "at": "2026-10-29T17:04:00Z" },
+        { "id": 502, "role": "assistant", "text": "Marek. He fixed the boiler on 23 October.", "at": "2026-10-29T17:04:40Z" }
+      ],
+      "memorySession": {
+        "id": "mem-05",
+        "title": "plumber",
+        "entries": [
+          { "id": "e-07", "text": "Marek the plumber fixed the boiler on 23 October.", "capturedAt": "2026-10-29T17:05:00Z" }
+        ]
+      },
+      "summary": {
+        "defect": "The plumber was Marek; he fixed the boiler on 23 October.",
+        "clean": "The plumber was Marek; he fixed the boiler on 23 October."
+      }
+    },
+    {
+      "id": "live-06",
+      "startedAt": "2026-10-30T10:00:00Z",
+      "endedAt": "2026-10-30T10:10:00Z",
+      "turns": [
+        { "id": 601, "role": "owner", "text": "When did I cancel the Lisbon lease?", "at": "2026-10-30T10:02:00Z" },
+        { "id": 602, "role": "assistant", "text": "I found nothing in the calls that says a lease was cancelled.", "at": "2026-10-30T10:02:40Z" }
+      ],
+      "memorySession": {
+        "id": "mem-06",
+        "title": "sister",
+        "entries": [
+          { "id": "e-05", "text": "Rob's sister is Anna; she lives in Porto.", "capturedAt": "2026-10-30T10:03:00Z" }
+        ]
+      },
+      "summary": {
+        "defect": "The owner asked about a lease; nothing in the calls mentions one.",
+        "clean": "The owner asked about a lease; nothing in the calls mentions one."
+      }
+    },
+    {
+      "id": "live-07",
+      "startedAt": "2026-11-01T15:00:00Z",
+      "endedAt": "2026-11-01T15:10:00Z",
+      "turns": [
+        { "id": 701, "role": "owner", "text": "The car service is booked for the third of December at ten.", "at": "2026-11-01T15:02:00Z" },
+        { "id": 702, "role": "assistant", "text": "Third of December, ten o'clock.", "at": "2026-11-01T15:02:30Z" }
+      ],
+      "memorySession": {
+        "id": "mem-07",
+        "title": "car",
+        "entries": [
+          { "id": "e-06", "text": "Car service on 3 December at 10:00.", "capturedAt": "2026-11-01T15:03:00Z" }
+        ]
+      },
+      "summary": {
+        "defect": "The owner booked the car service.",
+        "clean": "The owner booked the car service."
+      }
+    },
+    {
+      "id": "live-08",
+      "startedAt": "2026-11-02T09:00:00Z",
+      "endedAt": "2026-11-02T09:30:00Z",
+      "turns": [
+        { "id": 801, "role": "owner", "text": "Keep going from the passport conversation.", "at": "2026-11-02T09:10:00Z" },
+        { "id": 802, "role": "assistant", "text": "The passport is in the desk drawer, not the safe.", "at": "2026-11-02T09:10:30Z" }
+      ],
+      "memorySession": {
+        "id": "mem-08",
+        "title": "documents",
+        "entries": [
+          { "id": "e-11", "text": "Rob keeps his passport in the desk drawer, not the safe.", "capturedAt": "2026-11-02T09:11:00Z" }
+        ]
+      },
+      "summary": {
+        "defect": "The owner spoke about a passport kept in a desk drawer.",
+        "clean": "The owner spoke about a passport kept in a desk drawer."
+      }
+    },
+    {
+      "id": "live-09",
+      "startedAt": "2026-11-04T16:00:00Z",
+      "endedAt": "2026-11-04T16:20:00Z",
+      "turns": [
+        { "id": 901, "role": "owner", "text": "The vet said the dog has kennel cough and needs a quiet week.", "at": "2026-11-04T16:05:00Z" },
+        { "id": 902, "role": "assistant", "text": "Kennel cough, a quiet week for her.", "at": "2026-11-04T16:05:30Z" }
+      ],
+      "memorySession": {
+        "id": "mem-09",
+        "title": "the dog",
+        "entries": [
+          { "id": "e-10", "text": "The vet said the dog has kennel cough and needs a quiet week.", "capturedAt": "2026-11-04T16:06:00Z" }
+        ]
+      },
+      "summary": {
+        "defect": "The vet said the dog had kennel cough.",
+        "clean": "The vet said the dog had kennel cough."
+      }
+    },
+    {
+      "id": "live-10",
+      "startedAt": "2026-11-05T11:00:00Z",
+      "endedAt": "2026-11-05T11:10:00Z",
+      "turns": [
+        { "id": 1001, "role": "owner", "text": "Marek put his rate up to 90 a visit.", "at": "2026-11-05T11:02:00Z" },
+        { "id": 1002, "role": "assistant", "text": "Marek, 90 a visit.", "at": "2026-11-05T11:02:30Z" }
+      ],
+      "memorySession": {
+        "id": "mem-10",
+        "title": "plumber rate",
+        "entries": [
+          { "id": "e-08", "text": "Marek the plumber now charges 90 per visit.", "capturedAt": "2026-11-05T11:03:00Z" }
+        ]
+      }
+    }
+  ]
+}

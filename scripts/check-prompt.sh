@@ -59,7 +59,7 @@ for (const rule of [
   "Acknowledge each ask at once, briefly naming points; say you're looking only after hand-off, never guess the outcome.",
   "Say provisional or local recall findings now with limits; don't wait.",
   'If later word changes your answer, say what changed, the new fact and what it replaces.',
-  'On confirmation add at most one clause or nothing; give full detail when warranted.', 
+  'On confirmation add at most one clause or nothing; give full detail when warranted.',
   'Reproduce every exact entity verbatim',
   'no rounding, dropping or rephrasing',
   'Everything else is in your own voice',

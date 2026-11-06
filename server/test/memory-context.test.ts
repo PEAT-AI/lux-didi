@@ -670,10 +670,11 @@ test('M0: a fresh note wins a clipped memory budget by captured chronology, not 
 
 
 test('the resolver does not truncate active typed facts before authority and budget selection', t => {
-  const f = fixture(t);
+  const f = fixture();
+  t.after(() => f.close());
   const ids = f.store.transaction(tx => Array.from({ length: 201 }, (_, index) => insertItem(tx, {
     kind: 'durable_fact', text: `Synthetic typed fact ${index}`, subject: 'synthetic resolver corpus',
-    validFrom: 0, createdBy: 'synthetic-owner', authority: 'explicit_owner', salience: index === 200 ? 0 : 1,
+    validFrom: 0, createdAt: 0, createdBy: 'synthetic-owner', authority: 'explicit_owner', salience: index === 200 ? 0 : 1,
   }).id));
   const records = f.store.transaction(tx => resolveLiveMemory(tx)).filter(record => record.memoryItem);
   assert.equal(records.length, ids.length);

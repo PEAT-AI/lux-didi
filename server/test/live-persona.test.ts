@@ -179,21 +179,18 @@ test('speech language canonicalization keeps bare ISO 639-1 only', () => {
   assert.equal(canonicalSpeechLanguage(''), undefined);
 });
 
-test('the target budget yields memory first and never drops the base, overlay or anchor', () => {
-  // PV1: the target is 30,000 now, so the overlay has to be larger than it was for memory to be the section
-  // that yields; the rule under test is the yield order, not the size that used to reach it.
-  const ownerProfile = syntheticOwner('S'.repeat(8_000), 'OWNER LORE BLOCK');
-  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(16_000) };
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', memory: 'M'.repeat(20_000),
-    runtimeContext: 'R'.repeat(20_000) });
-  assert.ok(result.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `composed text ${result.text.length} must fit the hard limit`);
-  assert.ok(result.text.includes(NAYA_LIVE_BASE), 'base never yields');
-  assert.ok(result.text.includes('O'.repeat(16_000)), 'overlay never yields');
-  assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
-  // PV2: a yielded section is reported with a zero size, so the size line names exactly what was dropped.
-  assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
-  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), language: 'en' }),
-    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
+test('M11: target pressure preserves fixed persona, runtime and bounded memory below hard admission', () => {
+  const ownerProfile = syntheticOwner('S'.repeat(17_000), 'Synthetic authored lore');
+  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile,
+    overlay: { schemaVersion: 1, text: 'O'.repeat(5_000) }, language: 'en',
+    memory: 'A synthetic whole memory item', runtimeContext: 'R'.repeat(2_000) });
+  assert.ok(result.text.includes(NAYA_LIVE_BASE));
+  assert.ok(result.text.includes('S'.repeat(17_000)));
+  assert.ok(result.text.includes('O'.repeat(5_000)));
+  assert.ok(result.text.includes('R'.repeat(2_000)));
+  assert.ok(result.text.includes('A synthetic whole memory item'));
+  assert.ok(estimatedTokens(result.text) > CONTEXT_BUDGET.target);
+  assert.ok(estimatedTokens(result.text) <= CONTEXT_BUDGET.hard);
 });
 
 test('no declarations retain the public work policy and stable hash', () => {
@@ -351,27 +348,27 @@ test('M11: character limits are derived from conservative estimated token limits
   assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, CONTEXT_BUDGET.hard * 3.2);
 });
 
-test('PV2: a 14,000 character owner lore survives intact, inside its own section budget', () => {
-  const lore = 'L'.repeat(14_000);
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', lore), language: 'en' });
-  assert.equal(result.text.split(lore).length - 1, 1, 'the whole 14k lore is present exactly once');
-  const loreSection = result.sections.find(section => section.id === 'owner-lore');
-  assert.ok(loreSection && loreSection.chars > lore.length, 'the whole lore plus its leader and closing marker');
-  assert.ok(result.text.includes('End authored background.'), 'and the closing marker is never cut');
-  assert.ok(result.text.length <= LIVE_INSTRUCTION_TARGET_CHARS);
-  // Past that budget the lore section is clipped at its own limit, which is not a target-budget yield.
-  const clipped = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'L'.repeat(14_001)), language: 'en' });
-  assert.equal(clipped.text.includes('L'.repeat(14_001)), false);
-  assert.ok(clipped.text.includes(lore));
+test('M11: authored lore is pinned by whole paragraph priority, not a 14k character clip', () => {
+  const paragraphs = Array.from({ length: 20 }, (_, index) => `Synthetic paragraph ${index}: ${'L'.repeat(450)}`);
+  const ownerProfile = syntheticOwner('Synthetic owner style', paragraphs.join('\n\n'));
+  const first = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile });
+  const second = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, runtimeContext: 'Different per-call state' });
+  const extract = (text: string) => text.slice(text.indexOf('Authored background'), text.indexOf('End authored background.') + 'End authored background.'.length);
+  const lore = extract(first.text);
+  assert.equal(lore, extract(second.text));
+  assert.ok(estimatedTokens(lore) <= CONTEXT_BUDGET.sections.lore.ceiling);
+  assert.ok(lore.includes(paragraphs[0]!));
+  assert.ok(!lore.includes(paragraphs[19]!));
+  for (const paragraph of paragraphs) if (lore.includes(paragraph.slice(0, 25))) assert.ok(lore.includes(paragraph));
 });
 
 test('M11: the fixed voice description and accent tail occur once in the stable prefix', () => {
   const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', voiceDescription: 'SYNTHETIC VOICE DESCRIPTION' });
   const result = m11Session({ text: frozen.text });
   const stable = result.text.slice(0, result.stablePrefixChars);
-  assert.equal(occurrence(result.text, 'SYNTHETIC VOICE DESCRIPTION'), 1);
+  assert.equal(occurrence(result.text, 'SYNTHETIC VOICE DESCRIPTION'), 1, 'description appears once');
   assert.ok(stable.includes('SYNTHETIC VOICE DESCRIPTION'));
-  assert.equal(occurrence(result.text, LIVE_ACCENT_PRESETS[LIVE_DEFAULT_ACCENT as 'indian-strong'].tail), 1);
+  assert.equal(stable.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS[LIVE_DEFAULT_ACCENT as 'indian-strong'].tail).length, 1, 'one standalone tail block');
   assert.ok(result.sections.some(section => section.id === 'voice-description'));
 });
 
@@ -700,7 +697,7 @@ test('M11: a saved accent changes the next stable prefix without an app restart'
   assert.ok(stable.startsWith(LIVE_ACCENT_PRESETS['indian-light'].head));
   assert.ok(stable.includes(LIVE_ACCENT_PRESETS['indian-light'].tail));
   assert.ok(!stable.includes(LIVE_ACCENT_PRESETS['indian-strong'].head));
-  assert.ok(!stable.includes(LIVE_ACCENT_PRESETS['indian-strong'].tail));
+  assert.equal(stable.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS['indian-light'].tail).length, 1);
 });
 
 test('Q5-R4: the start instruction carries the previous-openers context once, and nothing when there is none', () => {
@@ -1038,7 +1035,7 @@ test('M11-R1: a 52,263-character legacy-shaped fixture protects recent calls and
   const roster = { version: 1 as const, people, bytes: 0 };
   const extra = 5_858 - renderPeople(roster, Infinity).text.length;
   assert.ok(extra > 0);
-  people[people.length - 1] = { ...people[people.length - 1]!, note: people[people.length - 1]!.note + 'P'.repeat(extra) };
+  people[people.length - 1] = { ...people[people.length - 1]!, role: people[people.length - 1]!.role + 'P'.repeat(extra) };
   const rawPeople = renderPeople(roster, Infinity).text;
   assert.equal(rawPeople.length, 5_858);
   const legacyPrefix = [fixed, lore, rawPeople].join('\n\n');

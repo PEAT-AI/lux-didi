@@ -307,14 +307,15 @@ test('worker inference receives presentation style and private owner lore', asyn
     input: 'synthetic', signal: new AbortController().signal, profile,
     infer: async (request: InferRequest) => { received = request.instructions; return { text: 'complete', calls: [] }; } };
   await runWorker(options);
-  assert.ok(received.startsWith(`${WORKER_INSTRUCTIONS}\n\n`));
+  assert.match(received, /^Now: /u, 'the prompt opens with one clock line');
+  assert.ok(received.slice(received.indexOf('\n\n') + 2).startsWith(`${WORKER_INSTRUCTIONS}\n\n`), 'the worker guidance follows the clock line');
   assert.match(received, /SYNTHETIC STYLE/);
   assert.match(received, /SYNTHETIC LORE/);
   received = '';
   const { profile: omittedProfile, ...withoutProfile } = options;
   assert.ok(omittedProfile);
   await runWorker(withoutProfile);
-  assert.equal(received, WORKER_INSTRUCTIONS);
+  assert.equal(received.replace(/^Now: [^\n]*\n\n/u, ''), WORKER_INSTRUCTIONS);
 });
 
 test('company search preserves the native ref rather than a numeric record id', async () => {

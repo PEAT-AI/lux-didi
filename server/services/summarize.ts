@@ -57,9 +57,9 @@ export const OPEN_LOOP_MAX_CHARS = 120;
  * to the speaker who said it (the model's own words are never the owner's), and no tool guidance, instruction or
  * validator text may be quoted into memory.
  */
-export function distillationPrompt(assistantName: string): string {
+export function distillationPrompt(assistantName: string, call?: { readonly startMs: number; readonly endMs: number | null; readonly timeZone: string }): string {
   return `You write a short private summary of one finished voice conversation between the owner and the assistant, whose name is ${assistantName}, so the assistant can
-recall it in a later conversation. Output JSON: {"skip": boolean, "summary": string, "openLoop": string | null}.
+recall it in a later conversation.${call === undefined ? '' : ` The conversation started ${callInstant(call.startMs, call.timeZone)} and ended ${callInstant(call.endMs, call.timeZone)}, both in ${call.timeZone}.`} Output JSON: {"skip": boolean, "summary": string, "openLoop": string | null}.
 
 Write 2 to 4 plain sentences in the past tense: what the owner wanted, what was found or decided, and anything
 the owner explicitly said was still to do. Attribute every claim: "the owner said", "${assistantName} found in the
@@ -131,6 +131,11 @@ function localDate(ms: number, timeZone: string): string {
   return new Intl.DateTimeFormat('en-GB', { dateStyle: 'long', timeZone }).format(new Date(ms));
 }
 
+/** One end of the call, told as the owner's own day and clock rather than as a UTC instant. */
+function callInstant(ms: number | null, timeZone: string): string {
+  return ms === null ? 'an unrecorded time' : new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(new Date(ms));
+}
+
 export function buildDistillationInput(input: {
   readonly assistantName: string;
   readonly turns: readonly DistillationTurn[];
@@ -193,11 +198,13 @@ export interface SessionTranscript {
   readonly substantiveOwnerTurns: number;
   readonly endedAt: number | null;
   readonly createdAt: number;
+  /** The zone the session was composed in, so the distillate is read in the owner's own day. */
+  readonly timeZone?: string;
 }
 
 /** Read finished owner and assistant turns in order, plus the tool names used (never tool results). */
 export function readSessionTranscript(tx: Transaction, liveSessionId: string): SessionTranscript {
-  const session = tx.get('SELECT created_at, terminal_at FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
+  const session = tx.get('SELECT created_at, terminal_at, time_zone FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
   const rows = tx.all('SELECT kind, text, tool_json, finished FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [liveSessionId]);
   const turns: DistillationTurn[] = [];
   const toolNames: string[] = [];
@@ -230,7 +237,8 @@ export function readSessionTranscript(tx: Transaction, liveSessionId: string): S
   flush('inputTranscription'); flush('outputTranscription');
   return { turns, toolNames, ownerTurns, substantiveOwnerTurns,
     endedAt: session && session['terminal_at'] !== null && session['terminal_at'] !== undefined ? Number(session['terminal_at']) : null,
-    createdAt: session ? Number(session['created_at']) : Date.now() };
+    createdAt: session ? Number(session['created_at']) : Date.now(),
+    ...(session && typeof session['time_zone'] === 'string' && session['time_zone'] ? { timeZone: String(session['time_zone']) } : {}) };
 }
 
 /** Parse the model's JSON, tolerating a fenced block. Returns null on a validation failure. */
@@ -340,16 +348,16 @@ const pause = (delay: SummarizerOptions['delay'], ms: number): Promise<void> =>
 
 export function createSummarizer(options: SummarizerOptions): Summarizer {
   let chain: Promise<void> = Promise.resolve();
-  const system = distillationPrompt(options.assistantName);
   const serialize = (work: () => Promise<void>): Promise<void> => {
     const guarded = async () => { try { await work(); } catch (error) { if (!(error instanceof Error && ['history_forgotten', 'history_source_changed'].includes(error.message))) throw error; } };
     chain = chain.then(guarded, guarded);
     return chain;
   };
 
-  async function callModel(input: string, dataClass: DataClass, signal: AbortSignal): Promise<ModelResult> {
+  async function callModel(input: string, dataClass: DataClass, signal: AbortSignal,
+    call: { readonly startMs: number; readonly endMs: number | null; readonly timeZone: string }): Promise<ModelResult> {
     const request: ModelRequest = {
-      system,
+      system: distillationPrompt(options.assistantName, call),
       promptVersion: SUMMARY_PROMPT_VERSION,
       contents: [{ role: 'user', parts: [{ text: input }] }],
       dataClasses: [dataClass],
@@ -410,7 +418,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     }
     // The in-flight row: a host that exits during the model call leaves it for the next start to retry.
     options.store.transaction(tx => summaries.markSummaryPending(tx, liveSessionId, options.now(), provenance));
-    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, toolOutcomes, dateMs: endedAt, timeZone: options.timeZone, injected });
+    // The session's own zone outranks the host's: a call composed on another day is read on that day.
+    const zone = transcript.timeZone ?? options.timeZone;
+    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, toolOutcomes, dateMs: endedAt, timeZone: zone, injected });
     const truncated = input.truncated || !!runOptions.deadHost;
     emit({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
     const startedAt = options.now();
@@ -426,7 +436,8 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'summary_route_class_denied', endedAt, now: options.now() }));
           return;
         }
-        result = await callModel(input.text, source.dataClass, controller.signal);
+        result = await callModel(input.text, source.dataClass, controller.signal,
+          { startMs: transcript.createdAt, endMs: endedAt, timeZone: zone });
       } catch (error) {
         // A port that surfaces the credential failure by throwing gets the same rule as one that returns it.
         lastError = error instanceof Error && error.message === 'credential_unavailable' ? 'credential_unavailable' : 'model_error';

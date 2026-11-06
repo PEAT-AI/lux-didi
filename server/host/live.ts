@@ -201,15 +201,22 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     const failed: LiveStatusPayload = { ...status, status: 'error', code };
     return { service: new UnconfiguredLive(failed), status: failed };
   }
+  // M2: the owner's own zone wins over the machine's, so a host clock on the wrong zone is correctable.
+  const preferencesZone = loaded.status === 'configured' ? loaded.config.preferences.timeZone : undefined;
+  const ownerZone = preferencesZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const vault = new VaultWriter({ store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: now ?? Date.now, log: event => hostLogEvent(event) });
   const createTaskRuntime = testing?.createTaskRuntime ?? hostTaskFactory({ store, vault, models: loadTaskModels(configDir),
     credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
     executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timeZone: ownerZone,
     ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
   });
-  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, ...(testing?.schedule ? { schedule: testing.schedule } : {}), memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
+  // The host zone is never pinned: #ownerTimeZone resolves Intl at compose time, so a Mac zone change between
+  // calls reaches the next call. Only the owner's own settings zone is pinned, because nothing else knows it.
+  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime,
+    ...(preferencesZone === undefined ? {} : { timeZone: preferencesZone, timeZoneSource: 'settings' as const }),
+    ...(testing?.schedule ? { schedule: testing.schedule } : {}), memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };

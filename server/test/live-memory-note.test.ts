@@ -19,6 +19,8 @@ import type { Store } from '../runtime/store.js';
 const NOW = 1_700_000_000_000;
 const SESSION = 'live-memory-note';
 const MINUTE = 60 * 1000;
+/** The zone the live session was composed in: a note written during the call belongs to that day. */
+const OWNER_ZONE = 'Asia/Jakarta';
 
 /** The suite never calls a model: `rememberOwnerNote` reads the journal, not provider arguments. */
 const model = { generate: async (): Promise<never> => { throw new Error('the memory note suite never calls the model'); } };
@@ -46,9 +48,9 @@ function openSession(path: string, rows: readonly Row[], session = SESSION): Sto
   f.store.transaction(tx => {
     tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
         client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
-        journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,'active',1,1,?,0,0,'attached',NULL,NULL,?,?)`,
-      [session, f.store.assistantId, f.store.authorityEpoch, 'key-note', 'fp-note', 'client', 'audit', 'profile', 'prompt', rows.length, NOW, NOW]);
+        journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, time_zone)
+      VALUES (?,?,?,?,?,?,?,?,?,'active',1,1,?,0,0,'attached',NULL,NULL,?,?,?)`,
+      [session, f.store.assistantId, f.store.authorityEpoch, 'key-note', 'fp-note', 'client', 'audit', 'profile', 'prompt', rows.length, NOW, NOW, OWNER_ZONE]);
     for (const row of rows) {
       tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?)',
         [session, row.kind ?? 'inputTranscription', row.text, row.finished === false ? 0 : 1, row.text.length, row.at ?? NOW]);
@@ -480,4 +482,17 @@ for (const [owner, note] of [
   const store = liveSession(t, [{ text: owner! }]);
   t.after(() => store.close());
   assert.equal(remember(store, note!).remembered, true);
+});
+
+test('M2: the note session carries the owner zone, never a literal UTC', async t => {
+  const store = liveSession(t, deltas(LONG_TURN));
+  const result = await remember(store, 'The owner prefers short answers in the morning');
+  assert.equal(result.remembered, true);
+  const zones = store.transaction(tx => {
+    const session = tx.get('SELECT time_zone FROM sessions WHERE id=(SELECT session_id FROM entries WHERE id=?)', [String(result.entryId)])!;
+    const stamped = tx.all('SELECT time_zone FROM entries WHERE session_id=(SELECT session_id FROM entries WHERE id=?)', [String(result.entryId)]);
+    return { session: String(session['time_zone']), entries: stamped.map(entry => String(entry['time_zone'])) };
+  });
+  assert.equal(zones.session, OWNER_ZONE, 'the note session is stamped in the owner zone');
+  assert.deepEqual(zones.entries, [OWNER_ZONE], 'the note itself is stamped in the owner zone');
 });

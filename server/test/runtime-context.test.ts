@@ -33,7 +33,7 @@ test('the runtime block carries only the named fields, never an owner line or pr
   const text = buildRuntimeContext({ now: new Date('2026-10-14T12:35:00Z'), timeZone: 'UTC', connected: ['mail'],
     connectors: [{ connector: 'mongoose', state: 'connected' }] });
   const lines = text.split('\n').filter(line => line.length);
-  for (const prefix of ['Now:', 'Today:', 'This week:', 'Connected now:', 'Connectors:']) {
+  for (const prefix of ['Now:', 'Days:', 'Connected now:', 'Connectors:']) {
     assert.equal(lines.filter(line => line.startsWith(prefix)).length, 1, `exactly one ${prefix} line`);
   }
   assert.ok(!/^Owner:/m.test(text), 'no owner line');

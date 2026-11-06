@@ -37,6 +37,11 @@ fi
 
 git diff --check
 bash scripts/run-local.sh --build-only
+# Register the new prompt compiler test graphs as well as their emitted test files below.
+server/node_modules/.bin/tsc --ignoreConfig --types node --typeRoots server/node_modules/@types \
+  --target ES2023 --module NodeNext --moduleResolution NodeNext --strict \
+  --noUnusedLocals --noUnusedParameters --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck \
+  --rootDir server --outDir server/dist server/test/context-budget.test.ts server/test/memory-block.test.ts
 
 for f in server/dist/chat/index.js server/dist/domain/facade.js server/dist/runtime/store.js \
          server/dist/memory/cli.js server/dist/test/memory-import.test.js \

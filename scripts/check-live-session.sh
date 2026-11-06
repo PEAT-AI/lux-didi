@@ -32,7 +32,7 @@ group_build() {
     --target ES2023 --module NodeNext --moduleResolution NodeNext --strict \
     --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --esModuleInterop \
     --rootDir . --outDir dist test/task-call.test.ts test/task-delivery.test.ts \
-    test/tasks-lifecycle.test.ts test/task-authority.test.ts || return 1
+    test/tasks-lifecycle.test.ts test/task-authority.test.ts test/context-budget.test.ts test/memory-block.test.ts || return 1
   # Historical direct-save comparison used the deleted voice-tool carrier. Current helper receipts run below.
 
 }

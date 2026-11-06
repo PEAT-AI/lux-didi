@@ -1098,7 +1098,10 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
   assert.match(NAYA_LIVE_BASE, /at most once per call/);
   assert.match(NAYA_WORK_DELIVERY, /A hand-off usually needs no words/);
   assert.match(NAYA_WORK_DELIVERY, /an acknowledgement never promises work/);
-  assert.match(NAYA_LIVE_BASE, /under thirty seconds.*at most two spoken numbers/);
+  // M3 (#908): the numeric short default is retired; depth follows the ask and the whole answer is spoken.
+  assert.match(NAYA_LIVE_BASE, /never cut an answer short/);
+  assert.equal(NAYA_LIVE_BASE.includes('thirty seconds'), false, 'no numeric duration default');
+  assert.equal(NAYA_LIVE_BASE.includes('two spoken numbers'), false, 'no numeric count of spoken numbers');
   assert.match(NAYA_LIVE_BASE, /the floor stays his, and that includes his pauses/i);
   assert.doesNotMatch(NAYA_LIVE_BASE, /stage_lux_note/);
   assert.match(NAYA_WORK_DELIVERY, /and it drafts, notes/);

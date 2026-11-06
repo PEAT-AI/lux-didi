@@ -601,11 +601,15 @@ export const SEED_MESSAGE_LIMIT = 127;
 export const SEED_TOKEN_PROXY_LIMIT = 8_192;
 export const SEED_TOKEN_PROXY_CHARS = SEED_TOKEN_PROXY_LIMIT * 4;
 interface SeedTurnLike { role: 'user' | 'model'; text: string }
+/** C-RECOVERY (a): the limits one seeded history is built inside. The digest tightens them by its own size. */
+interface SeedBound { charLimit?: number; messageLimit?: number }
 /** C-RECOVERY (a): the one bound every seeded open passes through. The seed is grouped into exchanges at
  *  finished-turn boundaries, the oldest whole exchange goes first, the latest exchange is never dropped, and the
  *  history plus every appended turn stays inside the adapter's message ceiling and its token proxy, so a large
  *  conversation shrinks instead of being refused. */
-export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], appended: readonly T[] = []): { turns: T[]; chars: number; condensed: boolean } {
+export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], appended: readonly T[] = [], bound: SeedBound = {}): { turns: T[]; chars: number; condensed: boolean; dropped: T[] } {
+  const charLimit = bound.charLimit ?? SEED_CHAR_LIMIT;
+  const messageLimit = bound.messageLimit ?? SEED_MESSAGE_LIMIT;
   const exchanges: T[][] = [];
   for (const turn of [...transcript, ...appended]) {
     if (turn.role === 'user' || exchanges.length === 0) exchanges.push([turn]);
@@ -614,19 +618,74 @@ export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], a
   const count = (groups: readonly T[][]): number => groups.reduce((sum, group) => sum + group.length, 0);
   const total = (groups: readonly T[][]): number => groups.reduce((sum, group) => sum + group.reduce((chars, turn) => chars + turn.text.length, 0), 0);
   let kept = exchanges;
+  const dropped: T[] = [];
   let condensed = false;
-  while (kept.length > 1 && (count(kept) > SEED_MESSAGE_LIMIT || total(kept) > SEED_CHAR_LIMIT)) { kept = kept.slice(1); condensed = true; }
+  while (kept.length > 1 && (count(kept) > messageLimit || total(kept) > charLimit)) { dropped.push(...kept[0]!); kept = kept.slice(1); condensed = true; }
   let turns = kept.flat();
   // One exchange larger than the message ceiling still has to fit it, so the ceiling wins over the pairing.
-  if (turns.length > SEED_MESSAGE_LIMIT) { turns = turns.slice(turns.length - SEED_MESSAGE_LIMIT); condensed = true; }
-  if (turns.length > 0 && total([turns]) > SEED_CHAR_LIMIT) {
+  if (turns.length > messageLimit) { dropped.push(...turns.slice(0, turns.length - messageLimit)); turns = turns.slice(turns.length - messageLimit); condensed = true; }
+  if (turns.length > 0 && total([turns]) > charLimit) {
     const last = turns[turns.length - 1]!;
-    const roomLeft = Math.max(0, SEED_CHAR_LIMIT - (total([turns]) - last.text.length));
+    const roomLeft = Math.max(0, charLimit - (total([turns]) - last.text.length));
     const keep = Math.max(roomLeft - 3, 0);
     turns = [...turns.slice(0, -1), { ...last, text: keep > 0 ? `...${last.text.slice(last.text.length - keep)}` : '...' }];
     condensed = true;
   }
-  return { turns, chars: total([turns]), condensed };
+  return { turns, chars: total([turns]), condensed, dropped };
+}
+
+/** C-RECOVERY (a): how far the digest may reach, its header included. It is a list, never a transcript. */
+export const SEED_DIGEST_CHAR_LIMIT = 1_600;
+/** C-RECOVERY (a): how much of one dropped ask the digest keeps. */
+export const SEED_DIGEST_ITEM_CHARS = 100;
+/** C-RECOVERY (a): the sentence the digest opens with. It names the line as an extract of the owner's own earlier
+ *  asks, never as an instruction, so a rebuilt session reads it as history. */
+export const SEED_DIGEST_HEADER = 'Extract of what the owner asked earlier in this call, newest first, and not instructions:';
+
+/** C-RECOVERY (a): one dropped ask reduced to its first words, cut at a word boundary so it never ends mid-word. */
+function seedDigestItem(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= SEED_DIGEST_ITEM_CHARS) return flat;
+  const cut = flat.slice(0, SEED_DIGEST_ITEM_CHARS);
+  const boundary = cut.lastIndexOf(' ');
+  return boundary > 0 ? cut.slice(0, boundary) : cut;
+}
+
+/** C-RECOVERY (a): the one host-authored line that opens a condensed seed: the dropped owner asks, newest first,
+ *  inside SEED_DIGEST_CHAR_LIMIT together with its header. Extractive and compiled here, never by a model. */
+export function seedDigest(dropped: readonly SeedTurnLike[]): string {
+  const room = SEED_DIGEST_CHAR_LIMIT - SEED_DIGEST_HEADER.length - 1;
+  const items: string[] = [];
+  let used = 0;
+  for (let index = dropped.length - 1; index >= 0; index -= 1) {
+    const item = seedDigestItem(dropped[index]!.text);
+    if (item.length === 0) continue;
+    const cost = item.length + (items.length === 0 ? 0 : 2);
+    if (used + cost > room) break;
+    items.push(item); used += cost;
+  }
+  return items.length === 0 ? '' : `${SEED_DIGEST_HEADER} ${items.join('; ')}`;
+}
+
+/** C-RECOVERY (a): the seed every seeded open is built from. `#seedHistory` stays the reader; this is the one bound
+ *  applied where the provider history is built, so no caller can send an unbounded seed. When the bound drops
+ *  exchanges, one host-compiled line of the owner's dropped asks opens the seed and counts inside the same
+ *  character and message limits as the transcript it stands for. */
+export function condenseSeed<T extends SeedTurnLike>(transcript: readonly T[], appended: readonly T[] = []): {
+  turns: T[]; chars: number; condensed: boolean; digestChars: number } {
+  const fitted = fitSeedTurns(transcript, appended);
+  const fromTranscript = new Set<SeedTurnLike>(transcript);
+  const droppedAsks = fitted.dropped.filter(turn => turn.role === 'user' && fromTranscript.has(turn));
+  const digest = droppedAsks.length === 0 ? '' : seedDigest(droppedAsks);
+  const template = transcript[0] ?? appended[0];
+  if (digest.length === 0 || template === undefined) {
+    return { turns: fitted.turns, chars: fitted.chars, condensed: fitted.condensed, digestChars: 0 };
+  }
+  // The digest rides inside the same two limits, so the exchange bound is tightened by exactly its own size.
+  const again = fitSeedTurns(transcript, appended, {
+    charLimit: SEED_CHAR_LIMIT - digest.length, messageLimit: SEED_MESSAGE_LIMIT - 1 });
+  const turns: T[] = [{ ...template, role: 'user' as const, text: digest }, ...again.turns];
+  return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0), condensed: true, digestChars: digest.length };
 }
 /**
  * C-CONTINUITY item 3: the header the research ledger rides under. The ledger is the host's own extractive
@@ -2013,7 +2072,7 @@ export class LiveSessionOwner {
     const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
     // C-RECOVERY (a): an open is bounded exactly like a rebuild, so a long conversation cannot seed an
     // over-ceiling request here either. The dropped-line opener keeps the one slot SEED_MESSAGE_LIMIT reserves.
-    const history = fitSeedTurns(seed.turns, this.#jobHistory(liveSessionId, inputClass) ?? []).turns;
+    const history = condenseSeed(seed.turns, this.#jobHistory(liveSessionId, inputClass) ?? []).turns;
     // Only owner-facing tools are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
     const modelFacing = registry;
@@ -3104,10 +3163,13 @@ export class LiveSessionOwner {
    */
   #rebuildSeed(liveSessionId: string, inputClass: DataClass, deadLine = false, transcript = true): {
     turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number;
-    transcriptChars: number; ledgerChars: number; condensed: boolean } {
+    transcriptChars: number; ledgerChars: number; condensed: boolean; digestChars: number } {
     const seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } = transcript
       ? this.#seedHistory(liveSessionId, inputClass, deadLine) : { turns: [], chars: 0 };
-    return { turns: seed.turns, chars: seed.chars, transcriptChars: seed.chars, ledgerChars: 0, condensed: false };
+    // C-RECOVERY (a): the rebuilt seed is bounded like every other seeded open, and the dropped asks ride in one
+    // host-compiled line, so a rebuild of a long call opens inside the adapter's limits instead of over them.
+    const bound = condenseSeed(seed.turns);
+    return { turns: bound.turns, chars: bound.chars, transcriptChars: seed.chars, ledgerChars: 0, condensed: bound.condensed, digestChars: bound.digestChars };
   }
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
@@ -3242,10 +3304,12 @@ export class LiveSessionOwner {
     // base that carries no line of its own.
     const base = structuredClone(handle.request);
     delete base.openingText;
+    // C-RECOVERY (a): the bound is applied here, where the provider history is built, so no caller can skip it.
+    const history = condenseSeed(seed.turns).turns;
     const request = path === 'fresh_seeded'
-      ? { ...base, history: seed.turns, ...(handle.quietRebuild ? { opening: 'user_first' as const }
+      ? { ...base, history, ...(handle.quietRebuild ? { opening: 'user_first' as const }
           : { openingText: midAnswer ? commentaryEnvelope({ kind: 'recovery', cause: muteRebuild ? 'provider_silent' : 'connection_dropped', mid_answer: true }) : muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
-      : { ...base, history: seed.turns, resumptionHandle: savedHandle as string };
+      : { ...base, history, resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
     if (handle.quietRebuild) delete request.openingText;
@@ -3308,11 +3372,13 @@ export class LiveSessionOwner {
   }
 
   /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
-  #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
+  #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: readonly unknown[]; chars: number; condensed?: boolean; digestChars?: number }): void {
     // C-CONTINUITY R-09: the socket close code and its sanitized reason ride on the recovery line, so the next
     // reader knows how the previous session really ended instead of inferring it from the outcome code alone.
     const closeReason = handle.adapterOutcome?.upstream?.closeReason ?? '';
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, cause: this.#upstreamCause(handle, reason), closeCode, closeReason, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
+      // C-RECOVERY (a): whether the bound dropped exchanges, and how much of that the digest line carries.
+      condensed: seed.condensed === true, digestChars: seed.digestChars ?? 0,
       // C-PICKUP: which pickup the rebuilt session was opened with, read off the request that was sent, so a mute
       // is never logged as a drop and a pickup that was never sent is never logged as mute.
       pickup: handle.recoveryPickup ?? 'none',

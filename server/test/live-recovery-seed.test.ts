@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { liveTaskFixture } from './live-task-fixture.js';
 import { fixtureUntil } from './live-voice-fixture.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT } from '../live/index.js';
+import { condenseSeed, SEED_CHAR_LIMIT, SEED_DIGEST_CHAR_LIMIT, SEED_DIGEST_HEADER, SEED_DIGEST_ITEM_CHARS, SEED_MESSAGE_LIMIT, seedDigest } from '../live/index.js';
 
 /** A synthetic utterance of about `chars` characters in whole words, so a truncation can be checked at a boundary. */
 function utterance(tag: string, chars: number): string {
@@ -77,4 +77,42 @@ test('a short conversation rebuilds unchanged, with no digest and no condensatio
   const recovery = receipts.filter(event => event['event'] === 'live_recovery').at(-1)!;
   assert.equal(recovery?.['condensed'], false);
   assert.equal(recovery?.['digestChars'], 0);
+});
+
+/** A synthetic ask of `chars` characters in numbered whole words, so a cut can be placed at a boundary. */
+function ask(index: number, chars: number): string {
+  const parts: string[] = [];
+  let length = 0;
+  while (length < chars) { parts.push(`a${index}w${parts.length}`); length += `a${index}w${parts.length}`.length + 1; }
+  return parts.join(' ');
+}
+
+test('the digest names the dropped asks newest first, each cut at a word boundary', () => {
+  const asks = Array.from({ length: 40 }, (_, index) => ({ role: 'user' as const, text: ask(index, 260), dataClass: 'ordinary' as const }));
+  const digest = seedDigest(asks);
+  assert.ok(digest.length <= SEED_DIGEST_CHAR_LIMIT, `the digest is ${digest.length} characters, inside ${SEED_DIGEST_CHAR_LIMIT}`);
+  assert.ok(digest.startsWith(SEED_DIGEST_HEADER), 'the digest opens on the host header');
+  const items = digest.slice(SEED_DIGEST_HEADER.length + 1).split('; ');
+  assert.ok(items[0]!.startsWith('a39w'), 'the newest dropped ask comes first');
+  assert.ok(items[1]!.startsWith('a38w'), 'the next newest follows it');
+  for (const item of items) {
+    assert.ok(item.length <= SEED_DIGEST_ITEM_CHARS, `an item is ${item.length} characters, inside ${SEED_DIGEST_ITEM_CHARS}`);
+    assert.equal(item.endsWith(' '), false);
+    // Every item is a prefix of its ask, and the character after it is the space it was cut at.
+    assert.equal(asks.some(turn => turn.text.startsWith(item) && turn.text[item.length] === ' '), true, item);
+  }
+  assert.equal(seedDigest([]), '', 'no dropped ask, no digest line');
+});
+
+test('a condensed seed keeps the digest inside the same limits and the bound still reads newest first', () => {
+  const turns = Array.from({ length: 40 }, (_, index) => ({ role: (index % 2 === 0 ? 'user' : 'model') as 'user' | 'model', text: ask(index, 1_500), dataClass: 'ordinary' as const }));
+  const seed = condenseSeed(turns);
+  assert.equal(seed.condensed, true);
+  assert.ok(seed.chars <= SEED_CHAR_LIMIT, `the seed is ${seed.chars} characters, inside ${SEED_CHAR_LIMIT}`);
+  assert.ok(seed.turns.length <= SEED_MESSAGE_LIMIT, `${seed.turns.length} messages inside ${SEED_MESSAGE_LIMIT}`);
+  assert.equal(seed.turns[0]!.role, 'user');
+  assert.ok(seed.turns[0]!.text.startsWith(SEED_DIGEST_HEADER));
+  assert.equal(seed.digestChars, seed.turns[0]!.text.length);
+  assert.equal(seed.chars, seed.turns.reduce((sum, turn) => sum + turn.text.length, 0));
+  assert.equal(seed.turns.at(-1)!.text, turns.at(-1)!.text, 'the newest turn rides verbatim');
 });

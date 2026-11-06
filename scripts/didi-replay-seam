@@ -76,7 +76,9 @@ function replay(dataDir, session) {
       const row = {
         turn_id: turn.turn_id, owner_final_at: owner?.at ?? missing('owner_final_at'),
         helper_started_at: helperStarted ?? missing('helper_started_at'),
-        delegation_created_at: events.find(e => e.event === 'session.delegation.created')?.at ?? missing('delegation_created_at'),
+        // Current live path emits no keyed delegation-creation record. Do not probe a nonexistent host event.
+        delegation_created_at: missing('delegation_created_at'),
+        delegation_created_source: 'not-recorded: current live path emits no keyed creation event',
         first_commentary_appended_at: commentaryAppended ?? missing('first_commentary_appended_at'),
         owner_final_to_first_audio_ms: validAudio ? firstAudio - finalAt : missing('valid_owner_final_to_first_audio'),
         helper_start_to_first_commentary_ms: Number.isFinite(helperStarted) && Number.isFinite(commentaryAppended) && commentaryAppended >= helperStarted

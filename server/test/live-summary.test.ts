@@ -1,3 +1,4 @@
+import { attachHostLogSink } from '../tools/host-events.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 // W-LSUM: the browser-safe Live summary for the page. The operator-only status route refuses a
 // cookie principal (403); this sibling route answers the cookie principal (and the operator) with a
@@ -964,8 +965,7 @@ test('M0: route admission preserves private notes, derives metadata and logs exc
       });
     }
     const events: Record<string, unknown>[] = [];
-    const error = console.error;
-    console.error = (line: string) => { try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { /* non-JSON diagnostic */ } };
+    const detach = attachHostLogSink({ event: raw => { events.push(raw as Record<string, unknown>); } });
     const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store,
       voice: { ...fake.port, capabilities: { ...fake.port.capabilities, provider } }, profile, now: () => SUMMARY_NOW, timeZone: 'UTC',
       memorySource: () => [{ id: 'private-note', text: 'SYNTHETIC PRIVATE NOTE', dataClass: 'private' }, { id: 'unknown-note', text: 'UNKNOWN NOTE', dataClass: 'unknown' }] });
@@ -981,6 +981,6 @@ test('M0: route admission preserves private notes, derives metadata and logs exc
       const excluded = events.filter(event => event['event'] === 'memory_excluded');
       assert.equal(excluded.length, 1, 'idempotent create logs exclusions only once');
       assert.deepEqual(excluded[0]!['reasons'], { class: provider === 'openai' ? 1 : 5, yield: 0, legacy: 0, source: 0, budget: 0 });
-    } finally { console.error = error; await owner.shutdown(); h.cleanup(); }
+    } finally { detach(); await owner.shutdown(); h.cleanup(); }
   }
 });

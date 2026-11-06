@@ -7,7 +7,7 @@ import { ConfigError } from '../config/files.js';
 import { validateLiveProfile } from '../live/config.js';
 import * as memory from '../domain/memory.js';
 import { current as currentLabel } from '../domain/labels.js';
-import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js';
+import { listStandingMemory } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { credentialsFor, loadProviderConfig, seedScope, slotKeyPresent } from '../config/index.js';

@@ -85,8 +85,9 @@ function summarizer(store: Store, model: ModelPort | null, assistantName = 'Naya
 
 function withTurns(store: Store, id: string, outcome?: string): void {
   seedSession(store, id, outcome === undefined ? {} : { outcome });
-  seedTurn(store, id, 'inputTranscription', 'one');
-  seedTurn(store, id, 'inputTranscription', 'two');
+  // Substantive on purpose: the floor is one owner turn that carries a noun phrase, not small talk.
+  seedTurn(store, id, 'inputTranscription', 'I want to plan the trip to the coast next weekend');
+  seedTurn(store, id, 'inputTranscription', 'and I would like the tickets booked before Friday');
 }
 
 /** A real GeminiAdapter over a deterministic SSE transport, so controlled() is exercised for real. */
@@ -259,8 +260,8 @@ test('a private-labelled session is never distilled', async () => {
   const h = open();
   try {
     seedSession(h.store, 's-private', { inputClass: 'private' });
-    seedTurn(h.store, 's-private', 'inputTranscription', 'one');
-    seedTurn(h.store, 's-private', 'inputTranscription', 'two');
+    seedTurn(h.store, 's-private', 'inputTranscription', 'my medical appointment is on Tuesday morning');
+    seedTurn(h.store, 's-private', 'inputTranscription', 'and the prescription needs collecting before it');
     const model = new FakeModel([reply('{"skip": false, "summary": "must never reach the model"}')]);
     await summarizer(h.store, model).distill('s-private');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-private'))!;

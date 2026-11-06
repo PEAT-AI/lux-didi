@@ -611,7 +611,8 @@ test('a distilled session A is injected into session B chat context and Live ins
         VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,1,'ended',?,?,?,?,NULL)`,
         ['live-A', f.store.assistantId, f.store.authorityEpoch, 'key-A', 'fp-A', 'client', 'audit', 'profile', 'prompt', 'terminal',
           JSON.stringify({ state: 'closed', code: 'normal' }), 0, 0, 0]);
-      for (const text of ['one', 'two']) tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)', ['live-A', 'inputTranscription', text, text.length, 0]);
+      // Substantive owner turns: the summary floor is one turn that carries a noun phrase, not small talk.
+      for (const text of ['I moved to Lisbon last month on a work contract', 'and the timezone changed with me']) tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)', ['live-A', 'inputTranscription', text, text.length, 0]);
       // The distiller reads the trusted history eligibility row the terminal path records.
       recordHistorySession(tx, 'live-A', f.store.assistantId, ['ordinary'], [], 0);
     });

@@ -86,7 +86,9 @@ Alarm log events are `alarm_scheduler_started`, `alarm_set`, `alarm_due`, `alarm
 
 An alarm's prompt installation is not proof that it spoke. The host records
 `alarm_prompt_installed` when installing the instruction, then `alarm_ready` when
-the provider is ready for the opening. It sends that opening once as session
-commentary with explicit `delegation_id: null`. Only the first audible output
+the provider is ready for the opening. It sends that opening once as an ordered fenced COMMENTARY envelope, using
+items of at most 450 characters and explicit `delegation_id: null`. The first
+item already says the alarm is due now and asks her to announce it, so a lost
+tail does not hide the point. Only the first audible output
 after that request, while playback is neither muted nor dropping the response,
 records `alarm_announced`; readiness and prompt installation do not announce it.

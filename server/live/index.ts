@@ -1392,14 +1392,26 @@ export class LiveSessionOwner {
     return this.get(handle.liveSessionId);
   }
 
+  #sendHostSpeech(handle: ActiveSession, text: string, point: string): number {
+    const items = text.length <= 450 ? [text] : commentaryItems({
+      kind: 'result', exact: [], cause: point, what_failed: '', next_step: '', content: `${point} ${text}`,
+    });
+    let sent = 0;
+    for (const item of items) {
+      if (handle.session.sendSessionCommentary?.({ text: item }) === undefined) break;
+      sent += 1;
+    }
+    return sent;
+  }
+
   #sendAlarmOpening(handle: ActiveSession): void {
     if (!handle.ready) return;
     for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) {
       if (alarm.openingSent) continue;
       const mode = alarm.mode ?? 'new_session';
       hostLogEvent({ event: 'alarm_ready', alarmId: alarm.setup.alarmId, mode });
-      const commandId = handle.session.sendSessionCommentary?.({ text: hostNote(alarmSessionInstructions(alarm.setup) + ' Announce this now in the current call.') });
-      if (commandId) alarm.openingSent = true;
+      const sent = this.#sendHostSpeech(handle, hostNote(alarmSessionInstructions(alarm.setup) + ' Announce this now in the current call.'), 'The alarm is due now. Announce it now.');
+      if (sent) alarm.openingSent = true;
     }
   }
 

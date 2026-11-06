@@ -128,12 +128,12 @@ test('expired revision returns held findings without starting a final inference 
 
 test('reads finishing at 30 seconds leave at most eight seconds for final composition', async () => {
   const clock = fakeClock(), composing = deferred(); let asks = 0;
-  const tool = reader(async () => { clock.advance(30000); return syntheticResult(); });
+  const tool = reader(async () => { clock.advance(10000); return syntheticResult(); });
   const pending = runWorker({ registry: new Map([[tool.name, tool]]), identity, input: 'Synthetic remaining budget', signal: new AbortController().signal, clock,
     infer: async request => {
       if (!request.tools.length) { composing.resolve({ text: '', calls: [] }); return new Promise(() => {}); }
-      if (asks++) throw new Error('Synthetic inference failure after reads');
-      return { text: '', calls: [{ id: 'r1', name: tool.name, args: { id: '1' } }] };
+      if (asks++ === 3) throw new Error('Synthetic inference failure after reads');
+      return { text: '', calls: [{ id: `r${asks}`, name: tool.name, args: { id: String(asks) } }] };
     } });
   await composing.promise;
   assert.ok(clock.remaining().includes(8000));

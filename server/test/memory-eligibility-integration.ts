@@ -42,7 +42,17 @@ test('memory eligibility integration: entry and parent class matrix agrees with 
     }
     const automatic = f.store.transaction(resolveLiveMemory);
     const routed = f.store.transaction(tx => historyLookup(tx, f.store, 'Synthetic matrix'));
-    assert.deepEqual(automatic.map(row => row.id), ['ordinary-ordinary']);
+    assert.deepEqual({
+      ordinary: automatic.filter(row => row.dataClass === 'ordinary').map(row => row.id).sort(),
+      openai: automatic.filter(row => ['ordinary', 'private', 'sensitive'].includes(row.dataClass)).map(row => [row.id, row.dataClass]).sort(),
+      unknown: automatic.filter(row => row.dataClass === 'unknown').map(row => row.id).sort(),
+    }, {
+      ordinary: ['ordinary-ordinary'],
+      openai: [['ordinary-ordinary', 'ordinary'], ['ordinary-private', 'private'], ['ordinary-sensitive', 'sensitive'],
+        ['private-ordinary', 'private'], ['private-private', 'private'], ['private-sensitive', 'sensitive'],
+        ['sensitive-ordinary', 'sensitive'], ['sensitive-private', 'sensitive'], ['sensitive-sensitive', 'sensitive']],
+      unknown: ['ordinary-unknown', 'private-unknown', 'sensitive-unknown', 'unknown-ordinary', 'unknown-private', 'unknown-sensitive', 'unknown-unknown'],
+    });
     assert.equal(routed.lines.length, 1); assert.ok(routed.lines[0]!.includes('ordinary-ordinary'));
     assert.ok(!routed.text.includes('ordinary-unknown'), 'missing parent label fails closed');
   } finally { f.cleanup(); }

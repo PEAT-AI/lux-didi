@@ -179,7 +179,7 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
   assert.equal((await announced()).length, 0, 'no announcement is logged before any provider audio of the alarm call');
   playFirstAudio();
-  const audioDeadline = Date.now() + 5000;
+  const audioDeadline = Date.now() + 2000;
   while ((await announced()).length === 0 && Date.now() < audioDeadline) await new Promise(done => setTimeout(done, 25));
   const atFirstAudio = await announced();
   assert.equal(atFirstAudio.length, 1, 'her first audible playback of the alarm opening logs exactly one announcement');

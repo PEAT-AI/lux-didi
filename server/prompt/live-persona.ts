@@ -280,10 +280,15 @@ export function peopleRosterWithin(room: number): string | undefined { return pe
  * closing marker are the composer's, so a full budget of owner lore survives intact and the marker is
  * never cut.
  */
-function clipOwnerLore(text: string, limit = OWNER_LORE_CHAR_LIMIT): string {
-  if (!text.startsWith(OWNER_LORE_LEADER) || !text.endsWith(OWNER_LORE_CLOSER)) return text.slice(0, limit);
-  const body = text.slice(OWNER_LORE_LEADER.length, text.length - OWNER_LORE_CLOSER.length);
-  return body.length <= limit ? text : `${OWNER_LORE_LEADER}${body.slice(0, limit)}${OWNER_LORE_CLOSER}`;
+function clipOwnerLore(text: string, limit = Math.floor(CONTEXT_BUDGET.sections.lore.ceiling * 3.2)): string {
+  const marker = text.startsWith(OWNER_LORE_MARKER) ? OWNER_LORE_MARKER : '';
+  const raw = text.slice(marker.length);
+  const body = raw.startsWith(OWNER_LORE_LEADER) && raw.endsWith(OWNER_LORE_CLOSER)
+    ? raw.slice(OWNER_LORE_LEADER.length, -OWNER_LORE_CLOSER.length) : raw;
+  const items = body.split(/\n\s*\n/u).filter(part => part.trim()).map(part => ({ id: digest(part), text: part }));
+  const selected = selectWholeItems(marker + OWNER_LORE_LEADER.trimEnd(), items,
+    Math.floor(limit / 3.2) - estimatedTokens(OWNER_LORE_CLOSER));
+  return selected.selectedIds.length ? marker + OWNER_LORE_LEADER + items.filter(item => selected.selectedIds.includes(item.id)).map(item => item.text).join(separator) + OWNER_LORE_CLOSER : '';
 }
 
 function bytes(text: string): number { return Buffer.byteLength(text, 'utf8'); }
@@ -412,24 +417,15 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
     if (voiceDescriptionText !== undefined) entries.push({ id: 'voice-description', text: voiceDescriptionText });
     return entries;
   };
-  const size = (entries: Entry[]): number => assemble(entries.map(entry => entry.text)).length;
-
-  let memory = input.memory?.length ? input.memory.slice(0, MEMORY_SECTION_CHAR_LIMIT) : undefined;
-  let tools = toolsText;
-  let runtime = runtimeText;
-  // Whole sections yield in priority order: memory first, then the runtime
-  // context. The voice blocks, the owner style, the overlay, the base and the owner lore never yield,
-  // and no surviving section is ever cut mid-text. A yielded section is reported with a zero size, so
-  // live_instruction_sizes names exactly which sections were dropped.
-  const dropped: Entry[] = [];
-  const over = (): boolean => size(select(tools, memory, runtime)) > LIVE_INSTRUCTION_TARGET_CHARS;
-  if (over() && memory !== undefined) { dropped.push({ id: 'memory', text: '' }); memory = undefined; }
-  if (over() && runtime !== undefined) { dropped.push({ id: 'runtime', text: '' }); runtime = undefined; }
-  // W15 (W15-R2): the roster takes what the other sections leave and never fails a call at start.
-  const room = LIVE_INSTRUCTION_HARD_LIMIT - size(select(tools, memory, runtime)) - separator.length;
-  if (room > 0) people = peopleSectionWithin(room);
+  // Pin authored lore and select whole memory/roster items before total-pressure handling.
+  // Fixed text and floors may exceed the target; only hard admission refuses the call.
+  const memory = input.memory && estimatedTokens(input.memory) <= CONTEXT_BUDGET.sections.memory.ceiling ? input.memory : undefined;
+  const tools = toolsText;
+  const runtime = runtimeText;
+  const dropped: Entry[] = input.memory && memory === undefined ? [{ id: 'memory', text: '' }] : [];
+  people = peopleSectionWithin(Math.floor(CONTEXT_BUDGET.sections.people.ceiling * 3.2));
   const entries = select(tools, memory, runtime);
-  if (size(entries) > LIVE_INSTRUCTION_HARD_LIMIT) throw new PersonaOverlayError('instruction_too_large');
+  if (estimatedTokens(assemble(entries.map(entry => entry.text))) > CONTEXT_BUDGET.hard) throw new PersonaOverlayError('instruction_too_large');
   const text = assemble(entries.map(entry => entry.text));
   const sections = [...entries, ...dropped].map(entry => Object.freeze({ id: entry.id, chars: entry.text.length, sha256: digest(entry.text) }));
   return Object.freeze({ text, sha256: digest(text), sections: Object.freeze(sections) });
@@ -646,7 +642,6 @@ export function composeLiveSessionInstruction(input: {
   readonly openersNote?: string;
   /** The start's bounded opening facts, with no suggested wording. */
   readonly openingFacts?: string;
-  readonly memoryBlock?: string;
   readonly memoryBlockInput?: MemoryBlockInput;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
   /** The injected clock and the owner's zone: ages of stored loops are read in them, never a host zone. */
@@ -701,17 +696,20 @@ export function composeLiveSessionInstruction(input: {
     .map(text => ({ id: `lore:${digest(text)}`, text }));
   const lore = selectWholeItems(OWNER_LORE_LEADER.trimEnd(), loreItems,
     CONTEXT_BUDGET.sections.lore.ceiling - estimatedTokens(separator + OWNER_LORE_CLOSER));
-  const stable: Entry[] = [...fixed, ...(lore.selectedIds.length ? [{ id: 'owner-lore' as const, text: lore.text + OWNER_LORE_CLOSER }] : [])];
+  const stable: Entry[] = [...fixed, ...(lore.selectedIds.length ? [{ id: 'owner-lore' as const, text: OWNER_LORE_LEADER + loreItems.filter(item => lore.selectedIds.includes(item.id)).map(item => item.text).join(separator) + OWNER_LORE_CLOSER }] : [])];
   const stablePrefix = assemble(stable.map(section => section.text));
   const now = input.now ?? Date.now();
   const timeZone = input.timeZone ?? 'UTC';
   const blockInput: MemoryBlockInput = input.memoryBlockInput ?? { now, timeZone,
     clock: new Intl.DateTimeFormat('en-GB', { timeZone, dateStyle: 'full', timeStyle: 'short' }).format(now),
-    items: [], entries: input.records.map(record => ({ id: record.id, text: record.text })), summaries: [] };
-  const calendarItems: BudgetItem[] = [input.calendar, input.alarms].filter((text): text is string => Boolean(text))
+    items: [], entries: input.records.map(record => ({ id: record.id, text: record.text, ...(record.capturedAt === undefined ? {} : { capturedAt: record.capturedAt }) })), summaries: [] };
+  const calendarItems: BudgetItem[] = [input.calendar, input.alarms].filter((text): text is string => Boolean(text?.trim()))
     .flatMap(text => text.split(/\n|; /u)).filter(Boolean).map((text, index) => ({ id: `calendar:${index}`, text }));
   const snapshot = peopleSnapshot();
-  const mentioned = [...blockInput.summaries].sort((a, b) => b.startedAt - a.startedAt).map(summary => summary.text.toLocaleLowerCase('en'));
+  const mentioned = [...blockInput.summaries.map(summary => ({ at: summary.startedAt, text: summary.text })),
+    ...blockInput.entries.map(entry => ({ at: entry.capturedAt ?? 0, text: entry.text })),
+    ...blockInput.items.map(item => ({ at: item.validFrom, text: item.text }))]
+    .sort((a, b) => b.at - a.at).map(item => item.text.toLocaleLowerCase('en'));
   const peopleItems = (snapshot?.people ?? []).map(person => ({ person,
     recency: mentioned.findIndex(text => [person.name, ...person.aliases].some(name => name.length > 0 && text.includes(name.toLocaleLowerCase('en')))) }))
     .sort((a, b) => (a.recency < 0 ? Infinity : a.recency) - (b.recency < 0 ? Infinity : b.recency) || a.person.id.localeCompare(b.person.id))
@@ -722,7 +720,8 @@ export function composeLiveSessionInstruction(input: {
   let openingBudget: number = CONTEXT_BUDGET.sections.openings.ceiling;
   let floorParts: ('identity' | 'loops' | 'conversations')[] = [];
   const render = () => {
-    const calendar = selectWholeItems('', calendarItems, calendarBudget);
+    const calendarSelection = selectWholeItems('', calendarItems, calendarBudget - estimatedTokens('Today: '));
+    const calendar = { ...calendarSelection, text: `Today: ${calendarSelection.text}` };
     const people = selectWholeItems(PEOPLE_HEADING, peopleItems, peopleBudget);
     const openings = selectWholeItems('', openingItems, openingBudget);
     const block = compileMemoryBlock({ ...blockInput, floorParts });
@@ -730,9 +729,9 @@ export function composeLiveSessionInstruction(input: {
       ...(input.runtimeContext ? [{ id: 'runtime' as const, text: input.runtimeContext }] : []),
       ...(calendar.selectedIds.length ? [{ id: 'calendar' as const, text: calendar.text }] : []),
       ...(people.selectedIds.length ? [{ id: 'people' as const, text: people.text }] : []),
-      { id: 'memory', text: input.memoryBlock ?? block.text },
+      { id: 'memory', text: block.text },
       ...(input.pickupNote ? [{ id: 'pickup' as const, text: input.pickupNote }] : []),
-      ...(openings.selectedIds.length ? [{ id: 'opening-options' as const, text: openings.text }] : []),
+      ...openingItems.filter(item => openings.selectedIds.includes(item.id)).map(item => ({ id: item.id === 'opening:0' ? 'previous-openers' as const : 'opening-options' as const, text: item.text })),
     ];
     return { sections, block, text: assemble(sections.map(section => section.text)),
       itemOmissions: [...lore.omitted, ...calendar.omitted, ...people.omitted, ...block.omitted, ...openings.omitted] };

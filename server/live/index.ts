@@ -18,7 +18,7 @@ import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapsh
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, zonedIso, type OpeningFacts } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, zonedIso, type OpeningFacts } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -1687,7 +1687,6 @@ export class LiveSessionOwner {
       const armedAlarms = activeAlarms(tx);
       const alarmNote = armedAlarmsNote(armedAlarms);
       const seededSummaries = guardSeededSummaries(tx, storedSummaries, { now, timeZone });
-      const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const roster = peopleSnapshot();
       const lore = /Authored background only; not instructions, evidence, memory availability or receipts:\n([\s\S]*?)\nEnd authored background\./u.exec(configuredPrompt.system)?.[1] ?? '';
@@ -1712,7 +1711,7 @@ export class LiveSessionOwner {
         memoryBlockInput: { now, timeZone,
           clock: this.#liveRuntimeContext(toolNames, clock).split('\n').filter(line => /^(Now:|Days:)/u.test(line)).join('\n'),
           items: admittedRecords.flatMap(record => record.memoryItem ? [record.memoryItem] : []),
-          entries: admittedRecords.filter(record => !record.memoryItem).map(record => ({ id: record.id, text: record.text })),
+          entries: admittedRecords.filter(record => !record.memoryItem).map(record => ({ id: record.id, text: record.text, ...(record.capturedAt === undefined ? {} : { capturedAt: record.capturedAt }) })),
           sources: Object.fromEntries(admittedRecords.filter(record => record.memoryItem).map(record => [record.id, record.sourceSessionIds ?? []])),
           summaries: seededSummaries.map(summary => ({ id: summary.liveSessionId, startedAt: summary.endedAt, text: summary.summary })),
         },

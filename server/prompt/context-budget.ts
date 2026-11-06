@@ -24,7 +24,7 @@ export const CONTEXT_BUDGET = {
   },
 } as const;
 
-export interface BudgetItem { readonly id: string; readonly text: string }
+export interface BudgetItem { readonly id: string; readonly text: string; readonly capturedAt?: number }
 export interface BudgetSelection {
   readonly text: string;
   readonly selectedIds: readonly string[];

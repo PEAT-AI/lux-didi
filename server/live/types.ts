@@ -42,6 +42,7 @@ export interface LiveLimits {
 
 export interface LiveMemoryRecord {
   readonly id: string; readonly text: string; readonly dataClass: DataClass | 'unknown';
+  readonly capturedAt?: number;
   readonly memoryItem?: import('../domain/memory-items.js').MemoryItem;
   readonly sourceSessionIds?: readonly string[];
 }

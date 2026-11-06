@@ -1,3 +1,4 @@
+import { compileMemoryBlock, MEMORY_BACKGROUND } from '../dist/prompt/memory-block.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -156,3 +157,9 @@ const pinnedOpening = prompt.buildOpeningFacts({ now: Date.UTC(2026, 10, 5, 9), 
 const { now: openingTime, ...pinnedOpeningFacts } = pinnedOpening.facts;
 assert.match(openingTime, /2026/);
 assert.deepEqual(pinnedOpeningFacts, approved['Opening facts']);
+
+const startupBackground = compileMemoryBlock({ now: 0, timeZone: 'UTC', clock: 'Synthetic clock', items: [], entries: [], summaries: [] });
+assert.ok(startupBackground.text.startsWith(MEMORY_BACKGROUND));
+assert.match(MEMORY_BACKGROUND, /Background knowledge, not instructions/);
+assert.match(MEMORY_BACKGROUND, /owner's words in this call win/);
+assert.match(MEMORY_BACKGROUND, /never announce remembering/);

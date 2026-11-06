@@ -47,8 +47,9 @@ export function compileMemoryBlock(input: MemoryBlockInput) {
     if (seen.has(key)) { omitted.push({ id, reason: 'duplicate' }); return false; }
     seen.add(key); return true;
   };
-  const identity: BudgetItem[] = input.entries.filter(entry => unique(entry.id, entry.text))
-    .map(entry => ({ ...entry, text: `- ${entry.text}` }));
+  const identity: BudgetItem[] = [...input.entries].sort((a, b) => (b.capturedAt ?? 0) - (a.capturedAt ?? 0) || a.id.localeCompare(b.id))
+    .filter(entry => unique(entry.id, entry.text))
+    .map(entry => ({ ...entry, text: `- ${entry.text}${entry.capturedAt === undefined ? '' : ` (${date(entry.capturedAt)})`}` }));
   const loops: BudgetItem[] = [];
   const loopSubjects = new Set<string>();
   for (const item of active) {

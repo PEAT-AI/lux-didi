@@ -266,12 +266,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       ...(assertionCode === undefined ? {} : { assertionCode }) };
 
   }
-  if (value.event === 'alarm_announced') {
-    // #107: the alarm block reached the provider. The proof that she was asked to speak, and how.
+  if (value.event === 'alarm_announced' || value.event === 'alarm_prompt_installed' || value.event === 'alarm_ready') {
+    // Alarm prompt installation, provider readiness and first audible output are separate receipts.
     if (!closedKeys(value, ['alarmId', 'event', 'mode'])) return;
     if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)) return;
     if (value.mode !== 'new_session' && value.mode !== 'in_call') return;
-    return { event: 'alarm_announced', alarmId: value.alarmId, mode: value.mode };
+    return { event: value.event, alarmId: value.alarmId, mode: value.mode };
   }
   if (value.event === 'alarm_speech_failed') {
     // C-ALARMSPEECH: she could not open, so the line names the alarm and one closed reason, never the label.
@@ -1446,9 +1446,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true, ...Object.fromEntries(ids.map(key => [key, value[key]])) };
   }
   if (value.event === 'live_provider_error') {
-    if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
+    if (!closedKeys(value, ['event', 'type', 'code', 'param', 'clientEventId', 'commandType', 'eventIdPrefix'])) return;
     if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
-    return { event: 'live_provider_error', type: value.type, code: value.code, param: value.param };
+    for (const key of ['clientEventId', 'eventIdPrefix']) if (value[key] !== undefined && !isSafeToken(value[key])) return;
+    if (value.commandType !== undefined && (typeof value.commandType !== 'string' || !/^[a-z][a-z0-9_.]{0,79}$/.test(value.commandType))) return;
+    return { event: 'live_provider_error', type: value.type, code: value.code, param: value.param,
+      ...(value.clientEventId === undefined ? {} : { clientEventId: value.clientEventId }),
+      ...(value.commandType === undefined ? {} : { commandType: value.commandType }),
+      ...(value.eventIdPrefix === undefined ? {} : { eventIdPrefix: value.eventIdPrefix }) };
   }
   if (value.event === 'live_continuation_timing') {
     const times = ['toolOutputAt', 'createAt', 'createdAt', 'firstItemAt', 'firstAudioAt'] as const;

@@ -83,3 +83,10 @@ Alarm log events are `alarm_scheduler_started`, `alarm_set`, `alarm_due`, `alarm
 `bash scripts/check-host.sh` compiles a temporary shell on macOS without launching it and runs the synthetic alarm matrix against an offline-packed host. The matrix uses a stub clock, fake provider and fake shell; no real audio or accounts are used. `bash scripts/check-live-session.sh` runs the parser, authority, storage, scheduler and log tests; `bash scripts/check-native-live.sh` exercises injected power, notification and audio-output policy. `bash scripts/check-docs.sh` verifies public documentation and prompt surfaces.
 
 `scripts/run-installed-checks.sh <installed-target>` includes the same alarm round trip against that target's packaged host, using isolated synthetic state and a stub clock. It does not launch the installed app or read its owner state. Its other installed checks retain their own authorization requirements; do not invoke the aggregate against an owner's installation without approval.
+
+An alarm's prompt installation is not proof that it spoke. The host records
+`alarm_prompt_installed` when installing the instruction, then `alarm_ready` when
+the provider is ready for the opening. It sends that opening once as session
+commentary with explicit `delegation_id: null`. Only the first audible output
+after that request, while playback is neither muted nor dropping the response,
+records `alarm_announced`; readiness and prompt installation do not announce it.

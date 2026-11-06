@@ -271,3 +271,11 @@ The host's closed illness-word list is a conservative backstop; the persona's fl
 ## How deep an answer is
 
 For information asks, the helper includes every supported fact that matters to the question, in time or relevance order. Overlapping facts appear once; incidental hits stay out. Missing information is named at the end. Length follows the facts, without a target or a recap. There is no preamble or narration of the search. Banter, greetings and remarks without a lookup stay short and in character. Later words can revise an earlier fragment; the answer addresses the latest whole request.
+
+Host speech instructions (the alarm opening, the muted-answer offer and the
+post-tool continuation request) use a session-level `session.commentary.append`
+with explicit `delegation_id: null`, not a typed owner turn. Typed owner input
+keeps its existing response commands; their client-delegation compatibility is
+a known gap. Provider rejection metadata includes the client event id, its prefix
+and the command type when retained in the adapter's bounded recent-command map,
+without logging instruction content.

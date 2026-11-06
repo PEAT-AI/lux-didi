@@ -89,6 +89,11 @@ function seedPriorCall(store: Store, sourceId: string, turns: { role: 'owner' | 
     tx.run('UPDATE fr1_prior SET live_session_id=?, idempotency_key=?', [prior, 'synthetic-prior']);
     tx.run('INSERT INTO live_sessions SELECT * FROM fr1_prior');
     tx.run('DROP TABLE fr1_prior');
+    // The grant is what carries the call's input class, so the prior call keeps the class it was opened with.
+    tx.run('CREATE TEMP TABLE fr1_prior_grant AS SELECT * FROM live_grants WHERE live_session_id=?', [sourceId]);
+    tx.run('UPDATE fr1_prior_grant SET grant_id=?, live_session_id=?', ['synthetic-prior-grant', prior]);
+    tx.run('INSERT INTO live_grants SELECT * FROM fr1_prior_grant');
+    tx.run('DROP TABLE fr1_prior_grant');
     let journal = 900;
     for (const turn of turns) {
       tx.run('INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?)',

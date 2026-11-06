@@ -419,3 +419,39 @@ bash scripts/check-combined-tree.sh origin/main release/10.7 --static   # static
 
 Both static passes read the head tree out of git, so any pair of shas replays from any worktree without a
 checkout. The check summary is Markdown: check, rc, duration and the last failing test.
+
+## Voice metrics on real calls
+
+A pass/fail eval cannot say whether the owner waited. `scripts/didi-voice-metrics` scores a recorded call on what
+reached the owner, so a change can be measured on the same call before and after it ships:
+
+```bash
+node scripts/didi-voice-metrics --data-dir /absolute/host/data --json
+node scripts/didi-voice-metrics --data-dir /absolute/host/data --session <liveSessionId>
+node scripts/didi-voice-metrics --data-dir /absolute/host/data --since 2026-01-01T00:00:00Z --json
+```
+
+It reads `<dir>/state.sqlite` from a private snapshot (the way `scripts/didi-timeline` does) and the host log
+under `<dir>/logs`, and it never writes into `<dir>`. Point it at a **copy** of the host's data directory; the
+snapshot connection makes the read safe to run, not the data safe to publish.
+
+Each metric prints per call and in total with P50, P90 and `n`. A turn the record cannot time is counted
+`unmeasured` for that metric, never dropped and never read as zero.
+
+| Metric | Definition |
+| --- | --- |
+| response latency | the owner's last finalized word of a turn to the first assistant audio: `trace_turn.first_audible_at` of the reply turn, else the earliest playback segment of that turn that became audible |
+| silence during delegation | while a helper task is open: the total and the longest stretch with no assistant playback audible. A task with a terminal status (`complete`, `no_action`, `incomplete`, `cancelled`) is open from `tasks.created_at` to its last write; a task still `running` is open until the call's own end, because it never writes again |
+| time to first grounded fact | the owner's last finalized word to the first helper answer the store records as delivered to the owner's session. The progress and local-recall commentary is **not** a fact source here: no release writes that line yet (`progress.commentary` exists in the trace kind spine with no emitter), so reading it would score a signal that cannot occur. `carriers.factCommentary` reports whether the logs hold one at all |
+| fast evidence | `fast_evidence` host events counted by outcome, with their elapsed P50 and P90; zero before FR1 ships, which is correct |
+| progress reports and corrections | per helper task: progress deliveries from the store's `task_deliveries` state, `commentary_sent` progress reports and `task_lifecycle` revisions from the host log; zero before FR2 ships, which is correct |
+
+The owner's anchor is the turn's own last `final=1` owner utterance, never the turn's close time: a measurement
+the store does not have prints as missing, and is never inferred from a neighbouring row.
+
+`unjoined` counts log lines of those families that name no call the store holds, so a zero that means "this
+release does not write the line" stays apart from a zero that means "written, and I could not attribute it".
+`carriers` names whether the log holds each forward-looking line at all.
+
+P50 and P90 are nearest-rank over the measured values. The definitions are code: `scripts/didi-voice-metrics`,
+graded by `server/test/voice-metrics.test.ts` on a synthetic store and log that carry no owner content.

@@ -40,7 +40,7 @@ bash scripts/run-local.sh --build-only
 
 for f in server/dist/chat/index.js server/dist/domain/facade.js server/dist/runtime/store.js \
          server/dist/memory/cli.js server/dist/test/memory-import.test.js \
-         server/dist/test/memory-context.test.js server/dist/test/connected.test.js; do
+         server/dist/test/memory-context.test.js server/dist/test/memory-delete.test.js server/dist/test/connected.test.js; do
   test -s "$f" || { echo "check-memory-context: missing build output: $f" >&2; exit 1; }
 done
 
@@ -52,7 +52,8 @@ status=0
 # and CONNECTED authorization/context regressions, against the real compiled build.
 node_test_files_bounded 1200 --test-reporter=tap --test-timeout=30000 \
   server/dist/test/live-memory-note.test.js \
-  server/dist/test/memory-import.test.js server/dist/test/memory-context.test.js server/dist/test/summaries.test.js \
+  server/dist/test/memory-import.test.js server/dist/test/memory-context.test.js server/dist/test/memory-delete.test.js \
+  server/dist/test/summaries.test.js \
   server/dist/test/chat.test.js server/dist/test/http.test.js \
   server/dist/test/host.test.js server/dist/test/connected.test.js \
   | tee "$log" || status=$?

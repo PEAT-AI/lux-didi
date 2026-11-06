@@ -129,6 +129,8 @@ export interface LiveOwnerConfig {
   readonly now?: () => number;
   /** IANA timezone of the host clock, for the runtime context; defaults to the process timezone. */
   readonly timeZone?: string;
+  /** Where that zone came from: the owner's settings, a test pin, or the host process. Logged, never guessed. */
+  readonly timeZoneSource?: 'pin' | 'host' | 'settings';
   /** Trusted in-process timer seam; not a transport or an error callback. */
   readonly schedule?: (callback: () => void, delayMs: number) => { unref(): void; cancel(): void };
 }

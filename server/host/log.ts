@@ -273,7 +273,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.liveSessionId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.liveSessionId)) return;
     if (typeof value.observedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(value.observedAt)) return;
     if (typeof value.timeZone !== 'string' || !/^[A-Za-z][A-Za-z0-9_+/-]{1,63}$/.test(value.timeZone)) return;
-    if (value.clockSource !== 'pin' && value.clockSource !== 'host') return;
+    if (value.clockSource !== 'settings' && value.clockSource !== 'pin' && value.clockSource !== 'host') return;
     return { event: 'live_session_clock', liveSessionId: value.liveSessionId, observedAt: value.observedAt,
       timeZone: value.timeZone, clockSource: value.clockSource };
   }

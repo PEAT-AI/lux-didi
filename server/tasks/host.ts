@@ -30,6 +30,17 @@ export interface HostTaskOptions {
   log?(event: Record<string, unknown>): void;
 }
 export type HostTaskFactory = (sessionId: string, delivery: Delivery, connectionIds?: readonly string[]) => TaskRuntime;
+/**
+ * M2: the zone this task's own session was composed in, read off the session row rather than resolved again
+ * from the host process, so the helper prompt states the same instant the live instruction does. A text
+ * session or a row without a recorded zone falls back to the configured zone.
+ */
+export function sessionClockZone(store: Store, sessionId: string): string | undefined {
+  const row = store.transaction(tx => tx.get('SELECT time_zone FROM live_sessions WHERE live_session_id=?', [sessionId]));
+  const recorded = String(row?.['time_zone'] ?? '');
+  return recorded || undefined;
+}
+
 /** Production task composition. Store is the only writer; connector readers keep their own configured boundary. */
 export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
   const infer = options.infer ?? createModelPort({ role: options.models.worker, credentials: options.credentials });
@@ -40,7 +51,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
     const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer,
-      timeZone: options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings(), readPublishedCatalogues(join(options.store.directory, 'state.sqlite'))), ...(options.log ? { log: options.log } : {}),
+      timeZone: sessionClockZone(options.store, sessionId) ?? options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings(), readPublishedCatalogues(join(options.store.directory, 'state.sqlite'))), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');
         if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen: exposed ?? false });

@@ -538,7 +538,9 @@ test('every event handed to the host-log emitter has a safeEvent branch', () => 
 test('M2: the session clock line keeps its closed shape and drops anything else', () => {
   const line = { event: 'live_session_clock', liveSessionId: 'session-1', observedAt: '2026-11-06T06:45:58+07:00', timeZone: 'Asia/Jakarta', clockSource: 'host' };
   assert.deepEqual(safeEvent(line), line);
-  assert.equal(safeEvent({ ...line, clockSource: 'settings' }), undefined, 'the source stays a closed set');
+  assert.deepEqual(safeEvent({ ...line, clockSource: 'settings' }), { ...line, clockSource: 'settings' }, 'the owner settings zone is a source');
+  assert.deepEqual(safeEvent({ ...line, clockSource: 'pin' }), { ...line, clockSource: 'pin' });
+  assert.equal(safeEvent({ ...line, clockSource: 'guessed' }), undefined, 'the source stays a closed set');
   assert.equal(safeEvent({ ...line, timeZone: 'the owner zone' }), undefined, 'the zone stays an IANA name');
   assert.equal(safeEvent({ ...line, observedAt: '2026-11-06T06:45:58Z' }), undefined, 'the instant carries its offset');
   assert.equal(safeEvent({ ...line, text: 'owner words' }), undefined, 'no owner content rides this line');

@@ -19,10 +19,18 @@ function object(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) fail('schema');
   return value as Record<string, unknown>;
 }
-function fields(value: unknown, keys: string[]): Record<string, unknown> {
+function fields(value: unknown, keys: string[], optional: readonly string[] = []): Record<string, unknown> {
   const o = object(value);
-  if (Object.keys(o).some(k => !keys.includes(k)) || keys.some(k => !Object.hasOwn(o, k))) fail('schema');
+  if (Object.keys(o).some(k => !keys.includes(k)) || keys.some(k => !optional.includes(k) && !Object.hasOwn(o, k))) fail('schema');
   return o;
+}
+
+/** M2: an owner-chosen IANA zone, or absent. A name Intl refuses is a schema error, never a silent fallback. */
+function liveTimeZone(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !value.length || value.length > 64) return fail('invalid_time_zone');
+  try { new Intl.DateTimeFormat('en-US', { timeZone: value }); } catch { return fail('invalid_time_zone'); }
+  return value;
 }
 function text(value: unknown, max = 256): string {
   if (typeof value !== 'string' || !value.length || value.length > max || Buffer.from(value, 'utf8').toString('utf8') !== value) fail('schema');
@@ -50,10 +58,12 @@ export function validatePreferences(raw: unknown, ownerId: string): ValidatedPre
   text(ownerId, 128);
   // Ownership/class errors are explicit even when the required property is absent.
   owned(object(raw), ownerId);
-  const o = fields(raw, [...ownedKeys, 'language', 'register', 'humor', 'verbosity']);
+  const o = fields(raw, [...ownedKeys, 'language', 'register', 'humor', 'verbosity', 'timeZone'], ['timeZone']);
   const language = canonicalLocale(o['language']); enumeration(o['register'], ['plain', 'formal']);
   enumeration(o['humor'], ['off', 'dry']); enumeration(o['verbosity'], ['brief', 'balanced', 'detailed']);
-  return Object.freeze({ schemaVersion: 1, ownerId, dataClass: o['dataClass'], language, register: o['register'], humor: o['humor'], verbosity: o['verbosity'] }) as ValidatedPreferences;
+  const timeZone = liveTimeZone(o['timeZone']);
+  return Object.freeze({ schemaVersion: 1, ownerId, dataClass: o['dataClass'], language, register: o['register'], humor: o['humor'], verbosity: o['verbosity'],
+    ...(timeZone === undefined ? {} : { timeZone }) }) as ValidatedPreferences;
 }
 function canonical(value: unknown, depth = 0): unknown {
   if (depth > 20) fail('schema');

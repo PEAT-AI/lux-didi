@@ -26,7 +26,7 @@ const MODEL = 'models/live-clock-test';
 const voice = { capabilities: {}, open(): never { throw new Error('the clock suite never opens a provider'); } } as unknown as LiveVoicePort;
 const tasks = (() => { throw new Error('the clock suite never starts a task'); }) as unknown as HostTaskFactory;
 
-function owner(t: TestContext): { owner: ReturnType<typeof createLiveSessionOwner>; store: Store; clock: { now: number }; ctx: LiveContext } {
+function owner(t: TestContext, zone: { timeZone: string; timeZoneSource?: 'pin' | 'host' | 'settings' } = { timeZone: 'Asia/Jakarta' }): { owner: ReturnType<typeof createLiveSessionOwner>; store: Store; clock: { now: number }; ctx: LiveContext } {
   const dir = mkdtempSync(join(tmpdir(), 'live-clock-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   const profile = validateLiveProfile({ provider: 'gemini', liveModelId: MODEL, voice: 'ExplicitVoice', keyReference: 'test-reference',
@@ -36,7 +36,7 @@ function owner(t: TestContext): { owner: ReturnType<typeof createLiveSessionOwne
     limits: { unusedMs: 3_600_000 } });
   const clock = { now: LATE };
   const live = createLiveSessionOwner({ createTaskRuntime: tasks, store, voice, profile,
-    now: () => clock.now, timeZone: 'Asia/Jakarta', schedule: () => ({ unref: () => {}, cancel: () => {} }) });
+    now: () => clock.now, ...zone, schedule: () => ({ unref: () => {}, cancel: () => {} }) });
   t.after(() => { void live.shutdown('app_quit'); rmSync(dir, { recursive: true, force: true }); });
   return { owner: live, store, clock, ctx: { clientId: 'client', auditId: 'audit', authorityEpoch: store.authorityEpoch } };
 }
@@ -84,4 +84,13 @@ test('the session row carries the observed instant in the owner zone and the zon
   const stored = h.store.transaction(tx => tx.get('SELECT observed_at, time_zone FROM live_sessions LIMIT 1')!);
   assert.equal(String(stored['time_zone']), 'Asia/Jakarta');
   assert.equal(String(stored['observed_at']), '2026-11-06T06:45:58+07:00', 'the instant is written in the owner zone, offset included');
+});
+
+test('M2: the owner settings zone is the session zone, and the record carries it with that offset', (t) => {
+  const h = owner(t, { timeZone: 'Europe/Berlin', timeZoneSource: 'settings' });
+  h.clock.now = MORNING;
+  h.owner.create({ inputClass: 'ordinary', idempotencyKey: 'clock-settings' }, h.ctx);
+  const stored = h.store.transaction(tx => tx.get('SELECT observed_at, time_zone FROM live_sessions LIMIT 1')!);
+  assert.equal(String(stored['time_zone']), 'Europe/Berlin', 'the override wins over the host zone');
+  assert.equal(String(stored['observed_at']), '2026-11-06T00:45:58+01:00', 'the instant is the owner zone instant');
 });

@@ -179,11 +179,13 @@ export interface SessionTranscript {
   readonly ownerTurns: number;
   readonly endedAt: number | null;
   readonly createdAt: number;
+  /** The zone the session was composed in, so the distillate is read in the owner's own day. */
+  readonly timeZone?: string;
 }
 
 /** Read finished owner and assistant turns in order, plus the tool names used (never tool results). */
 export function readSessionTranscript(tx: Transaction, liveSessionId: string): SessionTranscript {
-  const session = tx.get('SELECT created_at, terminal_at FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
+  const session = tx.get('SELECT created_at, terminal_at, time_zone FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
   const rows = tx.all('SELECT kind, text, tool_json, finished FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [liveSessionId]);
   const turns: DistillationTurn[] = [];
   const toolNames: string[] = [];
@@ -211,7 +213,8 @@ export function readSessionTranscript(tx: Transaction, liveSessionId: string): S
   flush('inputTranscription'); flush('outputTranscription');
   return { turns, toolNames, ownerTurns,
     endedAt: session && session['terminal_at'] !== null && session['terminal_at'] !== undefined ? Number(session['terminal_at']) : null,
-    createdAt: session ? Number(session['created_at']) : Date.now() };
+    createdAt: session ? Number(session['created_at']) : Date.now(),
+    ...(session && typeof session['time_zone'] === 'string' && session['time_zone'] ? { timeZone: String(session['time_zone']) } : {}) };
 }
 
 /** Parse the model's JSON, tolerating a fenced block. Returns null on a validation failure. */
@@ -391,7 +394,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     }
     // The in-flight row: a host that exits during the model call leaves it for the next start to retry.
     options.store.transaction(tx => summaries.markSummaryPending(tx, liveSessionId, options.now(), provenance));
-    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, toolOutcomes, dateMs: endedAt, timeZone: options.timeZone, injected });
+    // The session's own zone outranks the host's: a call composed on another day is read on that day.
+    const zone = transcript.timeZone ?? options.timeZone;
+    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, toolOutcomes, dateMs: endedAt, timeZone: zone, injected });
     const truncated = input.truncated || !!runOptions.deadHost;
     emit({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
     const startedAt = options.now();
@@ -408,7 +413,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           return;
         }
         result = await callModel(input.text, source.dataClass, controller.signal,
-          { startMs: transcript.createdAt, endMs: endedAt, timeZone: options.timeZone });
+          { startMs: transcript.createdAt, endMs: endedAt, timeZone: zone });
       } catch (error) {
         // A port that surfaces the credential failure by throwing gets the same rule as one that returns it.
         lastError = error instanceof Error && error.message === 'credential_unavailable' ? 'credential_unavailable' : 'model_error';

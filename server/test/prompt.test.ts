@@ -47,6 +47,13 @@ test('closed preference schema rejects unknowns, unbounded settings and owner/cl
   assert.ok(Object.isFrozen(validatePreferences(rawPreferences, 'alice')));
 });
 
+test('M2: the owner zone is an optional preference, and only a real IANA name is accepted', () => {
+  assert.equal(validatePreferences(rawPreferences, 'alice').timeZone, undefined, 'absent means the host zone');
+  assert.equal(validatePreferences({ ...rawPreferences, timeZone: 'Asia/Jakarta' }, 'alice').timeZone, 'Asia/Jakarta');
+  for (const bad of ['', 'Mars/Olympus', 'x'.repeat(70)])
+    rejects('invalid_time_zone', () => validatePreferences({ ...rawPreferences, timeZone: bad }, 'alice'));
+});
+
 test('explicit BCP47 locales canonicalize without defaults, inference or English fallback', () => {
   for (const [supplied, canonical] of [['de-de', 'de-DE'], ['hi-in', 'hi-IN'], ['de-DE', 'de-DE'], ['hi-IN', 'hi-IN'], ['es-419', 'es-419'], ['zh-hant-tw', 'zh-Hant-TW']]) {
     const preferences = validatePreferences({ ...rawPreferences, language: supplied }, 'alice');

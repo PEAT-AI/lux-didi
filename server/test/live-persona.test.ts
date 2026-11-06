@@ -1,3 +1,4 @@
+import { validateOwnerProfile } from '../prompt/index.js';
 import { installPeople, renderPeople, type Person } from '../people/index.js';
 import { CONTEXT_BUDGET, estimatedTokens } from '../prompt/context-budget.js';
 import { MEMORY_BACKGROUND, type MemoryBlockInput } from '../prompt/memory-block.js';

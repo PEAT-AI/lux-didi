@@ -24,10 +24,8 @@ import { listStandingMemory } from '../memory/import.js';
 import {
   NAYA_LIVE_BASE,
   TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-  buildEarlierConversationsSection,
   composeLiveInstruction,
   composeLiveSessionInstruction,
-  earlierConversationsBudget,
 } from '../prompt/live-persona.js';
 
 export type MemoryEvalClass = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -291,11 +289,11 @@ export function startBlock(tx: Transaction, input: { nowMs: number; cutoffMs: nu
       id: record.entryId, text: record.text, capturedAt: new Date(record.capturedAt).toISOString(), status: null,
     })),
   ];
-  const earlier = buildEarlierConversationsSection(
-    summaries.injectionCandidates(tx).filter(candidate => candidate.endedAt <= input.cutoffMs),
-    { now: input.nowMs, timeZone: input.timeZone, maxChars: earlierConversationsBudget(0) },
-  );
+  const earlier = {
+    candidates: summaries.injectionCandidates(tx).filter(candidate => candidate.endedAt <= input.cutoffMs),
+  };
   const base = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
+  // M11 owns the composer: the start block's earlier calls are the memory block's summaries, budgeted there.
   const composed = composeLiveSessionInstruction({
     text: base.text,
     tools: [],
@@ -304,8 +302,20 @@ export function startBlock(tx: Transaction, input: { nowMs: number; cutoffMs: nu
       text: record.text,
       ...(record.status === null ? {} : { standing: { id: record.id, text: record.text, status: record.status, capturedAt: record.capturedAt } }),
     })),
+    memoryBlockInput: {
+      now: input.nowMs,
+      timeZone: input.timeZone,
+      clock: new Intl.DateTimeFormat('en-GB', { timeZone: input.timeZone, dateStyle: 'full', timeStyle: 'short' }).format(input.nowMs),
+      items: [],
+      entries: records.map(record => ({
+        id: record.id,
+        text: record.text,
+        ...(Number.isFinite(Date.parse(record.capturedAt)) ? { capturedAt: Date.parse(record.capturedAt) } : {}),
+      })),
+      sources: {},
+      summaries: earlier.candidates.map(candidate => ({ id: candidate.id, sessionId: candidate.liveSessionId, startedAt: candidate.endedAt, text: candidate.summary })),
+    },
     trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    ...(earlier.section === '' ? {} : { earlierConversations: earlier.section }),
     now: input.nowMs,
     timeZone: input.timeZone,
   });

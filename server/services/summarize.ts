@@ -3,7 +3,7 @@ import type { DataClass, ModelPort, ModelRequest, ModelResult } from '../adapter
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import { OPEN_TOOL_NAMES } from '../tools/open.js';
-import { HISTORY_CLASSES, historyForgotten, historySessionEvidence } from '../domain/history-lifecycle.js';
+import { HISTORY_CLASSES, historyForgotten, historySessionEvidence, ownerMemorySession } from '../domain/history-lifecycle.js';
 import { guardWriteClaims, writeFacts } from '../domain/write-claims.js';
 import * as summaries from '../domain/summaries.js';
 
@@ -45,7 +45,8 @@ export const SUMMARY_START_SETTLE_BUDGET_MS = 2_000;
 export const SUMMARY_EXIT_SETTLE_BUDGET_MS = SUMMARY_DEADLINE_BUDGET_MS;
 /** The newest retryable sessions a single host start re-queues; older ones wait for a later start. */
 export const SUMMARY_RECOVERY_LIMIT = 30;
-export const SUMMARY_MIN_OWNER_TURNS = 2;
+/** One substantive owner turn is enough: 188 of 227 calls carried nothing else and lost their summary. */
+export const SUMMARY_MIN_OWNER_TURNS = 1;
 
 /** How long the separate open-loop line may be; the prompt asks for the same bound. */
 export const OPEN_LOOP_MAX_CHARS = 120;
@@ -168,10 +169,28 @@ export function readToolOutcomes(tx: Transaction, liveSessionId: string): readon
   return rows.flatMap(row => toolOutcomeOf(row) ?? []);
 }
 
+const SMALL_TALK_WORDS: ReadonlySet<string> = new Set(['hello', 'hi', 'hey', 'thanks', 'thank', 'okay', 'ok',
+  'yes', 'no', 'yeah', 'sure', 'goodbye', 'bye', 'morning', 'night', 'great', 'nice', 'cool', 'please', 'sorry']);
+
+/**
+ * A substantive owner turn carries a noun phrase and more than four words. The test is deliberately
+ * mechanical: a greeting, an acknowledgement or a one-word answer never earns a summary.
+ */
+export function isSubstantiveOwnerTurn(text: string): boolean {
+  const words = text.trim().split(/\s+/).filter(word => word.length > 0);
+  if (words.length <= 4) return false;
+  return words.some(word => {
+    const bare = word.toLowerCase().replace(/[^a-z]/g, '');
+    return bare.length >= 4 && !SMALL_TALK_WORDS.has(bare);
+  });
+}
+
 export interface SessionTranscript {
   readonly turns: readonly DistillationTurn[];
   readonly toolNames: readonly string[];
   readonly ownerTurns: number;
+  /** Owner turns that carry a noun phrase and more than four words; small talk is not one. */
+  readonly substantiveOwnerTurns: number;
   readonly endedAt: number | null;
   readonly createdAt: number;
 }
@@ -184,11 +203,16 @@ export function readSessionTranscript(tx: Transaction, liveSessionId: string): S
   const toolNames: string[] = [];
   const pending: Record<'inputTranscription' | 'outputTranscription', string> = { inputTranscription: '', outputTranscription: '' };
   let ownerTurns = 0;
+  let substantiveOwnerTurns = 0;
   const flush = (kind: 'inputTranscription' | 'outputTranscription') => {
     const text = pending[kind].trim();
     pending[kind] = '';
     if (!text) return;
-    if (kind === 'inputTranscription') { ownerTurns += 1; turns.push({ speaker: 'owner', text }); }
+    if (kind === 'inputTranscription') {
+      ownerTurns += 1;
+      if (isSubstantiveOwnerTurn(text)) substantiveOwnerTurns += 1;
+      turns.push({ speaker: 'owner', text });
+    }
     else turns.push({ speaker: 'assistant', text });
   };
   for (const row of rows) {
@@ -204,7 +228,7 @@ export function readSessionTranscript(tx: Transaction, liveSessionId: string): S
     }
   }
   flush('inputTranscription'); flush('outputTranscription');
-  return { turns, toolNames, ownerTurns,
+  return { turns, toolNames, ownerTurns, substantiveOwnerTurns,
     endedAt: session && session['terminal_at'] !== null && session['terminal_at'] !== undefined ? Number(session['terminal_at']) : null,
     createdAt: session ? Number(session['created_at']) : Date.now() };
 }
@@ -373,7 +397,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'summary_route_class_denied' });
       return;
     }
-    if (transcript.ownerTurns < SUMMARY_MIN_OWNER_TURNS) {
+    if (transcript.substantiveOwnerTurns < SUMMARY_MIN_OWNER_TURNS) {
       options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'too_few_turns', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
       emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'too_few_turns' });
       return;
@@ -499,6 +523,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
 
   return {
     schedule(liveSessionId: string): void {
+      // Canary and eval sessions never become the owner's memory (lux 98495): they get no turn log,
+      // no summary row and therefore no dreaming job.
+      if (!options.store.transaction(tx => ownerMemorySession(tx, liveSessionId))) return;
       options.store.transaction(tx => persistHistoryTurns(tx, liveSessionId));
       void serialize(() => distill(liveSessionId)).catch(() => { /* never surfaces on the close path */ });
     },

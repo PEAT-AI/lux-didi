@@ -156,3 +156,27 @@ test('final waits behind an unaccepted progress envelope and then delivers as re
   for (let i = 0; i < sent.length; i++) { assert.ok(i < 20); delivery.accepted(`c${i + 1}`); }
   assert.match(sent.join(' '), /Synthetic final/); assert.match(sent.join(' '), /result/);
 });
+
+test('progress requires one to five nonblank sourced findings and a nonblank remaining read', async () => {
+  const { REPORT_PROGRESS_TOOL, validateArguments } = await import('../tasks/tools.js');
+  assert.equal(validateArguments(REPORT_PROGRESS_TOOL, progress.args).ok, true);
+  for (const args of [
+    { ...progress.args, findings: [] },
+    { ...progress.args, findings: Array.from({ length: 6 }, () => progress.args.findings[0]) },
+    { ...progress.args, findings: [{ text: 'A guess', source: ' ' }] },
+    { ...progress.args, findings: [{ text: ' ', source: 'calendar: synthetic' }] },
+    { ...progress.args, still_checking: ' ' },
+  ]) assert.equal(validateArguments(REPORT_PROGRESS_TOOL, args).ok, false);
+});
+
+test('a progress report queued while output is busy cannot drain after its revision is stale', () => {
+  let current = true;
+  const sent: string[] = [];
+  const delivery = new TaskDelivery({ isCurrent: () => current, append: (_binding, text) => { sent.push(text); return 'synthetic-command'; }, state: () => {} });
+  delivery.socket(1); delivery.activity({ outputQuiet: false, ownerSpeaking: false });
+  delivery.deliver(identity, { progress: true, status: 'incomplete', text: 'Provisional, still checking replies: Tuesday [calendar].', findings: [] });
+  assert.equal(sent.length, 0);
+  current = false;
+  delivery.activity({ outputQuiet: true, ownerSpeaking: false });
+  assert.equal(sent.length, 0);
+});

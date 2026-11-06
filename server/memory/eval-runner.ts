@@ -447,6 +447,9 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
         }
       }
 
+      // --strict buys the misses a missing stage would have produced, never a pass.
+      if (strict) for (const stage of notRun) misses.push(`not_run:${stage}`);
+
       details.push({
         id: item.id,
         class: item.class,

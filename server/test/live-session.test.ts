@@ -1612,9 +1612,11 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   }));
   assert.ok(current.liveSessions.every(row => row['resumption_handle'] === null && row['connection_generation'] === 0));
   assert.ok(current.liveSessions.every(row => row['memory_provenance'] === null), 'additive v4 provenance is null on legacy rows');
+  assert.ok(current.liveSessions.every(row => row['observed_at'] === null && row['time_zone'] === null), 'the v15 session clock is null on legacy rows');
   assert.deepEqual({ ...current, liveSessions: current.liveSessions.map(({ memory_provenance: _newColumn, resumption_handle: _handle, connection_generation: _generation,
     diagnostic_metadata_state: _dm, diagnostic_content_state: _dc, native_receipt_state: _nr, diagnostic_failures: _df,
-    diagnostic_last_reason: _dl, diagnostic_unattributed_transcripts: _du, diagnostic_clock_domain: _dcd, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
+    diagnostic_last_reason: _dl, diagnostic_unattributed_transcripts: _du, diagnostic_clock_domain: _dcd,
+    observed_at: _clockAt, time_zone: _clockZone, ...legacy }) => legacy) }, { ...prior, liveSessions: prior.liveSessions.map(row => ({ ...row })) }, 'all pre-existing Live, CHAT and Domain values stay byte-identical');
   assert.deepEqual(migrated.transaction(tx => tx.all('SELECT journal_id,tool_json FROM live_journal ORDER BY journal_id').map(row => ({ ...row }))),
     [41, 42, 43].map(journal_id => ({ journal_id, tool_json: null })));
   migrated.transaction(tx => {

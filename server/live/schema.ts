@@ -197,9 +197,10 @@ export const liveMigrations: readonly SchemaMigration[] = [{
     // A separate table, so no existing session row is rewritten and every pre-existing value stays byte-identical.
     `CREATE TABLE live_conversations (owner_assistant_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, started_at TEXT NOT NULL)`,
     `CREATE TABLE live_session_conversations (live_session_id TEXT PRIMARY KEY REFERENCES live_sessions(live_session_id), conversation_id TEXT NOT NULL)`,
-]}, { owner: 'live', version: 12, statements: [
+]}, { owner: 'live', version: 15, statements: [
     // The session's own clock: the instant it was composed at, written in the owner's zone, and the IANA
     // zone itself. The runtime context, the helper prompts and the note writer all read this record.
+    // Versions 13 and 14 belong to vaultMigrations, which shares this owner; the store sorts by version.
     `ALTER TABLE live_sessions ADD COLUMN observed_at TEXT`,
     `ALTER TABLE live_sessions ADD COLUMN time_zone TEXT`,
 ]}, ...vaultMigrations, ...luxNoteMigrations, ...notesExportMigrations];

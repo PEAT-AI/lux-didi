@@ -46,7 +46,7 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const voice = persona.NAYA_WORK_DELIVERY;
 const { WORKER_INSTRUCTIONS: worker } = await import(pathToFileURL(`${dist}/tasks/instructions.js`).href);
-assert.ok(worker.length === 7206);
+assert.ok(worker.length === 7554);
 for (const text of [voice, worker]) {
   assert.doesNotMatch(text, /research|[\u2013\u2014]/i);
   assertNoRecitation(text);
@@ -56,13 +56,14 @@ assert.match(voice, /MUST be handed off in the same turn/);
 // C-PROMPT: one rule per behaviour. A hand-off usually needs no words, delivery keeps every fact exact and
 // leaves all other phrasing to her without added facts; a closing question must still be earned.
 for (const rule of [
-  'A hand-off usually needs no words',
-  'an acknowledgement never promises work',
+  "Acknowledge each ask at once, briefly naming points; say you're looking only after hand-off, never guess the outcome.",
+  "Say provisional or local recall findings now with limits; don't wait.",
+  'If later word changes your answer, say what changed, the new fact and what it replaces.',
+  'On confirmation add at most one clause or nothing; give full detail when warranted.', 
   'Reproduce every exact entity verbatim',
   'no rounding, dropping or rephrasing',
   'Everything else is in your own voice',
   'Add nothing the result does not say',
-  'Collect every part through final:true before speaking',
   'never summarise what he asked to hear',
 ]) assert.ok(voice.includes(rule), `the delivery rule is stated: ${rule}`);
 for (const gone of ['freshly worded', 'nothing summarised', 'Close with a costly question', 'Say still about one',

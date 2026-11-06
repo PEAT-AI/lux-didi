@@ -953,6 +953,16 @@ test('M0: route admission preserves private notes, derives metadata and logs exc
     const modelId = provider === 'openai' ? 'gpt-live-1' : 'models/synthetic';
     const profile = validateLiveProfile({ provider, liveModelId: modelId, voice: 'SyntheticVoice', keyReference: 'synthetic',
       route: { enabled: true, provider, modelId, dataClasses }, prompt: { text: 'SYNTHETIC BASE', dataClass: 'ordinary' } });
+    for (let i = 0; i < 3; i++) {
+      const id = `m0-prior-${i}`;
+      seedConversation(h.store, id, SUMMARY_NOW - (i + 1) * 60_000);
+      h.store.transaction(tx => {
+        tx.run('UPDATE history_sessions SET data_class=? WHERE live_session_id=?', ['sensitive', id]);
+        const source = historySessionEvidence(tx, id)!;
+        summaries.insertSummary(tx, { liveSessionId: id, status: 'complete', summary: `SYNTHETIC earlier call ${i}`,
+          endedAt: SUMMARY_NOW - (i + 1) * 60_000, dataClass: source.dataClass, sourceRevision: source.revision, now: SUMMARY_NOW });
+      });
+    }
     const events: Record<string, unknown>[] = [];
     const error = console.error;
     console.error = (line: string) => { try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { /* non-JSON diagnostic */ } };
@@ -965,11 +975,12 @@ test('M0: route admission preserves private notes, derives metadata and logs exc
       const session = owner.create(input, ctx);
       owner.create(input, ctx);
       const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['accepted_prompt_snapshot']))) as { system: string; dataClasses: string[] };
-      assert.equal(frozen.system.includes('SYNTHETIC PRIVATE NOTE'), provider === 'openai');
-      assert.deepEqual(frozen.dataClasses, provider === 'openai' ? ['ordinary', 'private'] : ['ordinary']);
+      assert.equal(/# Memory[\s\S]*SYNTHETIC PRIVATE NOTE/u.test(frozen.system), provider === 'openai');
+      for (let i = 0; i < 3; i++) assert.equal(frozen.system.includes(`[session:m0-prior-${i}]`), provider === 'openai');
+      assert.deepEqual(frozen.dataClasses, provider === 'openai' ? ['ordinary', 'private', 'sensitive'] : ['ordinary']);
       const excluded = events.filter(event => event['event'] === 'memory_excluded');
       assert.equal(excluded.length, 1, 'idempotent create logs exclusions only once');
-      assert.deepEqual(excluded[0]!['reasons'], { class: provider === 'openai' ? 1 : 2, yield: 0, legacy: 0, source: 0, budget: 0 });
+      assert.deepEqual(excluded[0]!['reasons'], { class: provider === 'openai' ? 1 : 5, yield: 0, legacy: 0, source: 0, budget: 0 });
     } finally { console.error = error; await owner.shutdown(); h.cleanup(); }
   }
 });

@@ -34,6 +34,9 @@ scripts/didi-memory-eval --store <copy-dir> --golden <golden.jsonl> --out <repor
   `not_run: no_runner`; nothing is invented to fill the gap.
 - `--strict` counts a `not_run` stage as a miss. The release check does not use
   it while the restore tool and the live first-answer runner are absent.
+- Unknown argv is refused: an unknown option, a stray argument, a doubled option
+  or an option without its value exits 2. A typo must never silently switch a
+  stage off on a gate with no human in the loop.
 - `--verifier <openai-model>` opts into one structured grading call at
   temperature 0 for an item whose substrings did not match. It needs
   `OPENAI_API_KEY` and refuses to run without it. Offline nothing is verified by
@@ -67,8 +70,12 @@ restore.
    a search ran. A denial with no search is the `denial_before_search` miss. On
    base there is no live runner, so a golden item with no recorded answer reports
    `not_run: no_runner`.
-5. **Class 7 restore.** The restore tool is not registered on base, so every
-   class 7 item reports `not_run: tool_missing`.
+5. **Class 7 restore.** The stage probes for a registered restore tool. When one
+   answers it is called with the item's reference and eval time, and the
+   conversation it names is scored against the gold turns (fidelity 0 to 1, a
+   wrong conversation is `restore_miss`). When the probe finds nothing the item
+   reports `not_run: tool_missing`; unit 6 registers the tool in
+   `registeredRestoreTool` and the gate opens by itself.
 6. **Latency.** Final audio to first audio is recorded when a runner supplied it,
    as p50 and p90.
 
@@ -84,8 +91,8 @@ confirms them in one place.
 | start coverage | 0.90 | share of start-block items with no miss |
 | clock and date errors | 0 | a class 3 item with a miss is a date error |
 | false memory | 0 | any `forbidden` string present in a scored stage |
-| corrections | all green | no miss among class 4 items |
-| restore | all green | no miss among class 7 items |
+| corrections | 0 misses | `BARS.correctionMisses` over class 4 items |
+| restore | 0 misses | `BARS.restoreMisses` over class 7 items |
 
 A stage that reports `not_run` leaves the denominator; `--strict` turns it into a
 miss instead.

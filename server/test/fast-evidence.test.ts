@@ -84,8 +84,11 @@ const ownerSaid = (live: Live, text: string): Promise<void> => live.emit({ type:
 function seedPriorCall(store: Store, sourceId: string, turns: { role: 'owner' | 'assistant'; text: string; at: number }[]): string {
   const prior = 'synthetic-prior-call';
   store.transaction(tx => {
-    tx.run('INSERT INTO live_sessions SELECT * FROM live_sessions WHERE live_session_id=?', [sourceId]);
-    tx.run('UPDATE live_sessions SET live_session_id=?, idempotency_key=? WHERE rowid=(SELECT MAX(rowid) FROM live_sessions)', [prior, 'synthetic-prior']);
+    // A copy of the session's own row under another call, because live_sessions is unique per owner and key.
+    tx.run('CREATE TEMP TABLE fr1_prior AS SELECT * FROM live_sessions WHERE live_session_id=?', [sourceId]);
+    tx.run('UPDATE fr1_prior SET live_session_id=?, idempotency_key=?', [prior, 'synthetic-prior']);
+    tx.run('INSERT INTO live_sessions SELECT * FROM fr1_prior');
+    tx.run('DROP TABLE fr1_prior');
     let journal = 900;
     for (const turn of turns) {
       tx.run('INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?)',

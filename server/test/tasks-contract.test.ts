@@ -308,7 +308,7 @@ test('worker inference receives presentation style and private owner lore', asyn
     infer: async (request: InferRequest) => { received = request.instructions; return { text: 'complete', calls: [] }; } };
   await runWorker(options);
   assert.match(received, /^Now: /u, 'the prompt opens with one clock line');
-  assert.ok(received.endsWith(`\n\n${WORKER_INSTRUCTIONS}`));
+  assert.ok(received.slice(received.indexOf('\n\n') + 2).startsWith(`${WORKER_INSTRUCTIONS}\n\n`), 'the worker guidance follows the clock line');
   assert.match(received, /SYNTHETIC STYLE/);
   assert.match(received, /SYNTHETIC LORE/);
   received = '';

@@ -950,8 +950,9 @@ test('M0: route admission preserves private notes, derives metadata and logs exc
     const h = summarizerFixture();
     const fake = fakeLiveVoicePort();
     const dataClasses = provider === 'openai' ? ['ordinary', 'private', 'sensitive'] as const : ['ordinary'] as const;
-    const profile = validateLiveProfile({ provider, liveModelId: 'synthetic-model', voice: 'SyntheticVoice', keyReference: 'synthetic',
-      route: { enabled: true, provider, modelId: 'synthetic-model', dataClasses }, prompt: { text: 'SYNTHETIC BASE', dataClass: 'ordinary' } });
+    const modelId = provider === 'openai' ? 'gpt-live-1' : 'models/synthetic';
+    const profile = validateLiveProfile({ provider, liveModelId: modelId, voice: 'SyntheticVoice', keyReference: 'synthetic',
+      route: { enabled: true, provider, modelId, dataClasses }, prompt: { text: 'SYNTHETIC BASE', dataClass: 'ordinary' } });
     const events: Record<string, unknown>[] = [];
     const error = console.error;
     console.error = (line: string) => { try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { /* non-JSON diagnostic */ } };

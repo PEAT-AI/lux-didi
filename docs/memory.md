@@ -17,7 +17,8 @@ model.
 ```
 bash scripts/run-local.sh --build-only
 scripts/didi-memory-eval --store <copy-dir> --golden <golden.jsonl> --out <report.json> \
-    [--answers <recorded-first-answers.json>] [--strict] [--data-dir <copy-dir>]
+    [--answers <recorded-first-answers.json>] [--strict] [--data-dir <copy-dir>] \
+    [--verifier <openai-model>] [--time-zone <zone>]
 ```
 
 - `--store` (or `--data-dir`) names a directory that contains a `state.sqlite`

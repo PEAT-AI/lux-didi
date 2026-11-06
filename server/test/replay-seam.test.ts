@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 const require = createRequire(import.meta.url);
-const root = process.env['DIDI_TEST_SOURCE_ROOT'] ?? resolve(import.meta.dirname, '../../test');
+const root = process.env['DIDI_TEST_SOURCE_ROOT'] ?? resolve(process.cwd(), 'test');
 const { classifyTiming } = require(resolve(root, '../../scripts/didi-replay-seam'));
 const fixture = JSON.parse(readFileSync(resolve(root, 'fixtures/replay-seam/events.json'), 'utf8'));
 test('retrieval after first audio is late, not early; retrieval before it is early', () => {

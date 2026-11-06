@@ -1644,6 +1644,7 @@ export class LiveSessionOwner {
       const { familyNames, floorSubjects } = openingContextFloors(roster?.people ?? [], lore);
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
+      const admittedRecords = records.filter(record => record.dataClass !== 'unknown' && this.#profile.route.dataClasses.includes(record.dataClass));
       const date = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
       const loops = guardSeededLoops(tx, storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)), { now, timeZone });
       const opening = buildOpeningFacts({ now, timeZone, familyNames, floorSubjects,
@@ -1651,14 +1652,14 @@ export class LiveSessionOwner {
         openThread: freshThread ? `As of ${date}: ${freshThread}`
           : seededSummaries[0] ? `${new Date(seededSummaries[0].endedAt).toISOString()} ${seededSummaries[0].summary}` : '',
         commitments: loops.map(loop => `${new Date(loop.lastSeenAt).toISOString()} ${loop.text}`),
-        savedForHim: records.filter(record => record.dataClass !== 'unknown' && this.#profile.route.dataClasses.includes(record.dataClass))
+        savedForHim: admittedRecords
           .map(record => `As of ${date}: ${record.text}`), excludeTopics });
       const composeSession = (earlierSection: string | undefined, calendar: string | undefined, earlierReserve: number | undefined = undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
         runtimeContext: this.#liveRuntimeContext(toolNames, timeZone),
-        records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+        records: admittedRecords, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         now, timeZone,
         ...(calendar ? { calendar } : {}),
         ...(alarmNote === undefined ? {} : { alarms: alarmNote }),
@@ -1668,8 +1669,6 @@ export class LiveSessionOwner {
         ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(excludeTopics.length ? { openersNote: `Do not reopen these delivered topics: ${JSON.stringify(excludeTopics)}.` } : {}),
         openingFacts: opening.section });
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
-      try { records = this.#memorySource?.(tx) ?? []; }
-      catch { throw new LiveError('memory_unavailable'); }
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
         // #108: the basis already holds the summary reserve back, so the budget below is the room that
         // exists after the notes yielded, not the leftovers of a stale target. With nothing stored to
@@ -1690,6 +1689,11 @@ export class LiveSessionOwner {
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
       // M2: what the standing section did with its own budget, once per build, including the build that
       // selected nothing: that zero is the line a "my memory did not reach the call" report needs.
+      hostLogEvent({ event: 'memory_excluded', liveSessionId,
+        reasons: { class: summarySelection.coverage.classFiltered + records.length - admittedRecords.length,
+          yield: composed.yielded.length, legacy: summarySelection.coverage.legacyUnavailable,
+          source: summarySelection.coverage.sourceUnavailable,
+          budget: composed.omitted.length + earlier.omitted.length }, yielded: composed.yielded });
       hostLogEvent({ event: 'standing_memory_selection', selected: composed.standing.selected,
         omitted: composed.standing.omitted, chars: composed.standing.chars });
       // R7: the digest's own state, so a suppressed or failed read is a line and not a silence. Metadata
@@ -1705,7 +1709,7 @@ export class LiveSessionOwner {
         ...(composed.sections.some(section => section.id === 'opening-options') && seededSummaries[0] ? [seededSummaries[0].id] : [])])];
       const injectedOpeners = composed.sections.some(section => section.id === 'previous-openers') ? earlierOpeners : [];
       const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
-      const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...(composed.selectedIds.length ? ['ordinary' as const] : [])]);
+      const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...admittedRecords.flatMap(record => composed.selectedIds.includes(record.id) && record.dataClass !== 'unknown' ? [record.dataClass] : [])]);
       if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
       const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz,label FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
       // #107: a missed alarm is said once, in her own words, with its time and what it was for.

@@ -85,3 +85,5 @@ metadata survives the 30-day content pruning window and expires with task metada
 Provider detail is not retained in this column. `final_answer` keeps its existing
 text-only representation. This supports timeline inspection without retaining
 provider bodies on task rows.
+
+`memory_excluded` is emitted once at Live session creation with class, yield, legacy, source and budget exclusion counts; budget includes the bounded recall window, and no memory text is logged. Its `yielded` sizes name owner-lore clipping, then opening-options and previous-openers removal, while persona, tools, runtime context and the reserved memory sections never yield.

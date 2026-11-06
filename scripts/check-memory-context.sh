@@ -51,6 +51,7 @@ status=0
 # New selection tests + impacted CHAT/HTTP/HOST accept/dispatch/fingerprint/recovery
 # and CONNECTED authorization/context regressions, against the real compiled build.
 node_test_files_bounded 1200 --test-reporter=tap --test-timeout=30000 \
+  server/dist/test/context-budget.test.js server/dist/test/memory-block.test.js \
   server/dist/test/live-memory-note.test.js \
   server/dist/test/memory-import.test.js server/dist/test/memory-context.test.js server/dist/test/memory-delete.test.js \
   server/dist/test/summaries.test.js \

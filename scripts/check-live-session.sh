@@ -41,7 +41,7 @@ group_build() {
 # Public tool guidance is also composed by text, memory and summary surfaces.
 group_guidance() {
   node_test_files --test-reporter=tap --test-timeout=30000 dist/test/tools-builtin-intent.test.js  || return 1
-  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/prompt.test.js dist/test/live-persona.test.js dist/test/chat.test.js dist/test/memory-context.test.js dist/test/memory-import.test.js dist/test/summaries.test.js || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/context-budget.test.js dist/test/memory-block.test.js dist/test/prompt.test.js dist/test/live-persona.test.js dist/test/chat.test.js dist/test/memory-context.test.js dist/test/memory-import.test.js dist/test/summaries.test.js || return 1
   node test/prompt-content.integration.mjs || return 1
 }
 

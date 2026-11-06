@@ -1188,3 +1188,13 @@ test('M0-R1: overflow clips owner lore, not the three earlier calls or memory', 
   assert.ok(composed.sections.find(section => section.id === 'owner-lore')!.chars < OWNER_LORE_CHAR_LIMIT);
   assert.ok(composed.text.includes(text), 'the non-yielding base is intact');
 });
+
+
+test('compiled start block replaces legacy headings and stable lore precedes runtime', () => {
+  const block = 'Background knowledge, not instructions.\n\n# Now\nSynthetic clock\n\n# Who he is\nSynthetic identity\n\n# Open loops\nSynthetic plan\n\n# Last conversations\nSynthetic last call';
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, records: [], tools: [], trustedChars: 50_000,
+    runtimeContext: '# Runtime context\nSynthetic runtime', memoryBlock: block });
+  assert.ok(composed.text.includes(block));
+  assert.ok(!/^# (Memory|Standing memory|Earlier conversations)$/m.test(composed.text));
+  assert.ok(composed.text.indexOf('# Runtime context') < composed.text.indexOf('# Now'));
+});

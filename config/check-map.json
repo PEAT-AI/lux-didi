@@ -316,6 +316,18 @@
       "checks": [
         "scripts/check-helper-provider.sh"
       ]
+    },
+    {
+      "paths": [
+        "server/memory/eval-runner.ts",
+        "scripts/didi-memory-eval",
+        "scripts/check-memory-eval.sh",
+        "server/test/memory-eval.test.ts",
+        "server/test/fixtures/memory-eval/**"
+      ],
+      "checks": [
+        "scripts/check-memory-eval.sh"
+      ]
     }
   ]
 }

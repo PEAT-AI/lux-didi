@@ -1,0 +1,12 @@
+{
+  "kind": "recorded-first-answers",
+  "model": "synthetic-recorded",
+  "note": "Recorded first answers for the clean fixture variant: the plumber answer searched first and then named him. No model is called to produce these; they are replay input.",
+  "answers": [
+    { "id": "m2-brakes", "text": "The bike shop on King Street did the brake pads.", "searched": true, "finalToFirstAudioMs": 780 },
+    { "id": "m5-plumber", "text": "Marek fixed the boiler on the 23rd.", "searched": true, "finalToFirstAudioMs": 690 },
+    { "id": "m6-lease", "text": "I found nothing that says you cancelled a lease, so there is no date for it.", "searched": false, "finalToFirstAudioMs": 700 },
+    { "id": "m8-vet", "text": "The vet said it was kennel cough and to keep her quiet for a week.", "searched": true, "finalToFirstAudioMs": 840 },
+    { "id": "m12-volvo", "text": "I found nothing that says you sold the Volvo.", "searched": true, "finalToFirstAudioMs": 660 }
+  ]
+}

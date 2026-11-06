@@ -1,0 +1,12 @@
+{
+  "kind": "recorded-first-answers",
+  "model": "synthetic-recorded",
+  "note": "Recorded first answers for the defective fixture variant: m5 denies before the search ran (planted defect 2). No model is called to produce these; they are replay input.",
+  "answers": [
+    { "id": "m2-brakes", "text": "The bike shop on King Street did the brake pads.", "searched": true, "finalToFirstAudioMs": 780 },
+    { "id": "m5-plumber", "text": "I don't have anything about a plumber.", "searched": false, "finalToFirstAudioMs": 610 },
+    { "id": "m6-lease", "text": "I found nothing that says you cancelled a lease, so there is no date for it.", "searched": false, "finalToFirstAudioMs": 700 },
+    { "id": "m8-vet", "text": "The vet said it was kennel cough and to keep her quiet for a week.", "searched": true, "finalToFirstAudioMs": 840 },
+    { "id": "m12-volvo", "text": "I found nothing that says you sold the Volvo.", "searched": true, "finalToFirstAudioMs": 660 }
+  ]
+}

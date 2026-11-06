@@ -1,6 +1,7 @@
 // M2 (issue 907): a live session stores the instant and zone it was composed at, written in the owner's
-// zone, and every later prompt reads that record. Ruling M2-R2 withdrew the staleness rule from this
-// wagon, so a prepared session behaves exactly as on base and nothing here discards one.
+// zone, and every later prompt reads that record. The file keeps the contract's name; ruling M2-R2 withdrew
+// the staleness rule from this wagon, so nothing here discards a prepared session and neither case below
+// would fail on a stale clock.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

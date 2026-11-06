@@ -169,3 +169,5 @@ AND o.task_id=:task AND o.task_revision=:revision ORDER BY o.created_at;
 -- invent delegation_created_at from helper start or trace_response.created_at.
 -- Each printed percentile population must name calls, turns, cue definition,
 -- cued turns and valid pair count before quoting its median or p90.
+-- F1: conversation_history operations are reported separately as historical evidence;
+-- only search_memory/read_memory can define the current helper timing seam or population.

@@ -45,8 +45,12 @@ function replay(dataDir, session) {
       const identities = starts.filter(e => tasks.some(t => t.task_id === e.taskId));
       const taskIds = [...new Set(identities.map(e => e.taskId))];
       const matchesRevision = (taskId, revision) => identities.some(e => e.taskId === taskId && e.revision === revision);
-      const operations = taskIds.flatMap(id => db.prepare("SELECT * FROM task_operations WHERE task_id=? AND tool IN ('conversation_history','search_memory','read_memory') ORDER BY created_at").all(id))
+      const recordedOperations = taskIds.flatMap(id => db.prepare("SELECT * FROM task_operations WHERE task_id=? AND tool IN ('conversation_history','search_memory','read_memory') ORDER BY created_at").all(id))
         .filter(op => matchesRevision(op.task_id, op.task_revision)).sort((a, b) => a.created_at - b.created_at);
+      const operations = recordedOperations.filter(op => ['search_memory','read_memory'].includes(op.tool));
+      const historicalHistoryOperations = recordedOperations.filter(op => op.tool === 'conversation_history')
+        .map(op => ({ operation_id: op.operation_id, task_revision: op.task_revision, state: op.state,
+          created_at: op.created_at, updated_at: op.updated_at }));
       const responses = db.prepare('SELECT * FROM trace_response WHERE live_session_id=? AND turn_id=? ORDER BY created_at').all(session, turn.turn_id);
       const audio = logs.find(e => e.event === 'response_first_audio' && responses.some(r => r.response_key === e.responseKey));
       const firstAudio = audio?.at ?? turn.first_audible_at;
@@ -87,7 +91,7 @@ function replay(dataDir, session) {
         memory_cued: /\b(last time|I told you|you said|my trip|memory|remember|recall|yesterday|previously|last call)\b/i.test(owner?.text ?? ''),
         cue_review: 'manual review required, including unanchored possessives',
         first_words_verdict: 'manual review required', later_contradiction: 'manual review required',
-        retrievals, retrieval_ran: retrievals.length ? 'yes' : 'not-recorded', tool_call_count: calls.length,
+        retrievals, historical_history_operations: historicalHistoryOperations, retrieval_ran: retrievals.length ? 'yes' : 'not-recorded', tool_call_count: calls.length,
         task_settled_at: taskEvents.find(e => e.event === 'task_settled')?.at ?? missing('task_settled_at'),
       };
       row.timing = classifyTiming(row);

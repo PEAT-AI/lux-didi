@@ -281,7 +281,7 @@ test('people: a full lore plus a 130 person roster still composes under the hard
   const section = composed.sections.find(entry => entry.id === 'people');
   assert.ok(section !== undefined, 'the people section must still be present');
   assert.ok(section.chars <= PEOPLE_CHAR_LIMIT);
-  const omitted = composed.omitted.filter(item => item.id.startsWith('person:'));
+  const omitted = composed.itemOmissions.filter(item => item.id.startsWith('person:'));
   assert.ok(omitted.length > 0, 'whole people are omitted with source ids');
   assert.ok(omitted.every(item => item.reason === 'budget'));
   assert.ok(!composed.text.includes('l'.repeat(100)), 'the oversized lore paragraph is omitted, never clipped');

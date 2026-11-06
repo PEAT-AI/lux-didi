@@ -78,3 +78,18 @@ test('explicit entry and typed identity facts share one authority and salience r
   const result = compileMemoryBlock({ ...input, entries: [entry], items: [typed] });
   assert.ok(result.text.indexOf(typed.text) < result.text.indexOf(entry.text));
 });
+
+
+test('only a rendered typed loop suppresses a summary open loop for that subject', () => {
+  const subject = 'synthetic-shared-subject';
+  const summary = { id: 'summary-loop', sessionId: 'session-loop', startedAt: input.now - 1,
+    text: 'Synthetic earlier discussion', subject, openLoop: 'Synthetic unresolved follow-up' };
+  const oversized = item('oversized-loop', { kind: 'promise', subject, text: 'Q'.repeat(2_000) });
+  const omitted = compileMemoryBlock({ ...input, entries: [], items: [oversized], summaries: [summary] });
+  assert.ok(omitted.omitted.some(value => value.id === oversized.id && value.reason === 'budget'));
+  assert.ok(omitted.text.includes(summary.openLoop));
+  const rendered = compileMemoryBlock({ ...input, entries: [], items: [item('rendered-loop', { kind: 'promise', subject, text: 'Synthetic typed unresolved promise' })], summaries: [summary] });
+  assert.ok(rendered.text.includes('Synthetic typed unresolved promise'));
+  assert.ok(rendered.text.includes(summary.text));
+  assert.ok(!rendered.text.includes(summary.openLoop));
+});

@@ -423,7 +423,7 @@ test('the compiled conversation budget selects a newest-first whole-summary pref
   const h = open();
   try {
     for (let i = 0; i < 20; i++) insertPastSummary(h.store, `past-${String(i).padStart(2, '0')}`,
-      `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}.`, NOW - i * 3_600_000);
+      `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}. ${'Synthetic detail '.repeat(8)}`, NOW - i * 3_600_000);
     const candidates = h.store.transaction(tx => summaries.injectionCandidates(tx));
     assert.equal(candidates.length, 20);
     const input = { now: NOW + 1, timeZone: 'UTC', clock: new Date(NOW).toISOString(), entries: [], items: [],

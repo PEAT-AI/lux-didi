@@ -1081,3 +1081,16 @@ test('M11: opening-option availability does not change the fixed cacheable prefi
   const present = m11Session({ openingFacts: 'Synthetic opening options' });
   assert.equal(absent.text.slice(0, absent.stablePrefixChars), present.text.slice(0, present.stablePrefixChars));
 });
+
+
+test('M11: a frozen preview and the admitted profile produce one canonical pinned lore catalog', () => {
+  const paragraphs = Array.from({ length: 5 }, (_, index) => `Synthetic paragraph ${index}: ${'L'.repeat(1_800)}`);
+  const ownerProfile = validateOwnerProfile({ schemaVersion: 1, kind: 'profile', ownerId: 'owner-1', profileVersion: 'synthetic',
+    displayName: 'Synthetic Owner', style: { text: 'Synthetic style', dataClass: 'ordinary' },
+    lore: { text: paragraphs.join('\n\n'), dataClass: 'ordinary' } }, 'owner-1');
+  const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile });
+  const result = m11Session({ text: frozen.text, ownerProfile });
+  assert.equal(result.itemOmissions.filter(item => item.id.startsWith('lore:')).length, 4);
+  assert.equal(result.text.split(paragraphs[0]!).length - 1, 1);
+  for (const paragraph of paragraphs.slice(1)) assert.ok(!result.text.includes(paragraph));
+});

@@ -115,3 +115,4 @@ read-only, from the same private snapshot as the rest of the store; every query 
 The owner forget paths (the entry delete and the history session forget) both reach that fence through
 `forgetHistorySessions`. `entries` is not copied into `memory_items`: the start block reads both until a
 later unit renders from `memory_items` plus the explicit entries.
+`memory_excluded` is emitted once at Live session creation with class, yield, legacy, source and budget exclusion counts; budget includes the bounded recall window, and no memory text is logged. Its `yielded` sizes name owner-lore clipping, then opening-options and previous-openers removal, while persona, tools, runtime context and the reserved memory sections never yield.

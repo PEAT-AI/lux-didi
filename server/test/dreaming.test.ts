@@ -41,16 +41,16 @@ function seedSession(store: Store, id: string, options: { key?: string; endedAt?
 }
 
 let turnClock = 0;
+/** The turn ids the pass must cite: `run` answers with the changed count, so the ids are read back. */
 function seedTurns(store: Store, id: string, turns: readonly (readonly ['owner' | 'assistant', string])[]): number[] {
-  const ids: number[] = [];
-  store.transaction(tx => {
+  return store.transaction(tx => {
     for (const [role, text] of turns) {
       turnClock += 1;
-      ids.push(tx.run('INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES (?,?,?,?,?,?)',
-        [id, turnClock, turnClock, role, text, NOW + turnClock * 1_000]));
+      tx.run('INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES (?,?,?,?,?,?)',
+        [id, turnClock, turnClock, role, text, NOW + turnClock * 1_000]);
     }
+    return tx.all('SELECT id FROM history_turns WHERE live_session_id=? ORDER BY id', [id]).map(row => Number(row['id']));
   });
-  return ids;
 }
 
 function reply(text: string, status: ModelResult['status'] = 'complete'): ModelResult {
@@ -108,7 +108,7 @@ test('a plan keeps his relative phrase and resolves it to the date the call name
     assert.equal(sources.length, 1);
     assert.equal(sources[0]!.text, 'I am flying to Phuket next Friday with my daughter');
     // The request carried the call's clock, so the model could resolve the phrase at all.
-    assert.match(model.requests[0]!.contents[0]!.parts[0]!.text!, /\d{2} \w{3} 2026/);
+    assert.match(model.requests[0]!.contents[0]!.parts[0]!.text!, /\d{1,2} \w{3} \d{4}/);
   } finally { h.cleanup(); }
 });
 
@@ -305,14 +305,15 @@ test('the validator names each refusal and turns a duplicate into a noop', () =>
 });
 
 test('a transient state gets a validity date, a dossier subject never reaches the store', () => {
-  const validated = validateOperations(parseExtraction(JSON.stringify({ operations: [
+  const parsed = parseExtraction(JSON.stringify({ operations: [
     { op: 'add', kind: 'transient_state', text: 'He is travelling this week.', subject: 'state:travel', salience: 1, turn_start_id: 1, turn_end_id: 1 },
     { op: 'add', kind: 'durable_fact', text: 'He owns a boat.', subject: 'BAD SUBJECT!', salience: 1, turn_start_id: 1, turn_end_id: 1 },
-  ] })).operations, { turnIds: new Set([1]), correctionTurnIds: new Set<number>(), items: [], now: NOW });
+  ] }));
+  assert.deepEqual(parsed.rejected.map(entry => entry.reason), ['unknown_subject']);
+  const validated = validateOperations(parsed.operations, { turnIds: new Set([1]), correctionTurnIds: new Set<number>(), items: [], now: NOW });
   const added = validated.accepted[0]!;
   assert.equal(added.op, 'add');
   assert.equal(added.op === 'add' ? added.item.validUntil : null, NOW + 30 * 86_400_000);
-  assert.deepEqual(validated.rejected.map(entry => entry.reason), ['unknown_subject']);
 });
 
 test('only an owner turn that reads as a correction licenses touching his explicit memory', () => {

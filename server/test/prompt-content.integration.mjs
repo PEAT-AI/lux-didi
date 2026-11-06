@@ -8,6 +8,11 @@ import { WORKER_INSTRUCTIONS, workerInstructions } from '../dist/tasks/instructi
 import { openAiInstructions } from '../dist/adapters/live-voice/openai.js';
 import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from '../dist/tools/history.js';
 
+// The live composer must not retain the retired text-chat renderer or a compatibility export.
+assert.doesNotMatch(readFileSync(new URL('../dist/prompt/live-persona.js', import.meta.url), 'utf8'),
+  /STANDING_MEMORY_TITLE|EARLIER_CONVERSATIONS_TITLE/u, 'retired chat headings do not live in the live composer');
+assert.equal(Object.hasOwn(prompt, 'buildEarlierConversationsSection'), false, 'no compatibility export from the prompt barrel');
+
 const approved = JSON.parse(readFileSync(new URL('./fixtures/prompt-final.json', import.meta.url)));
 assert.deepEqual(Object.keys(approved).sort(), [
   'NAYA_CHARACTER', 'NAYA_WORK_DELIVERY', 'WORKER_INSTRUCTIONS',

@@ -53,7 +53,10 @@ function replay(dataDir, session) {
           created_at: op.created_at, updated_at: op.updated_at }));
       const responses = db.prepare('SELECT * FROM trace_response WHERE live_session_id=? AND turn_id=? ORDER BY created_at').all(session, turn.turn_id);
       const audio = logs.find(e => e.event === 'response_first_audio' && responses.some(r => r.response_key === e.responseKey));
-      const firstAudio = audio?.at ?? turn.first_audible_at;
+      const firstAudio = Number.isFinite(turn.first_audible_at) ? turn.first_audible_at
+        : Number.isFinite(audio?.firstAudioAt) ? audio.firstAudioAt : null;
+      const firstAudioSource = Number.isFinite(turn.first_audible_at) ? 'trace_turn.first_audible_at'
+        : Number.isFinite(audio?.firstAudioAt) ? 'host_log.firstAudioAt' : missing('first_audio_source');
       const deliveries = taskIds.flatMap(id => db.prepare('SELECT * FROM task_deliveries WHERE task_id=? ORDER BY updated_at').all(id))
         .filter(d => matchesRevision(d.task_id, d.task_revision));
       const taskEvents = logs.filter(e => matchesRevision(e.taskId, e.revision));
@@ -84,6 +87,8 @@ function replay(dataDir, session) {
         retrieval_returned_at: first?.retrieval_returned_at ?? missing('retrieval_returned_at'),
         response_create_at: responses[0]?.created_at ?? missing('response_create_at'),
         first_audio_at: firstAudio ?? missing('first_audio_at'),
+        first_audio_source: firstAudioSource,
+        first_audio_log_written_at: audio?.at ?? missing('first_audio_log_written_at'),
         her_first_words: model?.text ?? missing('her_first_words'),
         delivery_part_at: taskEvents.find(e => e.event === 'task_delivery' && e.state === 'sent')?.at ?? missing('delivery_part_at'),
         delivery_record_at: deliveries.find(d => d.state === 'delivered')?.updated_at ?? missing('delivery_record_at'),
@@ -120,7 +125,7 @@ if (require.main === module) {
       const result = replay(dataDir, session);
       if (json) console.log(JSON.stringify(result, null, 2));
       else {
-        const columns = ['turn_id','owner_final_at','helper_started_at','retrieval_started_at','retrieval_returned_at','response_create_at','first_audio_at','her_first_words','delivery_part_at','timing','delegation_created_at','first_commentary_appended_at','owner_final_to_first_audio_ms','helper_start_to_first_commentary_ms','audio_preceded_first_commentary','memory_cued','retrieval_ran','first_words_verdict','later_contradiction','cue_review'];
+        const columns = ['turn_id','owner_final_at','helper_started_at','retrieval_started_at','retrieval_returned_at','response_create_at','first_audio_at','her_first_words','delivery_part_at','timing','delegation_created_at','first_commentary_appended_at','owner_final_to_first_audio_ms','helper_start_to_first_commentary_ms','audio_preceded_first_commentary','first_audio_source','first_audio_log_written_at','memory_cued','retrieval_ran','first_words_verdict','later_contradiction','cue_review'];
         console.log(columns.join('\t'));
         for (const row of result.rows) console.log(columns.map(k => String(row[k]).replace(/[\t\r\n]/g, ' ')).join('\t'));
       }

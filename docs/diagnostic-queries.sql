@@ -158,7 +158,10 @@ AND o.task_id=:task AND o.task_revision=:revision ORDER BY o.created_at;
 -- rather than infer found/empty from size or from a successful operation.
 -- M1-R1 all-turn fast-route baseline, including non-cued owner turns:
 -- owner_final_to_first_audio_ms uses the final owner utterance and trace first-audible
--- timestamp only when audio does not predate that final; otherwise it is missing.
+-- timestamp, falling back only to keyed response_first_audio.firstAudioAt when
+-- the trace value is absent. Log envelope timestamp is reported separately as
+-- first_audio_log_written_at and never defines the measured first_audio_at.
+-- If measured audio predates that final, the valid baseline metric is missing.
 -- first_commentary_appended_at is task_delivery state=accepted, joined by task and
 -- revision. delivery.ts accepted() follows the provider commentary append ack;
 -- sent is dispatch and is not interchangeable with appended. The unkeyed

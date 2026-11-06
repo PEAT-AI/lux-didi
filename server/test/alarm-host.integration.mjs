@@ -116,8 +116,12 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   const rows = () => host.store.transaction(tx => tx.all('SELECT * FROM alarms ORDER BY fire_at_utc,id'));
   const hostLog = async () => (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   // FR4: the announcement receipt is logged on her first audible playback, so the harness plays it here.
-  const playFirstAudio = () => f.send({ serverContent: { modelTurn: { parts: [
-    { inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480, 24).toString('base64') } }] } } });
+  // A full-scale square wave: the adapter's audible threshold is -50 dBFS, so a quiet frame would prove nothing.
+  const playFirstAudio = () => {
+    const samples = Int16Array.from({ length: 240 }, (_, index) => (index % 2 === 0 ? 24000 : -24000));
+    const pcm = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
+    f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: pcm.toString('base64') } }] } } });
+  };
   const announced = async () => (await hostLog()).filter(row => row.event === 'alarm_announced');
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /failed/);

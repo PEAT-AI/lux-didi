@@ -979,7 +979,7 @@ test('M0: route admission preserves private notes, derives metadata and logs exc
       assert.equal(/# Memory[\s\S]*SYNTHETIC PRIVATE NOTE/u.test(frozen.system), provider === 'openai');
       for (let i = 0; i < 3; i++) assert.equal(frozen.system.includes(`[session:m0-prior-${i}]`), provider === 'openai');
       assert.deepEqual(frozen.dataClasses, provider === 'openai' ? ['ordinary', 'private', 'sensitive'] : ['ordinary']);
-      const events = readFileSync(log.path, 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+      const events = readFileSync(join(h.dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
       const excluded = events.filter(event => event['event'] === 'memory_excluded');
       assert.equal(excluded.length, 1, 'idempotent create logs exclusions only once');
       assert.deepEqual(excluded[0]!['reasons'], { class: provider === 'openai' ? 1 : 5, yield: 0, legacy: 0, source: 0, budget: 0 });

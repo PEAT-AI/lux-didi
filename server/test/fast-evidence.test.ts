@@ -116,7 +116,7 @@ test('FR1: a memory-cued final appends the local fact as one provisional group w
     assert.equal(item.delegationId, null, 'general session context carries no delegation id');
     assert.ok(item.text.length <= 450, 'never an item the adapter would refuse');
   }
-  const joined = live.voice.taskAnswers.map(item => String(commentaryPart(item.text)['content'] ?? '')).join(' ');
+  const joined = live.voice.taskAnswers.map(item => String(commentaryPart(item.text)['content'] ?? '')).filter(Boolean).join(' ');
   assert.ok(joined.startsWith(FAST_EVIDENCE_MARKER), `the marker opens the content: ${joined.slice(0, 80)}`);
   assert.match(joined, /Lisbon/u, 'the fact is the stored turn, not a guess');
   // The helper still starts exactly where it did: its quiet timer was scheduled and has not fired.

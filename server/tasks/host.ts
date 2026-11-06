@@ -36,9 +36,13 @@ export type HostTaskFactory = (sessionId: string, delivery: Delivery, connection
  * session or a row without a recorded zone falls back to the configured zone.
  */
 export function sessionClockZone(store: Store, sessionId: string): string | undefined {
-  const row = store.transaction(tx => tx.get('SELECT time_zone FROM live_sessions WHERE live_session_id=?', [sessionId]));
-  const recorded = String(row?.['time_zone'] ?? '');
-  return recorded || undefined;
+  try {
+    const row = store.transaction(tx => tx.get('SELECT time_zone FROM live_sessions WHERE live_session_id=?', [sessionId]));
+    return String(row?.['time_zone'] ?? '') || undefined;
+  } catch {
+    // A host store with no live sessions at all (text only) composes no live clock; the configured zone stands.
+    return undefined;
+  }
 }
 
 /** Production task composition. Store is the only writer; connector readers keep their own configured boundary. */

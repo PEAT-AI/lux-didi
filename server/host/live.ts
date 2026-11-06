@@ -1,4 +1,4 @@
-import { activeItems } from '../domain/memory-items.js';
+import { itemsForSubject } from '../domain/memory-items.js';
 import { historySessionEvidence } from '../domain/history-lifecycle.js';
 import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
@@ -254,7 +254,9 @@ export const resolveLiveMemory: LiveMemorySource = tx => {
   const plain = records.filter(record => !taken.has(record.entryId)).map(record => ({ id: record.entryId, text: record.text,
     capturedAt: record.capturedAt, dataClass: classes.get(record.entryId)! }));
   const order = ['ordinary', 'private', 'sensitive', 'unknown'] as const;
-  const typed = activeItems(tx, { limit: 200, orderBy: 'salience' }).map(memoryItem => {
+  const items = tx.all("SELECT DISTINCT subject FROM memory_items WHERE status='active' ORDER BY subject")
+    .flatMap(row => itemsForSubject(tx, String(row['subject'])).filter(item => item.status === 'active'));
+  const typed = items.map(memoryItem => {
     const sourceSessionIds = tx.all('SELECT DISTINCT session_id FROM memory_sources WHERE memory_id=? ORDER BY session_id', [memoryItem.id])
       .map(row => String(row['session_id']));
     const sourceClasses = sourceSessionIds.map(id => historySessionEvidence(tx, id)?.dataClass ?? 'unknown');

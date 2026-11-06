@@ -50,16 +50,18 @@ export function compileMemoryBlock(input: MemoryBlockInput) {
   };
   const candidates = [
     ...input.entries.map(entry => ({ id: entry.id, body: entry.text, authority: 'explicit_owner', salience: entry.salience ?? 0,
-      sources: entry.sourceSessionIds ?? [], loop: false, subject: '', text: `- ${entry.text}${entry.capturedAt === undefined ? '' : ` (${date(entry.capturedAt)})`}` })),
+      sources: entry.sourceSessionIds ?? [], observedAt: entry.capturedAt ?? 0, eventAt: null, loop: false, subject: '', text: `- ${entry.text}${entry.capturedAt === undefined ? '' : ` (${date(entry.capturedAt)})`}` })),
     ...active.map(item => {
       const sources = input.sources?.[item.id] ?? [];
       const loop = ['plan', 'promise', 'open_question', 'transient_state'].includes(item.kind);
-      return { id: item.id, body: item.text, authority: item.authority, salience: item.salience, sources, loop, subject: item.subject,
+      return { id: item.id, body: item.text, authority: item.authority, salience: item.salience, sources, observedAt: item.validFrom, eventAt: item.eventAt, loop, subject: item.subject,
         text: loop ? `- [${item.eventAt === null ? 'no date' : date(item.eventAt, item.eventTz ?? input.timeZone)}] ${item.text}${item.place ? ` (${item.place})` : ''}${sources[0] ? ` [session:${sources[0]}]` : ''}`
           : `- ${item.text} (${date(item.validFrom)})` };
     }),
   ].sort((a, b) => Number(b.authority === 'explicit_owner') - Number(a.authority === 'explicit_owner')
-    || b.salience - a.salience || b.sources.length - a.sources.length || a.id.localeCompare(b.id))
+    || b.salience - a.salience || b.sources.length - a.sources.length
+    || (a.loop && b.loop ? (a.eventAt ?? Infinity) - (b.eventAt ?? Infinity) : 0)
+    || b.observedAt - a.observedAt || a.id.localeCompare(b.id))
     .filter(candidate => unique(candidate.id, candidate.body));
   const identity = selectWholeItems('# Who he is', candidates.filter(candidate => !candidate.loop), budget('identity'));
   const loops = selectWholeItems('# Open loops', candidates.filter(candidate => candidate.loop), budget('loops'));

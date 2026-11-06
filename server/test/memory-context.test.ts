@@ -664,8 +664,8 @@ test('M0: a fresh note wins a clipped memory budget by captured chronology, not 
     { id: 'm-new', text: 'N'.repeat(900), capturedAt: 300 },
   ];
   const result = composeLiveSessionInstruction({ text: 'SYNTHETIC BASE', tools: [], records, trustedChars: 60_000 });
-  assert.deepEqual(result.selectedIds, ['m-new']);
-  assert.deepEqual(result.omitted.map(record => record.id).sort(), ['a-middle', 'z-old']);
+  assert.deepEqual(result.selectedIds, ['m-new', 'a-middle']);
+  assert.deepEqual(result.omitted.map(record => record.id), ['z-old']);
 });
 
 

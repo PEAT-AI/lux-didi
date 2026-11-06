@@ -6,12 +6,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as persona from '../prompt/live-persona.js';
 
-// Freeze the whole source outside the one allowed constant, including template constants.
+// Freeze the whole source outside the two owned regions (M3's depth line, FR2's NAYA_WORK_DELIVERY).
 test('every other persona line is byte-identical to base ab76c393', () => {
   const root = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('../../test/', import.meta.url));
   const source = readFileSync(resolve(root, '../prompt/live-persona.ts'), 'utf8');
-  const unchanged = source.replace(/export const NAYA_WORK_DELIVERY = "[^\n]*";/, '');
-  assert.equal(createHash('sha256').update(unchanged).digest('hex'), '55b5199dacb52e80f99000ec36b53ae09dd153c0cbc2fc24a23ba7d90b357329');
+  // M3 owns the depth paragraph on line 18, FR2 owns NAYA_WORK_DELIVERY: both regions are the allowed change.
+  const unchanged = source.replace(/export const NAYA_WORK_DELIVERY = "[^\n]*";/, '')
+    .replace(/^Depth follows the ask\.[^\n]*$/m, '');
+  assert.equal(createHash('sha256').update(unchanged).digest('hex'), '03ecf4a355fb47147964436170b34c94e86b239796423784da8f027dbf3ed569');
 });
 test('delivery speaks provisional findings now, corrects plainly and stays within base budget', () => {
   const value = persona.NAYA_WORK_DELIVERY;

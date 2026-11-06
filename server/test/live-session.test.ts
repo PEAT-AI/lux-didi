@@ -1,4 +1,4 @@
-import { toolGroupNames } from '../prompt/live-persona.js';
+import { toolGroupNames } from '../prompt/index.js';
 import { CONTEXT_BUDGET } from '../prompt/context-budget.js';
 import { WORKER_INSTRUCTIONS } from '../tasks/instructions.js';
 import { taskMigrations } from '../runtime/task-schema.js';

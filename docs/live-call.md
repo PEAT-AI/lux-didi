@@ -277,3 +277,11 @@ For information asks, the helper includes every supported fact that matters to t
 When the helper holds a sourced fact answering part of the question but still needs further reads, it may call `report_progress` once per task revision with one to five `{ text, source }` findings and a plain `still_checking` description. A second call returns `already_reported`. The host immediately acknowledges `{ delivered: true }` without waiting for speech or stopping the read loop. It records a progress delivery and sends a `partial` commentary beginning `Provisional, still checking <still_checking>:` through the existing provider-ready, owner-quiet, output-quiet and current-revision gates. Superseded revisions never deliver. Item size stays at 450 characters. A pending progress envelope finishes before its queued final result.
 
 She briefly acknowledges each ask with the points understood, mentions looking only after a hand-off starts, and never guesses the outcome or fills the wait. Provisional findings must contain sourced facts, not plans or promises. The helper sees its earlier report in its tool history: the final adds new detail rather than repeating that finding, confirms it in at most one clause or nothing, or plainly states what changed, the new fact and what it replaces. She likewise says corrections out loud and keeps confirmations to at most one clause, retaining full detail when warranted. Runs without a progress call retain the existing final delivery behavior. Offline replay rows test the rubric, not real provider behavior.
+
+Host speech instructions (the alarm opening, the muted-answer offer and the
+post-tool continuation request) use a session-level `session.commentary.append`
+with explicit `delegation_id: null`, not a typed owner turn. Typed owner input
+keeps its existing response commands; their client-delegation compatibility is
+a known gap. Provider rejection metadata includes the client event id, its prefix
+and the command type when retained in the adapter's bounded recent-command map,
+without logging instruction content.

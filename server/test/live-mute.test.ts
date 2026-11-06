@@ -48,7 +48,7 @@ interface Live {
   emit(event: FakeLiveVoiceEvent): Promise<void>; advance(ms: number): Promise<void>;
 }
 
-/** The fake's own sendAudio/sendText are no-ops, so the test wraps the session it hands out. */
+/** Record the host's session commentary separately from the owner's typed input. */
 function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts: string[]; failTexts: number }): LiveVoicePort {
   return {
     capabilities: fake.port.capabilities,
@@ -57,9 +57,10 @@ function recordingPort(fake: FakeLiveVoice, record: { uplinkBytes: number; texts
       return {
         ...opened,
         sendAudio: (input: { pcm: Uint8Array; dataClass?: string }) => { record.uplinkBytes += input.pcm.byteLength; },
-        sendText: (input: { text: string }) => {
+        sendSessionCommentary: (input: { text: string }) => {
           if (record.failTexts > 0) { record.failTexts -= 1; throw new Error('transport gone'); }
           record.texts.push(input.text);
+          return `synthetic_commentary_${record.texts.length}`;
         },
       } as unknown as LiveVoiceSession;
     },

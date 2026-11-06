@@ -136,6 +136,11 @@ export class TaskRuntime {
     const revision = this.begin(words, generation, ownerTurn, overlapped), { identity } = revision;
     const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, this.verifiedStatus(identity), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
+      reportProgress: answer => {
+        if (!this.controller.isCurrent(identity)) return;
+        this.options.delivery.deliver(identity, answer);
+        this.options.store.saveTaskDelivery(identity, randomUUID(), 'progress');
+      },
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
     }).then(answer => this.settle(identity, answer), () => {
       hostLogEvent({ event: 'task_runtime_rejected', taskId: identity.task_id, revision: identity.task_revision, reason_code: 'runtime_rejected' });

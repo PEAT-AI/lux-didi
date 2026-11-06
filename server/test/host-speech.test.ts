@@ -71,7 +71,7 @@ async function openHost(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-host-speech-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
   const socket = new FakeSocket();
-  const voice = new OpenAiLiveVoiceAdapter(options({ socketFactory: () => {
+  const voice = new OpenAiLiveVoiceAdapter(options({ clock, socketFactory: () => {
     queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
     return socket as unknown as import('ws').default;
   } }));
@@ -102,7 +102,7 @@ test('alarm opening waits for session.started and announces only on its first au
   assert.equal(events('alarm_ready').length, 0);
   assert.equal(events('alarm_announced').length, 0);
   socket.deliver({ type: 'session.started', session: { id: 'synthetic-session' } });
-  await attachment.ready; await flush();
+  assert.equal((await attachment.ready).terminal, null); await flush();
   const opening = commands().filter(command => command.type === 'session.commentary.append');
   assert.equal(opening.length, 1);
   assert.equal(opening[0]!.delegation_id, null);
@@ -125,7 +125,7 @@ test('a held muted answer requests exactly one commentary offer, not a typed tur
   const { socket, attachment, flush, commands, clock, pcm16 } = await openHost(t);
   await flush();
   socket.deliver({ type: 'session.started', session: { id: 'synthetic-session' } });
-  await attachment.ready; await flush();
+  assert.equal((await attachment.ready).terminal, null); await flush();
   attachment.setInputMuted(true);
   socket.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(2400)).toString('base64') });
   await flush();

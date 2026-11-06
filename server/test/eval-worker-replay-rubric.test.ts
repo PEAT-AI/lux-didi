@@ -19,3 +19,21 @@ test('offline depth rubric rejects omitted facts, gaps and padded restatements',
   assert.equal(padded.preamble_absent, false);
   assert.equal(replay.scoreDepth(scenario, { spoken: '' }).entity_recall, 0);
 });
+
+
+test('progress replay rejects repeated facts, unsourced reports, duplicate reports and silent corrections', async () => {
+  const root = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('../../test/', import.meta.url));
+  const replay = await import(pathToFileURL(resolve(root, '../../scripts/eval-worker-replay.mjs')).href);
+  for (const id of ['sourced-progress', 'progress-correction']) {
+    const row = replay.REPLAY_ROWS.find((row: { id: string }) => row.id === id);
+    assert.ok(row);
+    const call = { name: 'report_progress', args: { findings: [row.progress_finding], still_checking: row.still_checking } };
+    const good = replay.scoreDepth(row, { calls: [call], spoken: row.final_example });
+    assert.equal(good.progress_once, true); assert.equal(good.progress_sourced, true);
+    assert.equal(good.final_not_repeated, true); assert.equal(good.correction_plain, true);
+    assert.equal(replay.scoreDepth(row, { calls: [call, call], spoken: row.final_example }).progress_once, false);
+    assert.equal(replay.scoreDepth(row, { calls: [{ name: 'report_progress', args: { findings: [{ text: 'A guess', source: '' }], still_checking: 'mail' } }] }).progress_sourced, false);
+    if (id === 'sourced-progress') assert.equal(replay.scoreDepth(row, { spoken: row.progress_finding.text }).final_not_repeated, false);
+    else assert.equal(replay.scoreDepth(row, { spoken: 'The review is Wednesday.' }).correction_plain, false);
+  }
+});

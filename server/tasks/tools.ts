@@ -50,6 +50,18 @@ export function validateArguments(tool: TaskTool, value: unknown): { ok: true; a
   const valid = schemaValidator.getValidator(tool.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0])(value).valid;
   return valid && (!tool.validate || tool.validate(pruneNulls(value) as Record<string, unknown>)) ? { ok: true, args: structuredClone(value) as Record<string, unknown> } : { ok: false, repair: `Call ${tool.name} with exactly its declared fields and types. Use null for optional fields.` };
 }
+/** A host-only report, not a connector read or an effect. */
+export const REPORT_PROGRESS_TOOL: TaskTool = {
+  name: 'report_progress', description: 'Report one sourced partial answer while further reads remain. At most once per revision.',
+  effect: 'none', outside_text: false,
+  parameters: strictSchema({ type: 'object', properties: {
+    findings: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'object', properties: { text: string, source: string }, required: ['text', 'source'], additionalProperties: false } },
+    still_checking: string,
+  }, required: ['findings', 'still_checking'], additionalProperties: false }),
+  validate: args => (args.findings as { text: string; source: string }[]).every(item => !!item.text.trim() && !!item.source.trim()) && !!(args.still_checking as string).trim(),
+  // The worker intercepts this tool so it never reaches a connector or authority port.
+  run: async () => { throw new Error('report_progress must be handled by the worker'); },
+};
 export interface Definition { name: string; description: string; fields: Record<string, Schema>; parameters?: Schema; effect?: Effect; outside: boolean; validate?: (args: Record<string, unknown>) => boolean }
 // Reuse native field bounds and nullable normal form, but keep each capability's schema distinct.
 const chatFields = strictSchema({ type: 'object', ...MATTERMOST_CHAT_PARAMETERS }).properties as Record<string, Schema>;

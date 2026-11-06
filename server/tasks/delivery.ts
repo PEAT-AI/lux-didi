@@ -124,6 +124,7 @@ interface Pending {
 }
 export class TaskDelivery implements Delivery {
   #pending: Pending | undefined;
+  #following: { identity: RevisionIdentity; answer: CommentaryAnswer; requiresDelegation: boolean } | undefined;
   #binding: string | null = null;
   #delegated: RevisionIdentity | undefined;
   #ready = true;
@@ -155,7 +156,10 @@ export class TaskDelivery implements Delivery {
   deliver(identity: RevisionIdentity, answer: CommentaryAnswer, requiresDelegation = false): void {
     if (!this.ports.isCurrent(identity) || answer.status === 'cancelled') return;
     const pending = this.#current();
-    if (pending && pending.identity.task_id === identity.task_id && pending.identity.task_revision === identity.task_revision) return;
+    if (pending && pending.identity.task_id === identity.task_id && pending.identity.task_revision === identity.task_revision) {
+      if (pending.answer.progress && !answer.progress) this.#following = { identity, answer, requiresDelegation };
+      return;
+    }
     const noLookup = !answer.failure && (answer.status === 'no_action' || !answer.text.trim());
     const chunks = commentaryItems(resultCommentary(answer));
     this.#said = { text: answer.text, accepted: 0, total: chunks.length };
@@ -169,7 +173,12 @@ export class TaskDelivery implements Delivery {
     const pending = this.#current(); if (!pending || pending.command !== command) return;
     this.ports.state(pending.identity, 'accepted', pending.chunk);
     if (this.#said !== undefined) this.#said.accepted = Math.max(this.#said.accepted, pending.chunk + 1);
-    if (++pending.chunk === pending.chunks.length) { this.#pending = undefined; return; }
+    if (++pending.chunk === pending.chunks.length) {
+      this.#pending = undefined;
+      const following = this.#following; this.#following = undefined;
+      if (following) this.deliver(following.identity, following.answer, following.requiresDelegation);
+      return;
+    }
     pending.command = undefined; pending.attempt = 0; this.#drain();
   }
   rejected(command: string): void {

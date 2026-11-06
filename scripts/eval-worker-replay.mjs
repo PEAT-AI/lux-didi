@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 // Use the shipped public worker instruction, not a second replay-only prompt.
 const instructionSource = readFileSync(new URL('../server/tasks/instructions.ts', import.meta.url), 'utf8');
 export const WORKER_INSTRUCTIONS = JSON.parse(instructionSource.match(/export const WORKER_INSTRUCTIONS = ("[^\n]*");/)[1]);
-if (WORKER_INSTRUCTIONS.length !== 7310) throw new Error('Worker instructions exceed 7,310 characters');
+if (WORKER_INSTRUCTIONS.length !== 7658) throw new Error('Worker instruction length changed: expected 7658 characters');
 
 // Synthetic Gmail fixtures and semantics from probe/worker-replay-110.
 // Offline only. A canned replay does not establish real model behaviour.
@@ -275,8 +275,18 @@ function readMail({ id }) {
 // C-REPEAT: what he says after an answer, what she already said and how far it got. Each row is a shape a
 // release owner can replay offline; a row never runs a model here and the eval is unpriced. `judge` names the
 // only thing a real call can settle: the model's judgment over the data the host handed it.
-export const REPLAY_ROW_EXPECTATIONS = Object.freeze(['no_action', 'answer', 'repeat', 'deeper', 'state']);
+export const REPLAY_ROW_EXPECTATIONS = Object.freeze(['no_action', 'answer', 'repeat', 'deeper', 'state', 'progress', 'correction']);
 export const REPLAY_ROWS = Object.freeze([
+  { id: 'sourced-progress', expect: 'progress', owner_words: 'When is the synthetic review and who has replied?',
+    expected_exact: [], expected_facts: [['replies', 'complete']], expected_gap: null,
+    judge: 'one report_progress cites a calendar record while replies remain unread; the final adds replies without repeating the date',
+    progress_finding: { text: 'The synthetic review is Tuesday.', source: 'calendar: synthetic review' },
+    still_checking: 'the attendee replies', final_example: 'The attendee replies are complete.' },
+  { id: 'progress-correction', expect: 'correction', owner_words: 'Check the synthetic review date against the latest update.',
+    expected_exact: [], expected_facts: [['changed', 'Wednesday', 'Tuesday']], expected_gap: null,
+    judge: 'one sourced report_progress then a final plainly names what changed, the new fact and what it replaces',
+    progress_finding: { text: 'The synthetic review is Tuesday.', source: 'calendar: synthetic review' },
+    still_checking: 'the latest mail update', final_example: 'The date changed: Wednesday replaces Tuesday after the latest mail update.' },
   { id: 'agreement-after-answer', expected_exact: [], expected_facts: [], expected_gap: null, judge: 'she adds nothing and starts no task',
     owner_words: 'yeah', overlapped: false, expect: 'no_action',
     already_said: { text: 'The sampling plan is ready and two replicates per plot is enough.', accepted: 2, total: 2 } },
@@ -321,6 +331,15 @@ export function scoreDepth(scenario, result) {
     gap_declared: scenario.expected_gap?.length ? scenario.expected_gap.every(contains) : null,
     preamble_absent: !['sure thing', 'here is what I found', 'according to your'].some(contains)
       && !(firstClause && normalize(spoken).startsWith(normalize(firstClause))),
+    ...(scenario.progress_finding ? {
+      progress_once: (result.calls ?? []).filter(call => call.name === 'report_progress').length === 1,
+      progress_sourced: (result.calls ?? []).filter(call => call.name === 'report_progress').every(call =>
+        Array.isArray(call.args?.findings) && call.args.findings.length >= 1 && call.args.findings.length <= 5
+        && call.args.findings.every(fact => typeof fact.text === 'string' && !!fact.text.trim() && typeof fact.source === 'string' && !!fact.source.trim())
+        && typeof call.args.still_checking === 'string' && !!call.args.still_checking.trim()),
+      final_not_repeated: scenario.expect !== 'progress' || !contains(scenario.progress_finding.text),
+      correction_plain: scenario.expect !== 'correction' || ['changed', 'Wednesday', 'Tuesday', 'replaces'].every(contains),
+    } : {}),
     spoken_length: spoken.length,
   };
 }

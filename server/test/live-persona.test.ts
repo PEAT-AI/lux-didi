@@ -996,7 +996,7 @@ test('W5: each audit rule is stated once in the built GPT-Live voice instruction
 
 test('spoken wait guidance replaces the retired lookup announcement policy', () => {
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /after announcing a check|Announcing a lookup|Only the host bridges lookups/);
-  assert.match(NAYA_WORK_DELIVERY, /A hand-off usually needs no words/);
+  assert.match(NAYA_WORK_DELIVERY, /Acknowledge each ask at once, briefly naming points/);
 });
 
 test('L8-07: missing evidence is said as missing, never as a negative fact', () => {
@@ -1057,7 +1057,7 @@ const HONESTY_CONTRADICTIONS = [
 
 test('C-PROMPT 10.11: she answers from herself and speaks of a lookup only in the turn she hands one off', () => {
   assert.match(NAYA_WORK_DELIVERY, /Everything else is yours and you answer it yourself, at once/);
-  assert.match(NAYA_WORK_DELIVERY, /Speak of looking something up only in the turn you hand it off/);
+  assert.match(NAYA_WORK_DELIVERY, /say you're looking only after hand-off, never guess the outcome/);
   assert.match(NAYA_WORK_DELIVERY, /A no_action means answer from this conversation and your own mind/);
   assert.match(NAYA_WORK_DELIVERY, /You cannot see work in progress/);
   assert.match(NAYA_WORK_DELIVERY, /give what is there rather than only that it is incomplete/);
@@ -1096,8 +1096,8 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
   assert.match(NAYA_LIVE_BASE, /host note, not the owner/);
   assert.match(NAYA_LIVE_BASE, /never agree with.*host/i);
   assert.match(NAYA_LIVE_BASE, /at most once per call/);
-  assert.match(NAYA_WORK_DELIVERY, /A hand-off usually needs no words/);
-  assert.match(NAYA_WORK_DELIVERY, /an acknowledgement never promises work/);
+  assert.match(NAYA_WORK_DELIVERY, /Acknowledge each ask at once, briefly naming points/);
+  assert.match(NAYA_WORK_DELIVERY, /Say provisional or local recall findings now with limits; don't wait/);
   // M3 (#908): the numeric short default is retired; depth follows the ask and the whole answer is spoken.
   assert.match(NAYA_LIVE_BASE, /never cut an answer short/);
   assert.equal(NAYA_LIVE_BASE.includes('thirty seconds'), false, 'no numeric duration default');

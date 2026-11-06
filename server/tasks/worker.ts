@@ -2,7 +2,7 @@ import { hostLogEvent } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import type { Identity } from './authority.js';
 import { closedFailure, failed, readerFailure, reasonCodeFor, type ReasonCode, type ToolResult } from './results.js';
-import { validateArguments, type TaskTool } from './tools.js';
+import { REPORT_PROGRESS_TOOL, validateArguments, type TaskTool } from './tools.js';
 import { workerInstructions } from './instructions.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 export const REVISION_ABORT = Symbol('task-revision');
@@ -26,7 +26,7 @@ export type Infer = (request: InferRequest, signal: AbortSignal) => Promise<Infe
 /** One failed tool and the closed reason it gave, so the next task can say what happened. */
 export interface FailureRecord { tool: string; reason_code: ReasonCode }
 export interface WorkerFailure { stage: 'inference' | 'final'; reason_code: string; detail: string }
-export interface WorkerResult { failure?: WorkerFailure; exact?: string[]; status: 'complete' | 'no_action' | 'incomplete' | 'cancelled'; text: string; findings: ToolResult[]; failures?: FailureRecord[]; receipts?: ToolResult[] }
+export interface WorkerResult { progress?: boolean; failure?: WorkerFailure; exact?: string[]; status: 'complete' | 'no_action' | 'incomplete' | 'cancelled'; text: string; findings: ToolResult[]; failures?: FailureRecord[]; receipts?: ToolResult[] }
 /** A thrown executor error carries its own closed code when it has one, and otherwise names the source as down. */
 const thrownReason = (error: unknown): ReasonCode => {
   const reason = error instanceof Error && 'reason' in error && typeof error.reason === 'string' ? error.reason : '';
@@ -42,6 +42,7 @@ export interface WorkerOptions {
   registry: Map<string, TaskTool>; identity: Omit<Identity, 'operation_id'>; input: string; signal: AbortSignal; infer: Infer;
   model?: string; effort?: string; clock?: Clock;
   profile?: OwnerProfileSnapshot;
+  reportProgress?: (answer: WorkerResult) => void;
   reads?: Map<string, ToolResult>;
   isCurrent?: () => boolean;
   outsideTextSeen?: boolean;
@@ -55,15 +56,18 @@ export function canonical(value: unknown): string {
 }
 /** One host-owned revision. Writes never enter the read cache. */
 export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
+  const registry = new Map(options.registry);
+  registry.set(REPORT_PROGRESS_TOOL.name, REPORT_PROGRESS_TOOL);
+  let reported = false;
   const clock = options.clock ?? realClock, start = clock.now();
   const abort = new AbortController();
-  let expired = false;
+  let expired = false, revisionExpired = false;
   let outsideTextSeen = options.outsideTextSeen ?? false;
   const stop = (): void => abort.abort();
   options.signal.addEventListener('abort', stop, { once: true });
   if (options.signal.aborted) stop();
   const expire = (): void => { expired = true; options.event?.('deadline', 0, clock.now() - start); stop(); };
-  const clearRevision = clock.timer(expire, REVISION_DEADLINE_MS);
+  const clearRevision = clock.timer(() => { revisionExpired = true; expire(); }, REVISION_DEADLINE_MS);
   const reads = options.reads ?? new Map<string, ToolResult>();
   let pending = pendingReads.get(reads);
   if (!pending) { pending = new Map(); pendingReads.set(reads, pending); }
@@ -87,6 +91,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const incomplete = (): WorkerResult => ({ status: 'incomplete', text: partialText(), findings, failures, receipts, ...(failure ? { failure } : expired ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, failures, receipts };
   async function compose(): Promise<WorkerResult> {
+    if (revisionExpired || clock.now() - start >= REVISION_DEADLINE_MS) { expired = true; return incomplete(); }
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
     if (!findings.length) return incomplete();
     const finalAbort = new AbortController();
@@ -95,7 +100,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     });
     const cancel = (): void => finalAbort.abort();
     options.signal.addEventListener('abort', cancel, { once: true });
-    const clear = clock.timer(cancel, FINAL_INFERENCE_DEADLINE_MS);
+    const remaining = REVISION_DEADLINE_MS + 2000 - (clock.now() - start);
+    const clear = clock.timer(cancel, Math.min(FINAL_INFERENCE_DEADLINE_MS, remaining));
     try {
       const answer = await Promise.race([options.infer({ instructions: workerInstructions(options.profile),
         input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
@@ -135,11 +141,22 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     finally { clear(); abort.signal.removeEventListener('abort', onStop); }
   }
   async function call(call: ToolCall): Promise<Output> {
-    const tool = options.registry.get(call.name);
+    const tool = registry.get(call.name);
     if (!tool) return { id: call.id, name: call.name, result: failed(`Unknown tool. Choose one of: ${[...options.registry.keys()].join(', ')}.`, 'invalid_argument') };
     const validation = validateArguments(tool, call.args);
     if (!validation.ok) return { id: call.id, name: call.name, result: failed(validation.repair, 'invalid_argument') };
     if (!current()) return { id: call.id, name: call.name, result: failed('This revision has stopped; use verified findings only.', 'cancelled') };
+    if (tool.name === 'report_progress') {
+      const acknowledgment = (value: object): Output => ({ id: call.id, name: call.name, result: {
+        status: 'ok', text: JSON.stringify(value), references: [], next_cursor: null, coverage: 'Host progress acknowledgment.', repair: null,
+      } });
+      if (reported) return acknowledgment({ already_reported: true });
+      const { findings: facts, still_checking } = validation.args as { findings: { text: string; source: string }[]; still_checking: string };
+      const text = `Provisional, still checking ${still_checking}:\n${facts.map(fact => `${fact.text} [${fact.source}]`).join('\n')}`;
+      reported = true;
+      options.reportProgress?.({ progress: true, status: 'incomplete', text, findings: [] });
+      return acknowledgment({ delivered: true });
+    }
     const key = canonical([tool.name, validation.args]);
     const operationId = randomUUID(), toolStart = clock.now();
     let cache: 'miss' | 'hit' | 'join' = 'miss';
@@ -189,7 +206,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       let inference: Inference;
       try {
         options.event?.('inference', 1, clock.now() - start);
-        inference = await bounded(signal => options.infer({ instructions: workerInstructions(options.profile), input: options.input, outputs: [...outputs], turns: [...turns], tools: [...options.registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
+        inference = await bounded(signal => options.infer({ instructions: workerInstructions(options.profile), input: options.input, outputs: [...outputs], turns: [...turns], tools: [...registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
       } catch (error) {
         if (options.signal.aborted && !expired) {
           hostLogEvent({ event: 'task_inference_superseded', taskId: options.identity.task_id,

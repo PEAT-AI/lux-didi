@@ -10,7 +10,8 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveVoicePort } from '../live/index.js';
+import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext } from '../live/index.js';
+import type { LiveVoicePort } from '../adapters/live-voice/index.js';
 import { Store } from '../runtime/store.js';
 import type { HostTaskFactory } from '../tasks/host.js';
 
@@ -33,7 +34,7 @@ function owner(t: TestContext): { owner: ReturnType<typeof createLiveSessionOwne
     limits: { unusedMs: 3_600_000 } });
   const clock = { now: LATE };
   const live = createLiveSessionOwner({ createTaskRuntime: tasks, store, voice, profile,
-    now: () => clock.now, timeZone: 'Asia/Jakarta', schedule: () => ({ cancel: () => {} }) });
+    now: () => clock.now, timeZone: 'Asia/Jakarta', schedule: () => ({ unref: () => {}, cancel: () => {} }) });
   t.after(() => { void live.shutdown('app_quit'); rmSync(dir, { recursive: true, force: true }); });
   return { owner: live, store, clock, ctx: { clientId: 'client', auditId: 'audit', authorityEpoch: store.authorityEpoch } };
 }

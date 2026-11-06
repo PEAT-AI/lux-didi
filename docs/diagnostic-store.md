@@ -127,3 +127,5 @@ content; `dreaming_op_rejected` names the refused operation and one closed reaso
 `dreaming_backlog` is the host-start batch: sessions processed, sessions remaining, operations by
 type and elapsed time. The host lives for one call, so this bounded batch, not a nightly timer, is
 what turns her older calls into typed memory.
+
+`memory_excluded` is emitted once at Live session creation with class, yield, legacy, source and budget exclusion counts; budget includes the bounded recall window, and no memory text is logged. Its `yielded` sizes name owner-lore clipping, then opening-options and previous-openers removal, while persona, tools, runtime context and the reserved memory sections never yield.

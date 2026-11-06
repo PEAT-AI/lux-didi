@@ -519,7 +519,7 @@ test('earlier-conversations prefixes an absolute local date and part of day in t
   assert.ok(losAngeles.section.includes('Tue 13 Oct, morning: [session:a] Shipped the thing.'), losAngeles.section);
 });
 
-test('the earlier-conversations section sits right after # Memory and yields before it under the cap', () => {
+test('the earlier-conversations section sits right after # Memory and cannot silently yield', () => {
   const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
   const now = Date.UTC(2026, 9, 20, 12, 0);
   const section = buildEarlierConversationsSection([{ id: 'a', endedAt: now, summary: 'SYNTHETIC prior conversation' }], { now, timeZone: 'UTC' }).section;
@@ -531,14 +531,10 @@ test('the earlier-conversations section sits right after # Memory and yields bef
   assert.ok(earlierAt > memoryAt, 'the section sits after # Memory');
   assert.ok(composed.sections.some(s => s.id === 'earlier-conversations' && s.chars > 0), 'the section is measured');
 
-  // With no room left after the records, the earlier section yields while memory stays.
-  const huge = composeLiveSessionInstruction({ text: baseline.text, tools: [],
+  // M0-R1: an impossible mandatory section fails closed instead of silently losing recall.
+  assert.throws(() => composeLiveSessionInstruction({ text: baseline.text, tools: [],
     records: [{ id: 'fits', text: 'SYNTHETIC retained memory' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    earlierConversations: 'E'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT) });
-  assert.equal(huge.earlierConversationsIncluded, false);
-  assert.equal(huge.sections.some(section => section.id === 'earlier-conversations'), false, 'a yielded section is not reported, so its logged size is zero');
-  assert.ok(!huge.text.includes('EEEE'));
-  assert.ok(huge.text.includes('SYNTHETIC retained memory'));
+    earlierConversations: 'E'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT) }), PersonaOverlayError);
 });
 
 test('the recovery pickup is typed connection data, not an opening sentence', () => {
@@ -1174,4 +1170,24 @@ test('593: standing lines never state an old loop as still unfinished', () => {
   const line = composed.text.split('\n').find(candidate => candidate.includes('standing-old'))!;
   assert.ok(!STILL_NEGATION.test(line), `no stale assertion in the standing line: ${line}`);
   assert.ok(line.includes('is it done:'), 'an old standing loop is a question');
+});
+
+test('M0-R1: overflow clips owner lore, not the three earlier calls or memory', () => {
+  const ownerProfile = syntheticOwner('SYNTHETIC STYLE', 'L'.repeat(OWNER_LORE_CHAR_LIMIT));
+  const fixed = composeLiveSessionInstruction({ text: 'BASE', ownerProfile, tools: [], records: [], trustedChars: 60_000 });
+  const text = 'BASE' + 'B'.repeat(53_000 - fixed.text.length);
+  const now = Date.UTC(2026, 10, 6, 12);
+  const earlier = buildEarlierConversationsSection([0, 1, 2].map(i => ({ id: `synthetic-${i}`, endedAt: now - i * 60_000, summary: 'S'.repeat(400) })), { now, timeZone: 'UTC' });
+  const composed = composeLiveSessionInstruction({ text, ownerProfile, tools: [], records: [{ id: 'note', text: 'SYNTHETIC NOTE' }],
+    trustedChars: 60_000, earlierReserve: 1_800, earlierConversations: earlier.section });
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
+  assert.equal(composed.earlierConversationsIncluded, true);
+  assert.deepEqual(earlier.selectedIds, ['synthetic-0', 'synthetic-1', 'synthetic-2']);
+  for (const id of ['synthetic-0', 'synthetic-1', 'synthetic-2']) assert.ok(composed.text.includes(`[session:${id}]`));
+  assert.ok(composed.text.includes(earlier.section), 'the complete earlier-conversations section is intact');
+  assert.deepEqual(composed.selectedIds, ['note']);
+  assert.ok(composed.sections.find(section => section.id === 'owner-lore')!.chars < OWNER_LORE_CHAR_LIMIT);
+  assert.ok(composed.text.includes(text), 'the non-yielding base is intact');
+  assert.equal(composed.yielded[0]?.id, 'owner-lore');
+  assert.ok(composed.yielded[0]!.before > composed.yielded[0]!.after);
 });

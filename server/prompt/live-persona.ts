@@ -80,12 +80,12 @@ export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
 export const LIVE_INSTRUCTION_TARGET_CHARS = 44_000;
 /** The hard ceiling a Live instruction may never exceed; past it composition fails closed (PV1: 36k; PV2: 52k). */
 export const LIVE_INSTRUCTION_HARD_LIMIT = 52_000;
-/** The memory section never exceeds this many characters; it is the first section to yield. */
+/** The memory section never exceeds this many characters; its budget is reserved before owner lore. */
 export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Imported standing notes get their own budget, so ad hoc voice notes keep theirs. */
 export const STANDING_MEMORY_CHAR_LIMIT = 3_000;
 /** Owner lore is dense; it is clipped to this many characters (PV2: 14k, a much deeper owner profile)
- *  and never yielded. */
+ *  and gives up room before the reserved session memory. */
 export const OWNER_LORE_CHAR_LIMIT = 14_000;
 /**
  * The opening input for a fresh seeded recovery (release 3g-c): the connection dropped and returned, so
@@ -278,10 +278,10 @@ export function peopleRosterWithin(room: number): string | undefined { return pe
  * closing marker are the composer's, so a full budget of owner lore survives intact and the marker is
  * never cut.
  */
-function clipOwnerLore(text: string): string {
-  if (!text.startsWith(OWNER_LORE_LEADER) || !text.endsWith(OWNER_LORE_CLOSER)) return text.slice(0, OWNER_LORE_CHAR_LIMIT);
+function clipOwnerLore(text: string, limit = OWNER_LORE_CHAR_LIMIT): string {
+  if (!text.startsWith(OWNER_LORE_LEADER) || !text.endsWith(OWNER_LORE_CLOSER)) return text.slice(0, limit);
   const body = text.slice(OWNER_LORE_LEADER.length, text.length - OWNER_LORE_CLOSER.length);
-  return body.length <= OWNER_LORE_CHAR_LIMIT ? text : `${OWNER_LORE_LEADER}${body.slice(0, OWNER_LORE_CHAR_LIMIT)}${OWNER_LORE_CLOSER}`;
+  return body.length <= limit ? text : `${OWNER_LORE_LEADER}${body.slice(0, limit)}${OWNER_LORE_CLOSER}`;
 }
 
 function bytes(text: string): number { return Buffer.byteLength(text, 'utf8'); }
@@ -451,7 +451,7 @@ export const EARLIER_CONVERSATIONS_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 /** #108: the earlier-conversations reserve. Release 10.7.3 carried 1,162 to 1,639 characters of these
  *  summaries before the owner style grew; the sections that may yield hold this much of the hard
  *  ceiling free for them. */
-export const EARLIER_CONVERSATIONS_RESERVE_CHARS = 1_600;
+export const EARLIER_CONVERSATIONS_RESERVE_CHARS = 1_800;
 /** The space the earlier-conversations section may use: its own reserve under the hard ceiling, so the
  *  leftovers of a target the other sections already blew past cannot starve it (#108). A roomy
  *  instruction still gives the section what the target leaves; a full one gives it the reserve, bounded
@@ -673,13 +673,13 @@ function bodyEntries(region: string): { id: ComposedSection['id']; text: string 
   return [{ id: 'owner-lore' as const, text: lore }, { id: 'voice' as const, text: region.slice(anchorAt) }];
 }
 
-/** Session CREATE composition over the frozen persona layers. Records yield before any trusted layer. */
+/** Session CREATE composition: reserved memory precedes authored lore and opener hints in the budget. */
 export function composeLiveSessionInstruction(input: {
   readonly text: string; readonly tools: readonly string[];
   /** Whether this provider delegates tool execution to a backend model: its voice prompt carries only
    *  the delegation policy, while a provider that calls the tools itself keeps the full NAYA_WORK_DELIVERY. */
   readonly delegatedBackend?: boolean;
-  readonly records: readonly { readonly id: string; readonly text: string; readonly standing?: StandingMemoryRecord }[];
+  readonly records: readonly { readonly id: string; readonly text: string; readonly capturedAt?: number; readonly standing?: StandingMemoryRecord }[];
   readonly overlay?: PersonaOverlay; readonly pickupNote?: string; readonly trustedChars: number;
   /** Q5-R4: the earlier calls' first sentences as "do not repeat" context, already bounded by the host. */
   readonly openersNote?: string;
@@ -694,11 +694,12 @@ export function composeLiveSessionInstruction(input: {
   readonly alarms?: string;
   readonly earlierConversations?: string;
   /** #108: the room held free for the earlier-conversations section, so the sections that yield (the
-   *  notes, which she can read on demand) make it instead of the summary section taking the leftovers. */
+   *  owner lore and opener hints) make it instead of the summary section taking the leftovers. */
   readonly earlierReserve?: number;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;
 }): { readonly text: string; readonly selectedIds: readonly string[]; readonly omitted: readonly { id: string; reason: 'budget' }[]; readonly sections: readonly { readonly id: ComposedSection['id']; readonly chars: number }[]; readonly earlierConversationsIncluded: boolean;
+  readonly yielded: readonly { readonly id: string; readonly before: number; readonly after: number }[];
   /** M2: what the standing section did with its budget, for the build's own receipt. Counts only. */
   readonly standing: { readonly selected: number; readonly omitted: number; readonly chars: number } } {
   // Rebuild the always-present policy once rather than retaining the frozen copy too.
@@ -744,7 +745,7 @@ export function composeLiveSessionInstruction(input: {
   const earlier = input.earlierConversations?.length ? input.earlierConversations : undefined;
   // A standing note is resolved and ranked by its source; it never rides the uuid-ordered # Memory list.
   const standingRecords: readonly StandingMemoryRecord[] = input.records.flatMap(record => record.standing === undefined ? [] : [record.standing]);
-  const plainRecords = input.records.filter(record => record.standing === undefined).map(record => ({ id: record.id, text: record.text }));
+  const plainRecords = input.records.filter(record => record.standing === undefined).map(record => ({ id: record.id, text: record.text, capturedAt: record.capturedAt ?? 0 }));
   const entries = (records: readonly string[], earlierSection: string | undefined, standing: readonly string[] = [], peopleText?: string): Entry[] => {
     const standingEntry: Entry[] = standing.length ? [{ id: 'standing-memory', text: `${STANDING_MEMORY_PREFACE}${separator}${standing.join(separator)}` }] : [];
     const memory: Entry[] = records.length ? [{ id: 'memory', text: `${preface}${separator}${records.join(separator)}` }] : [];
@@ -789,39 +790,54 @@ export function composeLiveSessionInstruction(input: {
       { id: last.id, text: `${last.text}${separator}${accent.tail}` },
     ]);
   };
-  const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = [], peopleText?: string): string => assemble(entries(records, earlierSection, standing, peopleText).filter(entry => entry.text.length).map(entry => entry.text));
-  if (wrap([], undefined).length > input.trustedChars) throw new PersonaOverlayError('instruction_too_large');
-  // #108: the notes are the section that yields for the earlier-conversations reserve, because she can
-  // read a note on demand and cannot read a past call at all. Never the tool conduct, never the base.
+  // Size the memory sections first. Only authored lore and opener hints may give up their room.
   const ceiling = Math.min(input.trustedChars, LIVE_INSTRUCTION_HARD_LIMIT);
-  const baseChars = wrap([], undefined).length;
-  const earlierReserve = Math.max(0, Math.min(input.earlierReserve ?? 0, EARLIER_CONVERSATIONS_RESERVE_CHARS,
-    ceiling - baseChars - separator.length));
-  const composeChars = earlierReserve === 0 ? input.trustedChars : ceiling - earlierReserve - separator.length;
+  const reserve = earlier === undefined ? Math.max(0, input.earlierReserve ?? 0) : 0;
+  const composeChars = ceiling - reserve - (reserve ? separator.length : 0);
+  const fit = (raw: Entry[]): Entry[] => {
+    let chosen = raw.filter(entry => entry.text.length > 0);
+    const size = (): number => assemble(chosen.map(entry => entry.text)).length;
+    // Keep the lore's provenance fence even when its authored body has to shrink.
+    chosen = chosen.map(entry => {
+      if (entry.id !== 'owner-lore') return entry;
+      const marker = entry.text.startsWith(OWNER_LORE_MARKER) ? OWNER_LORE_MARKER : '';
+      const text = entry.text.slice(marker.length);
+      const bodyChars = text.startsWith(OWNER_LORE_LEADER) && text.endsWith(OWNER_LORE_CLOSER)
+        ? text.length - OWNER_LORE_LEADER.length - OWNER_LORE_CLOSER.length : text.length;
+      const limit = Math.max(0, Math.min(OWNER_LORE_CHAR_LIMIT, bodyChars - Math.max(0, size() - composeChars)));
+      return { ...entry, text: marker + clipOwnerLore(text, limit) };
+    });
+    for (const id of ['opening-options', 'previous-openers']) {
+      if (size() <= composeChars) break;
+      chosen = chosen.filter(entry => entry.id !== id);
+    }
+    return chosen;
+  };
   const records: string[] = [], selectedIds: string[] = [], omitted: { id: string; reason: 'budget' }[] = [];
-  for (const record of [...plainRecords].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+  for (const record of [...plainRecords].sort((a, b) => b.capturedAt - a.capturedAt || a.id.localeCompare(b.id))) {
     const rendered = `<memory-record>\n${JSON.stringify({ id: record.id, text: record.text })}\n</memory-record>`;
-    const memoryChars = [preface, ...records, rendered].join(separator).length;
-    if (memoryChars > MEMORY_SECTION_CHAR_LIMIT || wrap([...records, rendered], undefined).length > composeChars) omitted.push({ id: record.id, reason: 'budget' });
+    if ([preface, ...records, rendered].join(separator).length > MEMORY_SECTION_CHAR_LIMIT) omitted.push({ id: record.id, reason: 'budget' });
     else { records.push(rendered); selectedIds.push(record.id); }
   }
-  // The earlier-conversations section yields before the note sections: it is added only when it fits over them.
   const standing: string[] = [];
   let standingOmitted = 0;
   for (const item of standingRecords) {
     const rendered = `[${item.id}] ${standingLine(item, input.now, input.timeZone)}`;
-    const standingChars = [STANDING_MEMORY_PREFACE, ...standing, rendered].join(separator).length;
-    if (standingChars > STANDING_MEMORY_CHAR_LIMIT || wrap(records, undefined, [...standing, rendered]).length > input.trustedChars) { omitted.push({ id: item.id, reason: 'budget' }); standingOmitted += 1; }
+    if ([STANDING_MEMORY_PREFACE, ...standing, rendered].join(separator).length > STANDING_MEMORY_CHAR_LIMIT) { omitted.push({ id: item.id, reason: 'budget' }); standingOmitted += 1; }
     else { standing.push(rendered); selectedIds.push(item.id); }
   }
-  const earlierIncluded = earlier !== undefined && wrap(records, earlier, standing).length <= (earlierReserve === 0 ? input.trustedChars : ceiling);
-  const earlierSection = earlierIncluded ? earlier : undefined;
-  // W15 (W15-R2): the roster takes what every other section leaves, so a full lore plus a long roster
-  // still composes under the hard limit; it is trimmed and the trim is logged, never thrown.
-  const room = input.trustedChars - assemble(entries(records, earlierSection, standing).filter(entry => entry.text.length).map(entry => entry.text)).length - separator.length;
-  const peopleText = room > 0 ? peopleSectionWithin(room) : undefined;
-  let chosen = entries(records, earlierSection, standing, peopleText).filter(entry => entry.text.length);
-  if (assemble(chosen.map(entry => entry.text)).length > input.trustedChars) chosen = entries(records, earlierSection, standing).filter(entry => entry.text.length);
-  return { text: assemble(chosen.map(entry => entry.text)), selectedIds, omitted, sections: Object.freeze(chosen.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length }))), earlierConversationsIncluded: earlierIncluded,
+  const protectedEntries = entries(records, earlier, standing);
+  const fitted = fit(protectedEntries);
+  const available = composeChars - assemble(fitted.map(entry => entry.text)).length - separator.length;
+  const people = available > 0 ? peopleSectionWithin(available) : undefined;
+  const chosen = fit(entries(records, earlier, standing, people));
+  const text = assemble(chosen.map(entry => entry.text));
+  if (text.length > composeChars) throw new PersonaOverlayError('instruction_too_large');
+  const yielded = protectedEntries.flatMap(entry => {
+    const after = chosen.find(section => section.id === entry.id)?.text.length ?? 0;
+    return after < entry.text.length ? [{ id: entry.id, before: entry.text.length, after }] : [];
+  });
+  return { text, selectedIds, omitted, sections: Object.freeze(chosen.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length }))), earlierConversationsIncluded: earlier !== undefined, yielded,
     standing: { selected: standing.length, omitted: standingOmitted, chars: standing.length ? [STANDING_MEMORY_PREFACE, ...standing].join(separator).length : 0 } };
+
 }

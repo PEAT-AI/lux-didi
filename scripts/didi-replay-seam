@@ -10,7 +10,12 @@ function classifyTiming(row) {
   if (!Number.isFinite(row.first_audio_at)) return missing('first_audio_at');
   return row.retrieval_returned_at > row.first_audio_at ? 'late' : 'early';
 }
-const restricted = /\b(HR|payroll|cap table|deal valuation|executive pay)\b/i;
+const restricted = /\b(HR|payroll|cap table|deal valuation|executive pay|salary|salaries|compensation|recruitment|hiring|interviews?|candidates?)\b/i;
+function resultKind(value) {
+  let parsed; try { parsed = JSON.parse(value); } catch { return 'missing:retrieval_result'; }
+  const records = parsed?.records ?? parsed?.response?.records ?? parsed?.response?.data?.records ?? parsed?.entries ?? parsed?.results ?? parsed?.data?.entries;
+  return Array.isArray(records) ? (records.length ? 'found' : 'empty') : 'missing:retrieval_result';
+}
 function replay(dataDir, session) {
   const db = new DatabaseSync(join(dataDir, 'state.sqlite'), { readOnly: true });
   try {
@@ -23,7 +28,8 @@ function replay(dataDir, session) {
       }
     }
     logs.sort((a, b) => a.at - b.at);
-    const tasks = db.prepare('SELECT * FROM tasks WHERE live_session_id=?').all(session);
+    const tasks = db.prepare('SELECT * FROM tasks WHERE live_session_id=? OR live_session_id IS NULL').all(session);
+    const directHistoryCalls = db.prepare("SELECT execution_id,state,created_at FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='conversation_history'").all(session);
     const rows = [];
     let skipped = 0;
     for (const turn of turns.filter(t => t.origin === 'owner')) {
@@ -33,20 +39,25 @@ function replay(dataDir, session) {
       const owner = utterances.filter(u => u.role === 'owner').at(-1);
       const model = utterances.find(u => u.role === 'model');
       const events = logs.filter(e => e.turnId === turn.turn_id);
-      const starts = events.filter(e => e.event === 'task_lifecycle' && e.phase === 'start');
-      const taskIds = starts.map(e => e.taskId).filter(id => tasks.some(t => t.task_id === id));
-      const operations = taskIds.flatMap(id => db.prepare("SELECT * FROM task_operations WHERE task_id=? AND tool='conversation_history' ORDER BY created_at").all(id));
+      const starts = events.filter(e => e.event === 'task_lifecycle' && ['start','revision'].includes(e.phase));
+      const identities = starts.filter(e => tasks.some(t => t.task_id === e.taskId));
+      const taskIds = [...new Set(identities.map(e => e.taskId))];
+      const matchesRevision = (taskId, revision) => identities.some(e => e.taskId === taskId && e.revision === revision);
+      const operations = taskIds.flatMap(id => db.prepare("SELECT * FROM task_operations WHERE task_id=? AND tool IN ('conversation_history','search_memory','read_memory') ORDER BY created_at").all(id))
+        .filter(op => matchesRevision(op.task_id, op.task_revision)).sort((a, b) => a.created_at - b.created_at);
       const responses = db.prepare('SELECT * FROM trace_response WHERE live_session_id=? AND turn_id=? ORDER BY created_at').all(session, turn.turn_id);
       const audio = logs.find(e => e.event === 'response_first_audio' && responses.some(r => r.response_key === e.responseKey));
       const firstAudio = audio?.at ?? turn.first_audible_at;
-      const deliveries = taskIds.flatMap(id => db.prepare('SELECT * FROM task_deliveries WHERE task_id=? ORDER BY updated_at').all(id));
+      const deliveries = taskIds.flatMap(id => db.prepare('SELECT * FROM task_deliveries WHERE task_id=? ORDER BY updated_at').all(id))
+        .filter(d => matchesRevision(d.task_id, d.task_revision));
+      const taskEvents = logs.filter(e => matchesRevision(e.taskId, e.revision));
       // tool_calls is a separate durable evidence source, not a timestamp for completion.
       const calls = taskIds.flatMap(id => db.prepare('SELECT execution_id,state,intent_json FROM tool_calls WHERE run_id=?').all(id));
       const retrievals = operations.map(op => ({
-        operation_id: op.operation_id,
+        operation_id: op.operation_id, task_revision: op.task_revision, tool: op.tool,
         retrieval_started_at: op.created_at,
         retrieval_returned_at: op.state === 'committed' ? op.updated_at : missing('retrieval_returned_at'),
-        result: op.state === 'committed' ? 'returned:unclassified' : op.state,
+        result: op.state === 'committed' ? resultKind(op.result) : op.state,
       }));
       const first = retrievals[0];
       const row = {
@@ -57,19 +68,21 @@ function replay(dataDir, session) {
         response_create_at: responses[0]?.created_at ?? missing('response_create_at'),
         first_audio_at: firstAudio ?? missing('first_audio_at'),
         her_first_words: model?.text ?? missing('her_first_words'),
-        delivery_part_at: deliveries.find(d => d.state === 'delivered')?.updated_at ?? missing('delivery_part_at'),
+        delivery_part_at: taskEvents.find(e => e.event === 'task_delivery' && e.state === 'sent')?.at ?? missing('delivery_part_at'),
+        delivery_record_at: deliveries.find(d => d.state === 'delivered')?.updated_at ?? missing('delivery_record_at'),
         owner_words: owner?.text ?? missing('owner_words'),
-        memory_cued: /\b(last time|I told you|you said|my trip)\b/i.test(owner?.text ?? ''),
+        memory_cued: /\b(last time|I told you|you said|my trip|memory|remember|recall|yesterday|previously|last call)\b/i.test(owner?.text ?? ''),
         cue_review: 'manual review required, including unanchored possessives',
         first_words_verdict: 'manual review required', later_contradiction: 'manual review required',
-        retrievals, tool_call_count: calls.length,
+        retrievals, retrieval_ran: retrievals.length ? 'yes' : 'not-recorded', tool_call_count: calls.length,
+        task_settled_at: taskEvents.find(e => e.event === 'task_settled')?.at ?? missing('task_settled_at'),
       };
       row.timing = classifyTiming(row);
       rows.push(row);
     }
     const deltas = rows.filter(r => r.memory_cued && Number.isFinite(r.retrieval_returned_at) && Number.isFinite(r.first_audio_at))
       .map(r => r.retrieval_returned_at - r.first_audio_at).sort((a, b) => a - b);
-    return { session, skipped_restricted_rows: skipped, rows, measured_cued_turns: deltas.length,
+    return { session, direct_history_call_count: directHistoryCalls.length, skipped_restricted_rows: skipped, rows, measured_cued_turns: deltas.length,
       median_ms: deltas.length ? (deltas[Math.floor((deltas.length - 1) / 2)] + deltas[Math.floor(deltas.length / 2)]) / 2 : missing('median'),
       p90_ms: deltas.length ? deltas[Math.ceil(deltas.length * .9) - 1] : missing('p90'),
       caveat: 'Only explicit turn/task/response identifiers joined. Missing events cannot refute a race. Lexical cues require private manual review.' };

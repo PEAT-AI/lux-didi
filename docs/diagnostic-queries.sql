@@ -142,3 +142,17 @@ FROM tool_calls WHERE run_id=:session ORDER BY created_at;
 -- Host log causal joins: task_lifecycle phase=start by turnId and taskId;
 -- task_settled by taskId; response_first_audio by responseKey.
 -- live_first_audio without a turn/response id cannot safely be assigned to a turn.
+-- Current helper retrieval uses search_memory/read_memory in server/tasks/tools.ts,
+-- not the historical direct conversation_history tool. Compare all three explicitly.
+-- Match each operation/delivery by BOTH task_id AND task_revision to the host log's
+-- task_lifecycle start/revision event carrying turnId. Joining task_id alone assigns
+-- later revision lookups to the earlier turn and produces a false race.
+SELECT o.task_id,o.task_revision,o.operation_id,o.tool,o.state,o.created_at,o.updated_at
+FROM task_operations o WHERE o.tool IN ('conversation_history','search_memory','read_memory')
+AND o.task_id=:task AND o.task_revision=:revision ORDER BY o.created_at;
+-- Before live_session_id persistence was introduced, accept a NULL task session only
+-- when its task id AND revision have an explicit host log link to this session/turn.
+-- task_delivery state=sent timestamps dispatch, not audible playback; a delivered DB
+-- row's updated_at is reported separately and is not substituted for dispatch.
+-- task_operations.result may retain only size_bytes/category; mark result missing
+-- rather than infer found/empty from size or from a successful operation.

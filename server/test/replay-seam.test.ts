@@ -27,16 +27,17 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
       CREATE TABLE trace_utterance(turn_id TEXT,role TEXT,at INTEGER,final INTEGER,text TEXT);
       CREATE TABLE trace_response(response_key TEXT,live_session_id TEXT,turn_id TEXT,created_at INTEGER);
       CREATE TABLE tasks(task_id TEXT,live_session_id TEXT);
-      CREATE TABLE task_operations(operation_id TEXT,task_id TEXT,tool TEXT,created_at INTEGER,updated_at INTEGER,state TEXT);
-      CREATE TABLE task_deliveries(task_id TEXT,state TEXT,updated_at INTEGER);
+      CREATE TABLE task_operations(operation_id TEXT,task_id TEXT,task_revision INTEGER,tool TEXT,created_at INTEGER,updated_at INTEGER,state TEXT,result TEXT);
+      CREATE TABLE task_deliveries(task_id TEXT,task_revision INTEGER,state TEXT,updated_at INTEGER);
       CREATE TABLE tool_calls(execution_id TEXT,run_id TEXT,state TEXT,intent_json TEXT);`);
     const logs = fixture.map((r: Record<string, any>, i: number) => {
       const turn = `turn-${i}`, task = `task-${i}`;
       db.prepare('INSERT INTO trace_turn VALUES(?,?,?,?,?,?)').run(turn, 'synthetic', i, 'owner', r.owner_final_at, r.first_audio_at);
       db.prepare('INSERT INTO trace_utterance VALUES(?,?,?,?,?)').run(turn, 'owner', r.owner_final_at, 1, r.owner_words);
-      db.prepare('INSERT INTO tasks VALUES(?,?)').run(task, 'synthetic');
-      db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?)').run(`op-${i}`, task, 'conversation_history', r.retrieval_started_at, r.retrieval_returned_at, 'committed');
-      return JSON.stringify({ event: 'task_lifecycle', phase: 'start', liveSessionId: 'synthetic', turnId: turn, taskId: task, timestamp: new Date(r.helper_started_at).toISOString() });
+      db.prepare('INSERT INTO tasks VALUES(?,?)').run(task, i ? 'synthetic' : null);
+      db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)').run(`op-${i}`, task, 1, i ? 'search_memory' : 'conversation_history', r.retrieval_started_at, r.retrieval_returned_at, 'committed', JSON.stringify({ records: i ? [] : [{ text: 'Synthetic kite' }] }));
+      db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)').run(`unrelated-revision-${i}`, task, 2, 'search_memory', 1, 2, 'committed', '{}');
+      return JSON.stringify({ event: 'task_lifecycle', phase: 'start', revision: 1, liveSessionId: 'synthetic', turnId: turn, taskId: task, timestamp: new Date(r.helper_started_at).toISOString() });
     });
     db.close();
     writeFileSync(join(dir, 'logs/host.log'), logs.join('\n'));
@@ -46,6 +47,8 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
     const output = JSON.parse(result.stdout);
     assert.deepEqual(output.rows.map((r: any) => r.timing), ['late', 'early']);
     assert.equal(output.rows[0].response_create_at, 'missing:response_create_at');
+    assert.deepEqual(output.rows.map((r: any) => r.retrievals[0].result), ['found', 'empty']);
+    assert.deepEqual(output.rows.map((r: any) => r.retrievals.length), [1, 1], 'another revision must never be attributed to this turn');
     assert.equal(output.measured_cued_turns, 2);
     assert.equal(output.median_ms, 0);
     assert.equal(output.p90_ms, 100);

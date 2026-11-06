@@ -56,3 +56,11 @@ test('floor mode retains all headings and whole recent summaries without truncat
   for (const id of result.summaryIds) assert.ok(result.text.includes(summaries.find(summary => summary.id === id)!.text));
   assert.ok(estimatedTokens(result.text) <= 2_000);
 });
+
+test('summary provenance keeps the summary id distinct from its source session marker', () => {
+  const summary = { id: 'summary-uuid', sessionId: 'source-session', startedAt: now, text: 'Synthetic source conversation' };
+  const result = compileMemoryBlock({ ...input, items: [], summaries: [summary] });
+  assert.deepEqual(result.summaryIds, ['summary-uuid']);
+  assert.ok(result.text.includes('[session:source-session]'));
+  assert.ok(!result.text.includes('[session:summary-uuid]'));
+});

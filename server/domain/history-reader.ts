@@ -187,7 +187,8 @@ export function searchRecent(tx: Transaction, ownerId: string, query: string, op
   const inClasses = permitted.map(() => '?').join(',') || 'NULL';
   const rows = tx.all(`SELECT t.id,t.live_session_id,t.at,bm25(history_turns_fts) AS rank FROM history_turns_fts
       JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN live_sessions l ON l.live_session_id=t.live_session_id
-      WHERE history_turns_fts MATCH ? AND l.owner_assistant_id=? AND t.live_session_id<>? AND l.chosen_input_class IN (${inClasses})
+      WHERE history_turns_fts MATCH ? AND l.owner_assistant_id=? AND t.live_session_id<>?
+        AND EXISTS (SELECT 1 FROM live_grants g WHERE g.live_session_id=t.live_session_id AND g.chosen_input_class IN (${inClasses}))
         AND ${ownerMemorySessionSql('l')}
         AND NOT EXISTS (SELECT 1 FROM history_exclusions x WHERE x.source_kind='live' AND x.source_id=t.live_session_id)
       ORDER BY rank LIMIT ?`, [expression, ownerId, options.excludeSessionId ?? '', ...permitted, limit]);

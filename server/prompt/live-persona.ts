@@ -510,13 +510,6 @@ export function buildEarlierConversationsSection(
 
 // --- release 3u: the opening options one start offers, from stored facts only -------------------
 
-/** One standing note as the model reads it: an open loop carries the age and the date it was last seen. */
-function standingLine(item: StandingMemoryRecord, now: number | undefined, timeZone: string | undefined): string {
-  if (item.status !== 'open' || now === undefined || timeZone === undefined) return item.text;
-  const lastSeenAt = Date.parse(`${item.capturedAt}T00:00:00Z`);
-  return Number.isNaN(lastSeenAt) ? item.text : loopLine(item.text, lastSeenAt, now, timeZone);
-}
-
 /** Verbatim title of the plan section (release 3u). */
 const OPEN_LOOP_FRESH_MS = 24 * 60 * 60 * 1000;
 /** The day a stored loop was last seen, in the owner's zone, as a plain date. */
@@ -728,8 +721,8 @@ export function composeLiveSessionInstruction(input: {
     ...bodySections.filter(section => section.id !== 'owner-lore'),
     ...(description === undefined ? [] : [{ id: 'voice-description' as const, text: description }]),
   ];
-  if (native && fixed.length) {
-    const accent = accentPreset(input.accentSelection);
+  const accent = accentPreset(input.accentSelection);
+  if (native && fixed.length && accent !== undefined) {
     const first = fixed[0]!, last = fixed[fixed.length - 1]!;
     fixed[0] = { ...first, text: `${accent.head}${separator}${first.text}` };
     fixed[fixed.length - 1] = { ...last, text: `${last.text}${separator}${accent.tail}` };

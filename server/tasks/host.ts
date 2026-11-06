@@ -39,9 +39,11 @@ export function sessionClockZone(store: Store, sessionId: string): string | unde
   try {
     const row = store.transaction(tx => tx.get('SELECT time_zone FROM live_sessions WHERE live_session_id=?', [sessionId]));
     return String(row?.['time_zone'] ?? '') || undefined;
-  } catch {
-    // A host store with no live sessions at all (text only) composes no live clock; the configured zone stands.
-    return undefined;
+  } catch (error) {
+    // A host store with no live table at all (text only) composes no live clock and the configured zone stands.
+    // Anything else, a locked or corrupt store, is a real failure and is thrown, never read as "no session".
+    if (error instanceof Error && /no such table: live_sessions\b/u.test(error.message)) return undefined;
+    throw error;
   }
 }
 

@@ -212,8 +212,10 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     timeZone: ownerZone,
     ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
   });
-  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, timeZone: ownerZone,
-    timeZoneSource: preferencesZone === undefined ? 'host' : 'settings',
+  // The host zone is never pinned: #ownerTimeZone resolves Intl at compose time, so a Mac zone change between
+  // calls reaches the next call. Only the owner's own settings zone is pinned, because nothing else knows it.
+  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime,
+    ...(preferencesZone === undefined ? {} : { timeZone: preferencesZone, timeZoneSource: 'settings' as const }),
     ...(testing?.schedule ? { schedule: testing.schedule } : {}), memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));

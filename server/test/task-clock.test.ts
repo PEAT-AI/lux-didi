@@ -53,6 +53,14 @@ test('the helper zone is the session row zone, so the call cannot be read two wa
   assert.equal(sessionClockZone(store, 'live-clock'), 'Asia/Jakarta');
   assert.equal(sessionClockZone(store, 'text-session-with-no-live-row'), undefined, 'a text session falls back to the configured zone');
   const zone = sessionClockZone(store, 'live-clock');
+  assert.equal(zone, 'Asia/Jakarta');
   const first = taskInstructions({ ...(zone === undefined ? {} : { timeZone: zone }), now: () => SAID }).split('\n')[0];
   assert.equal(first, 'Now: Fri, 2026-11-06, 06:45 Asia/Jakarta (UTC+07:00)');
+});
+
+test('a store with no live table at all falls back instead of failing the helper', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'task-clock-text-'));
+  const store = new Store(dir, [...domainMigrations, ...chatMigrations]);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  assert.equal(sessionClockZone(store, 'text-only'), undefined, 'no live table means the configured zone stands');
 });

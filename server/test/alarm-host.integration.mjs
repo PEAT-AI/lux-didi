@@ -114,6 +114,11 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
     revision = matrixRuntime.begin(text, 1, calls + 1);
   };
   const rows = () => host.store.transaction(tx => tx.all('SELECT * FROM alarms ORDER BY fire_at_utc,id'));
+  const hostLog = async () => (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  // FR4: the announcement receipt is logged on her first audible playback, so the harness plays it here.
+  const playFirstAudio = () => f.send({ serverContent: { modelTurn: { parts: [
+    { inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(480, 24).toString('base64') } }] } } });
+  const announced = async () => (await hostLog()).filter(row => row.event === 'alarm_announced');
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /failed/);
     f.send({ serverContent: { outputTranscription: { text: 'wake me at 8, cancel my alarm, snooze my alarm in five minutes', finished: true } } });
@@ -168,6 +173,13 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   const announcementStart = f.frames.length;
   assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${due.id}`)).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
+  assert.equal((await announced()).length, 0, 'no announcement is logged before any provider audio of the alarm call');
+  playFirstAudio();
+  const audioDeadline = Date.now() + 5000;
+  while ((await announced()).length === 0 && Date.now() < audioDeadline) await new Promise(done => setTimeout(done, 25));
+  const atFirstAudio = await announced();
+  assert.equal(atFirstAudio.length, 1, 'her first audible playback of the alarm opening logs exactly one announcement');
+  assert.equal(atFirstAudio[0].mode, 'in_call', 'the announcement names the live call it belongs to');
   await owner('snooze my alarm for five minutes', due.id); const staleSnooze = revision.identity;
   await owner('show my alarms');
   assert.match(await call('snooze_alarm', { id: String(due.id) }, staleSnooze), /failed/, 'replacement for snooze phrase expiry: stale revision cannot snooze');
@@ -314,7 +326,9 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
   // #107: the alarm block reaching the provider is its own event, and each route names its mode.
-  assert.ok(log.some(row => row.event === 'alarm_announced' && row.mode === 'in_call'), 'the live call announcement is recorded');
+  const announcedOnce = log.filter(row => row.event === 'alarm_announced');
+  assert.equal(announcedOnce.length, 1, 'the live call announcement is recorded exactly once, and never at create');
+  assert.equal(announcedOnce[0].mode, 'in_call', 'the live call announcement is recorded');
   assert.ok(log.some(row => row.event === 'alarm_announced' && row.mode === 'new_session'), 'the new session announcement is recorded');
   // #107: an unresolved permission is never reported as a denial.
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'notifications_not_asked'), 'not asked stays distinct from denied');

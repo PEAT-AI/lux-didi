@@ -17,6 +17,7 @@ test('retrieval after first audio is late, not early; retrieval before it is ear
 test('missing timestamps never imply retrieval was early', () => {
   assert.equal(classifyTiming({ first_audio_at: 1500 }), 'missing:retrieval_returned_at');
   assert.equal(classifyTiming({ retrieval_returned_at: 1400 }), 'missing:first_audio_at');
+  assert.equal(classifyTiming({ owner_final_at: 1600, first_audio_at: 1500, retrieval_returned_at: 1700 }), 'invalid:first_audio_before_owner_final');
 });
 test('CLI joins synthetic SQLite and host events read-only and marks late and early', () => {
   const dir = mkdtempSync(join(tmpdir(), 'replay-seam-'));

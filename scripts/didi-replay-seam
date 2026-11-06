@@ -8,6 +8,7 @@ const missing = name => `missing:${name}`;
 function classifyTiming(row) {
   if (!Number.isFinite(row.retrieval_returned_at)) return missing('retrieval_returned_at');
   if (!Number.isFinite(row.first_audio_at)) return missing('first_audio_at');
+  if (Number.isFinite(row.owner_final_at) && row.first_audio_at < row.owner_final_at) return 'invalid:first_audio_before_owner_final';
   return row.retrieval_returned_at > row.first_audio_at ? 'late' : 'early';
 }
 const restricted = /\b(HR|payroll|cap table|deal valuation|executive pay|salary|salaries|compensation|recruitment|hiring|interviews?|candidates?)\b/i;
@@ -80,7 +81,7 @@ function replay(dataDir, session) {
       row.timing = classifyTiming(row);
       rows.push(row);
     }
-    const deltas = rows.filter(r => r.memory_cued && Number.isFinite(r.retrieval_returned_at) && Number.isFinite(r.first_audio_at))
+    const deltas = rows.filter(r => r.memory_cued && ['late','early'].includes(r.timing))
       .map(r => r.retrieval_returned_at - r.first_audio_at).sort((a, b) => a - b);
     return { session, direct_history_call_count: directHistoryCalls.length, skipped_restricted_rows: skipped, rows, measured_cued_turns: deltas.length,
       median_ms: deltas.length ? (deltas[Math.floor((deltas.length - 1) / 2)] + deltas[Math.floor(deltas.length / 2)]) / 2 : missing('median'),

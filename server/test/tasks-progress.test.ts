@@ -8,7 +8,6 @@ import { Store } from '../runtime/store.js';
 import { Authority } from '../tasks/authority.js';
 import { TaskRuntime } from '../tasks/runtime.js';
 import { TaskCall } from '../tasks/call.js';
-import { failed } from '../tasks/results.js';
 import type { Infer, Inference } from '../tasks/worker.js';
 import type { ToolResult } from '../tasks/results.js';
 

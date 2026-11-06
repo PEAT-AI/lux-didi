@@ -1172,3 +1172,19 @@ test('593: standing lines never state an old loop as still unfinished', () => {
   assert.ok(!STILL_NEGATION.test(line), `no stale assertion in the standing line: ${line}`);
   assert.ok(line.includes('is it done:'), 'an old standing loop is a question');
 });
+
+test('M0-R1: overflow clips owner lore, not the three earlier calls or memory', () => {
+  const ownerProfile = syntheticOwner('SYNTHETIC STYLE', 'L'.repeat(OWNER_LORE_CHAR_LIMIT));
+  const fixed = composeLiveSessionInstruction({ text: 'BASE', ownerProfile, tools: [], records: [], trustedChars: 60_000 });
+  const text = 'BASE' + 'B'.repeat(53_000 - fixed.text.length);
+  const now = Date.UTC(2026, 10, 6, 12);
+  const earlier = buildEarlierConversationsSection([0, 1, 2].map(i => ({ id: `synthetic-${i}`, endedAt: now - i * 60_000, summary: 'S'.repeat(400) })), { now, timeZone: 'UTC' });
+  const composed = composeLiveSessionInstruction({ text, ownerProfile, tools: [], records: [{ id: 'note', text: 'SYNTHETIC NOTE' }],
+    trustedChars: 60_000, earlierReserve: 1_800, earlierConversations: earlier.section });
+  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
+  assert.equal(composed.earlierConversationsIncluded, true);
+  for (const id of earlier.selectedIds) assert.ok(composed.text.includes(`[session:${id}]`));
+  assert.deepEqual(composed.selectedIds, ['note']);
+  assert.ok(composed.sections.find(section => section.id === 'owner-lore')!.chars < OWNER_LORE_CHAR_LIMIT);
+  assert.ok(composed.text.includes(text), 'the non-yielding base is intact');
+});

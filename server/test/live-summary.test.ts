@@ -944,3 +944,31 @@ test('C-OPENER: a two letter word in the label is part of the name it must match
     assert.equal(loops[0]!.text, text, 'a labelled row the sentence names in full keeps its claim');
   } finally { h.cleanup(); }
 });
+
+test('M0: route admission preserves private notes, derives metadata and logs exclusions once', async () => {
+  for (const provider of ['openai', 'gemini'] as const) {
+    const h = summarizerFixture();
+    const fake = fakeLiveVoicePort();
+    const dataClasses = provider === 'openai' ? ['ordinary', 'private', 'sensitive'] as const : ['ordinary'] as const;
+    const profile = validateLiveProfile({ provider, liveModelId: 'synthetic-model', voice: 'SyntheticVoice', keyReference: 'synthetic',
+      route: { enabled: true, provider, modelId: 'synthetic-model', dataClasses }, prompt: { text: 'SYNTHETIC BASE', dataClass: 'ordinary' } });
+    const events: Record<string, unknown>[] = [];
+    const error = console.error;
+    console.error = (line: string) => { try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { /* non-JSON diagnostic */ } };
+    const owner = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(h.store), store: h.store,
+      voice: { ...fake.port, capabilities: { ...fake.port.capabilities, provider } }, profile, now: () => SUMMARY_NOW, timeZone: 'UTC',
+      memorySource: () => [{ id: 'private-note', text: 'SYNTHETIC PRIVATE NOTE', dataClass: 'private' }, { id: 'unknown-note', text: 'UNKNOWN NOTE', dataClass: 'unknown' }] });
+    try {
+      const ctx = { clientId: 'synthetic', auditId: 'm0', authorityEpoch: h.store.authorityEpoch };
+      const input = { idempotencyKey: `m0-${provider}`, inputClass: 'ordinary' as const };
+      const session = owner.create(input, ctx);
+      owner.create(input, ctx);
+      const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [session.liveSessionId])!['accepted_prompt_snapshot']))) as { system: string; dataClasses: string[] };
+      assert.equal(frozen.system.includes('SYNTHETIC PRIVATE NOTE'), provider === 'openai');
+      assert.deepEqual(frozen.dataClasses, provider === 'openai' ? ['ordinary', 'private'] : ['ordinary']);
+      const excluded = events.filter(event => event['event'] === 'memory_excluded');
+      assert.equal(excluded.length, 1, 'idempotent create logs exclusions only once');
+      assert.deepEqual(excluded[0]!['reasons'], { class: provider === 'openai' ? 1 : 2, yield: 0, legacy: 0, source: 0, budget: 0 });
+    } finally { console.error = error; await owner.shutdown(); h.cleanup(); }
+  }
+});

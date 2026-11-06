@@ -649,3 +649,15 @@ test('a distilled session A is injected into session B chat context and Live ins
     assert.ok(request.system.includes('moved to Lisbon'), 'the chat prompt carries the past summary');
   } finally { f.store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('M0: a fresh note wins a clipped memory budget by captured chronology, not id', async () => {
+  const { composeLiveSessionInstruction } = await import('../prompt/live-persona.js');
+  const records = [
+    { id: 'z-old', text: 'O'.repeat(900), capturedAt: 100 },
+    { id: 'a-middle', text: 'M'.repeat(900), capturedAt: 200 },
+    { id: 'm-new', text: 'N'.repeat(900), capturedAt: 300 },
+  ];
+  const result = composeLiveSessionInstruction({ text: 'SYNTHETIC BASE', tools: [], records, trustedChars: 60_000 });
+  assert.deepEqual(result.selectedIds, ['m-new']);
+  assert.deepEqual(result.omitted.map(record => record.id).sort(), ['a-middle', 'z-old']);
+});

@@ -439,17 +439,6 @@ export function recordDeliveredOpening(tx: Transaction, callId: string, now: num
 /** Contract 1023 N8: how recent the call that just ended must be for its own words to seed the opener. */
 const FRESH_THREAD_WINDOW_MS = 2 * 60 * 1000;
 /**
- * How long a prepared session's frozen clock stays usable. Past this, or across a change of the owner's
- * local day, the instruction no longer describes the owner's now and the session is discarded.
- */
-const PREPARED_CLOCK_MAX_AGE_MS = 10 * 60 * 1000;
-
-/** The local calendar day of one instant in `timeZone`, which is what a frozen instruction gets wrong. */
-function localDay(ms: number, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
-}
-
-/**
  * The zone a live session's memory is stamped in: the zone recorded when the session was composed, so a
  * note written during a call carries the owner's own day. A row with no recorded zone falls back to the
  * host's zone, which is the last of the sources the session clock itself uses.
@@ -458,17 +447,6 @@ function sessionTimeZone(tx: Transaction, liveSessionId: string): string {
   const row = tx.get('SELECT time_zone FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
   const recorded = String(row?.['time_zone'] ?? '');
   return recorded || Intl.DateTimeFormat().resolvedOptions().timeZone;
-}
-
-/**
- * A prepared session carries the instant and zone it was composed at. A row with no clock at all is stale
- * by the same rule: no shim keeps an instruction whose clock nothing recorded.
- */
-function preparedClockStale(row: SQLRow, now: number, fallbackZone: string): boolean {
-  const observed = Date.parse(String(row['observed_at'] ?? ''));
-  if (!Number.isFinite(observed) || now - observed > PREPARED_CLOCK_MAX_AGE_MS) return true;
-  const timeZone = String(row['time_zone'] ?? '') || fallbackZone;
-  return localDay(observed, timeZone) !== localDay(now, timeZone);
 }
 /** The closed set of past calls the open-loop option may draw on, newest first. */
 const OPEN_LOOP_SOURCES = 3;
@@ -1936,12 +1914,6 @@ export class LiveSessionOwner {
       if (String(row['profile_identity']) !== this.#profileIdentity) throw new LiveError('invalidated');
       if (String(row['lifecycle']) === 'terminal') throw new LiveError('terminal');
       if (String(row['lifecycle']) !== 'accepted') throw new LiveError('already_attached');
-      // The frozen instruction is never patched: a prepared session whose clock went stale is discarded here,
-      // before any audio, so the call starts on a freshly composed instruction.
-      if (preparedClockStale(row, now, this.#ownerTimeZone())) {
-        this.#terminalInTx(tx, input.liveSessionId, { state: 'expired' }, false, now, 'detached', null);
-        return 'expired' as const;
-      }
       if (this.#expireInTx(tx, row, now) !== row) return 'expired' as const;
       let acceptedPrompt: AcceptedPromptSnapshot;
       // Null is a pre-v2 legacy record. Refuse honestly rather than recompile private current state.

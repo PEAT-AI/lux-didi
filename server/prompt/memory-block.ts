@@ -18,6 +18,7 @@ export interface MemoryBlockInput {
   readonly summaries: readonly StartSummary[];
   readonly sources?: Readonly<Record<string, readonly string[]>>;
   readonly floors?: boolean;
+  readonly floorParts?: readonly ('identity' | 'loops' | 'conversations')[];
 }
 
 /** Inputs have already passed the resolver's route admission. This compiler has no data-class policy. */
@@ -66,14 +67,14 @@ export function compileMemoryBlock(input: MemoryBlockInput) {
       return [{ id: summary.id, text: `[${date(summary.startedAt)} ${time(summary.startedAt)}] [session:${summary.id}] ${summary.text}${loop}` }];
     });
   const budgets = CONTEXT_BUDGET.memory;
-  const mode = input.floors ? 'floor' : 'ceiling';
+  const budget = (part: keyof typeof budgets): number => budgets[part][input.floors || input.floorParts?.some(value => value === part) ? 'floor' : 'ceiling'];
   // Charge the background sentence and every joining separator against the identity allocation.
   const overhead = estimatedTokens(MEMORY_BACKGROUND + '\n\n'.repeat(4));
   const parts = [
-    selectWholeItems('# Now', [{ id: 'clock', text: input.clock }], budgets.now[mode]),
-    selectWholeItems('# Who he is', identity, budgets.identity[mode] - overhead),
-    selectWholeItems('# Open loops', loops, budgets.loops[mode]),
-    selectWholeItems('# Last conversations', summaries, budgets.conversations[mode]),
+    selectWholeItems('# Now', [{ id: 'clock', text: input.clock }], budget('now')),
+    selectWholeItems('# Who he is', identity, budget('identity') - overhead),
+    selectWholeItems('# Open loops', loops, budget('loops')),
+    selectWholeItems('# Last conversations', summaries, budget('conversations')),
   ];
   for (const part of parts) omitted.push(...part.omitted);
   return {

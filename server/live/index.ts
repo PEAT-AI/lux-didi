@@ -1654,39 +1654,41 @@ export class LiveSessionOwner {
         commitments: loops.map(loop => `${new Date(loop.lastSeenAt).toISOString()} ${loop.text}`),
         savedForHim: admittedRecords
           .map(record => `As of ${date}: ${record.text}`), excludeTopics });
-      const composeSession = (earlierSection: string | undefined, calendar: string | undefined, earlierReserve: number | undefined = undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+      const composeSession = (calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
         runtimeContext: this.#liveRuntimeContext(toolNames, timeZone),
+        memoryBlockInput: { now, timeZone,
+          clock: new Intl.DateTimeFormat('en-GB', { timeZone, dateStyle: 'full', timeStyle: 'short' }).format(now),
+          items: admittedRecords.flatMap(record => record.memoryItem ? [record.memoryItem] : []),
+          entries: admittedRecords.filter(record => !record.memoryItem).map(record => ({ id: record.id, text: record.text })),
+          sources: Object.fromEntries(admittedRecords.filter(record => record.memoryItem).map(record => [record.id, record.sourceSessionIds ?? []])),
+          summaries: seededSummaries.map(summary => ({ id: summary.liveSessionId, startedAt: summary.endedAt, text: summary.summary })),
+        },
         records: admittedRecords, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         now, timeZone,
         ...(calendar ? { calendar } : {}),
         ...(alarmNote === undefined ? {} : { alarms: alarmNote }),
-        ...(earlierReserve === undefined ? {} : { earlierReserve }),
-        ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(excludeTopics.length ? { openersNote: `Do not reopen these delivered topics: ${JSON.stringify(excludeTopics)}.` } : {}),
         openingFacts: opening.section });
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
-        // #108: the basis already holds the summary reserve back, so the budget below is the room that
-        // exists after the notes yielded, not the leftovers of a stale target. With nothing stored to
-        // put in the reserve the notes keep their room (review F4).
-        const reserve = seededSummaries.length === 0 ? undefined : EARLIER_CONVERSATIONS_RESERVE_CHARS;
-        const basis = composeSession(undefined, this.#calendar, reserve);
-        earlier = buildEarlierConversationsSection(seededSummaries,
-          { now, timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+        const result = composeSession(this.#calendar);
+        earlier = { section: result.sections.find(section => section.id === 'memory') ? result.text : '',
+          selectedIds: result.summaryIds, omitted: [] };
         this.#sections = { persona: configuredPrompt.system, memory: [],
-          summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],
-          summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
+          summary: undefined, summaryIds: [...result.summaryIds], summaryOmitted: [], calendar: this.#calendar };
         this.#warm.adopt(this.#sections);
-        return earlier.section ? composeSession(earlier.section, this.#calendar, reserve) : basis;
+        return result;
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
-      console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, estimatedTokens: composed.estimatedTokens, stablePrefixChars: composed.stablePrefixChars, stablePrefixEstimatedTokens: composed.stablePrefixEstimatedTokens, fixedChars: composed.fixedChars, fixedEstimatedTokens: composed.fixedEstimatedTokens, overTarget: composed.overTarget, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      for (const omission of composed.itemOmissions) console.error(JSON.stringify({ event: 'live_context_item_omitted', id: omission.id, reason: omission.reason }));
+      if (composed.overTarget) console.error(JSON.stringify({ event: 'live_context_target_overrun', estimatedTokens: composed.estimatedTokens, fixedEstimatedTokens: composed.fixedEstimatedTokens, sections: composed.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) }));
       // M2: what the standing section did with its own budget, once per build, including the build that
       // selected nothing: that zero is the line a "my memory did not reach the call" report needs.
       hostLogEvent({ event: 'memory_excluded', liveSessionId,

@@ -1,3 +1,5 @@
+import { activeItems } from '../domain/memory-items.js';
+import { historySessionEvidence } from '../domain/history-lifecycle.js';
 import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { hostTaskFactory } from '../tasks/host.js';
@@ -239,5 +241,13 @@ export const resolveLiveMemory: LiveMemorySource = tx => {
   const taken = new Set(standing.map(record => record.id));
   const plain = records.filter(record => !taken.has(record.entryId)).map(record => ({ id: record.entryId, text: record.text,
     capturedAt: record.capturedAt, dataClass: classes.get(record.entryId)! }));
-  return [...standing, ...plain];
+  const order = ['ordinary', 'private', 'sensitive', 'unknown'] as const;
+  const typed = activeItems(tx, { limit: 200, orderBy: 'salience' }).map(memoryItem => {
+    const sourceSessionIds = tx.all('SELECT DISTINCT session_id FROM memory_sources WHERE memory_id=? ORDER BY session_id', [memoryItem.id])
+      .map(row => String(row['session_id']));
+    const sourceClasses = sourceSessionIds.map(id => historySessionEvidence(tx, id)?.dataClass ?? 'unknown');
+    const dataClass = order[sourceClasses.length ? Math.max(...sourceClasses.map(value => order.indexOf(value))) : 3]!;
+    return { id: memoryItem.id, text: memoryItem.text, dataClass, memoryItem, sourceSessionIds };
+  });
+  return [...standing, ...plain, ...typed];
 };

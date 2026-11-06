@@ -97,7 +97,7 @@ async function openHost(t: TestContext) {
 }
 
 test('alarm opening waits for session.started and announces only on its first audible output', async t => {
-  const { socket, attachment, flush, commands, events, pcm16 } = await openHost(t);
+  const { socket, attachment, flush, commands, events, pcm16, clock } = await openHost(t);
   await flush();
   assert.equal(commands().filter(command => command.type === 'session.commentary.append').length, 0);
   assert.equal(events('alarm_prompt_installed').length, 1);
@@ -126,9 +126,11 @@ test('alarm opening waits for session.started and announces only on its first au
   await flush();
   assert.equal(events('alarm_announced').length, 0);
   socket.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(2400)).toString('base64') });
+  clock.advance(1000); // Release the adapter's standing playback cushion before observing host playback.
   await flush();
   assert.equal(events('alarm_announced').length, 1);
   socket.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(2400)).toString('base64') });
+  clock.advance(1000); // Release the adapter's standing playback cushion before observing host playback.
   await flush();
   assert.equal(events('alarm_announced').length, 1);
 });
@@ -141,6 +143,7 @@ test('a held muted answer requests exactly one commentary offer, not a typed tur
   assert.equal((await attachment.ready).terminal, null); await flush();
   attachment.setInputMuted(true);
   socket.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(2400)).toString('base64') });
+  clock.advance(1000); // Release the adapter's standing playback cushion before observing host playback.
   await flush();
   attachment.setInputMuted(false);
   const before = commands().length;

@@ -13,7 +13,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ABSTENTION_MARKERS, BARS, openaiVerifier, readAnswers, readGolden, runEval, type MemoryEvalReport,
+  ABSTENTION_MARKERS, BARS, openaiVerifier, readAnswers, readGolden, runEval,
+  type MemoryEvalReport, type RestoreTool,
 } from '../memory/eval-runner.js';
 import { GOLDEN_FILE, answersFile, buildEvalStore } from './fixtures/memory-eval/build.js';
 
@@ -230,4 +231,66 @@ test('the CLI refuses --verifier without a key instead of grading silently', asy
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+});
+
+test('the restore seam calls a registered tool and refuses a wrong conversation', async () => {
+  const golden = join(mkdtempSync(join(tmpdir(), 'memory-eval-restore-')), 'golden.jsonl');
+  writeFileSync(golden, `${JSON.stringify({
+    id: 'r1', class: 7, query: 'continue from the passport conversation', eval_at: '2026-11-06T08:30:00+00:00',
+    cutoff_session: 'live-08', gold_turn_ids: ['801'], required: [], forbidden: [], expect_in_start_block: false,
+    expect_search: false, expect_abstain: false, notes: 'restore seam',
+  })}\n`);
+  try {
+    await withStore('clean', async store => {
+      // No registered tool on base: the stage says so instead of inventing a fidelity.
+      const absent = await runEval({ store, golden });
+      assert.equal(absent.report.items_detail[0]!.restore.status, 'not_run');
+      assert.deepEqual(absent.report.items_detail[0]!.notRun, ['restore:tool_missing']);
+      assert.equal(absent.report.overall.restoreFidelity, null);
+      // A registered tool is called, and the conversation it names is scored.
+      const right: RestoreTool = { resolve: () => ({ sessionId: 'live-08' }) };
+      const scored = await runEval({ store, golden, restoreTool: right });
+      assert.equal(scored.report.items_detail[0]!.restore.status, 'scored');
+      assert.equal(scored.report.items_detail[0]!.restore.fidelity, 1);
+      assert.equal(scored.report.overall.restoreFidelity, 1);
+      assert.deepEqual(scored.report.items_detail[0]!.misses, []);
+      // The wrong conversation is a miss, never a pass.
+      const wrong: RestoreTool = { resolve: () => ({ sessionId: 'live-05' }) };
+      const failed = await runEval({ store, golden, restoreTool: wrong });
+      assert.equal(failed.report.items_detail[0]!.restore.fidelity, 0);
+      assert.ok(failed.report.items_detail[0]!.misses.includes('restore_miss'));
+      assert.equal(failed.exitCode, 1);
+      const nothing: RestoreTool = { resolve: () => null };
+      assert.ok((await runEval({ store, golden, restoreTool: nothing })).report.items_detail[0]!.misses.includes('restore_miss'));
+    });
+  } finally {
+    rmSync(join(golden, '..'), { recursive: true, force: true });
+  }
+});
+
+test('the CLI refuses argv it does not understand, so a typo cannot switch a stage off', async () => {
+  await withStore('clean', async (store, work) => {
+    const args = ['--store', store, '--golden', GOLDEN_FILE, '--out', join(work, 'report.json')];
+    const typo = cli([...args, '--ansers', answersFile('clean')]);
+    assert.equal(typo.status, 2);
+    assert.match(typo.stderr, /unknown_option: --ansers/);
+    const stray = cli([...args, 'strict']);
+    assert.equal(stray.status, 2);
+    assert.match(stray.stderr, /unexpected_argument: strict/);
+    const twice = cli([...args, '--strict', '--strict']);
+    assert.equal(twice.status, 2);
+    assert.match(twice.stderr, /option_given_twice: --strict/);
+    const valueMissing = cli([...args, '--answers']);
+    assert.equal(valueMissing.status, 2);
+    assert.match(valueMissing.stderr, /--answers needs a value/);
+    const known = cli([...args, '--strict']);
+    assert.equal(known.status, 1, 'the known flags still run');
+  });
+});
+
+test('every bar threshold is a BARS constant, so one place confirms them', () => {
+  assert.deepEqual(Object.keys(BARS).sort(),
+    ['correctionMisses', 'dateErrors', 'falseMemory', 'onDemandOverall', 'onDemandPerClass', 'restoreMisses', 'startCoverage']);
+  const code = readFileSync(join(ROOT, 'server', 'memory', 'eval-runner.ts'), 'utf8');
+  assert.equal(/bar:\s*\d/.test(code), false, 'no bar may carry a literal threshold outside BARS');
 });

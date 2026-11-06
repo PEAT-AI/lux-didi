@@ -55,6 +55,8 @@ export const BARS = Object.freeze({
   startCoverage: 0.9,
   dateErrors: 0,
   falseMemory: 0,
+  correctionMisses: 0,
+  restoreMisses: 0,
 });
 
 /** Phrases that count as an abstention. Missing evidence is no negative fact. */
@@ -69,6 +71,24 @@ export type Verifier = (input: {
   readonly stage: 'start' | 'answer';
   readonly text: string;
 }) => Promise<{ matched_required: string[]; leaked_forbidden: string[]; denied_before_search: boolean }>;
+
+/** A registered restore tool: identify the conversation a reference names, and hand it back. */
+export interface RestoreTool {
+  resolve(
+    tx: Transaction,
+    request: { reference: string; evalAt: number; cutoffMs: number },
+  ): { sessionId: string } | null;
+}
+
+/**
+ * The registration probe. Unit 6's restore tool is the thing that will register
+ * itself here; until it exists nothing answers, and a class 7 item reports
+ * not_run rather than a fidelity nobody measured.
+ */
+export function registeredRestoreTool(tx: Transaction): RestoreTool | null {
+  void tx;
+  return null;
+}
 
 /** One recorded first answer, from a runner that has already spoken. */
 export interface RecordedAnswer {
@@ -138,6 +158,8 @@ export interface RunOptions {
   readonly timeZone?: string | undefined;
   readonly answers?: RecordedAnswersFile | undefined;
   readonly verifier?: Verifier | undefined;
+  /** A restore tool under test; absent means the registration probe decides. */
+  readonly restoreTool?: RestoreTool | null | undefined;
   readonly now?: (() => number) | undefined;
 }
 
@@ -440,10 +462,21 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
           if (item.expect_abstain && !abstained) misses.push('no_abstention');
         }
 
-        // (e) class 7: the restore tool is not registered on base.
+        // (e) class 7: call the restore tool when one is registered, else say so.
         if (item.class === 7) {
-          restore.reason = 'tool_missing';
-          notRun.push('restore:tool_missing');
+          const tool = options.restoreTool === undefined ? registeredRestoreTool(tx) : options.restoreTool;
+          if (tool === null) {
+            restore.reason = 'tool_missing';
+            notRun.push('restore:tool_missing');
+          } else {
+            const found = tool.resolve(tx, { reference: item.query, evalAt: nowMs, cutoffMs });
+            const gold = sessionsOfTurns(tx, item.gold_turn_ids);
+            const wanted = [...new Set(gold)];
+            const matched = found === null ? 0 : wanted.filter(session => session === found.sessionId).length;
+            restore.status = 'scored';
+            restore.fidelity = wanted.length === 0 ? (found === null ? 0 : 1) : matched / wanted.length;
+            if (restore.fidelity < 1) misses.push('restore_miss');
+          }
         }
       }
 
@@ -528,8 +561,8 @@ function finish(
     { id: 'startCoverage', bar: BARS.startCoverage, value: overall.startCoverage.ratio, met: (overall.startCoverage.ratio ?? 1) >= BARS.startCoverage },
     { id: 'dateErrors', bar: BARS.dateErrors, value: overall.dateErrors, met: overall.dateErrors <= BARS.dateErrors },
     { id: 'falseMemory', bar: BARS.falseMemory, value: overall.falseMemory, met: overall.falseMemory <= BARS.falseMemory },
-    { id: 'correctionsGreen', bar: 0, value: classes['4']!.misses, met: classes['4']!.misses === 0 },
-    { id: 'restoreGreen', bar: 0, value: classes['7']!.misses, met: classes['7']!.misses === 0 },
+    { id: 'correctionsGreen', bar: BARS.correctionMisses, value: classes['4']!.misses, met: classes['4']!.misses <= BARS.correctionMisses },
+    { id: 'restoreGreen', bar: BARS.restoreMisses, value: classes['7']!.misses, met: classes['7']!.misses <= BARS.restoreMisses },
   ];
   const exitCode: 0 | 1 = bars.every(entry => entry.met) ? 0 : 1;
   return {
@@ -628,6 +661,23 @@ export function openaiVerifier(options: {
   };
 }
 
+const VALUE_FLAGS: readonly string[] = Object.freeze(['--store', '--data-dir', '--golden', '--out', '--answers', '--time-zone', '--verifier']);
+const BOOLEAN_FLAGS: readonly string[] = Object.freeze(['--strict']);
+
+/** A release gate with no human in the loop refuses argv it does not understand. */
+function validateArgv(argv: readonly string[]): void {
+  const seen = new Set<string>();
+  for (let index = 0; index < argv.length;) {
+    const token = argv[index]!;
+    if (!token.startsWith('--')) throw new Error(`unexpected_argument: ${token}`);
+    if (seen.has(token)) throw new Error(`option_given_twice: ${token}`);
+    seen.add(token);
+    if (VALUE_FLAGS.includes(token)) { index += 2; continue; }
+    if (BOOLEAN_FLAGS.includes(token)) { index += 1; continue; }
+    throw new Error(`unknown_option: ${token}`);
+  }
+}
+
 function flag(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name);
   if (index === -1) return undefined;
@@ -643,6 +693,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
   try {
+    validateArgv(argv);
     const golden = flag(argv, '--golden');
     const out = flag(argv, '--out');
     if (golden === undefined || out === undefined) throw new Error('--golden and --out are required');

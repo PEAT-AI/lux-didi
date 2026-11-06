@@ -46,8 +46,8 @@ test('W5: the persona says what carries over between calls and what does not', (
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), '185fafd2ba7c1c79f76a9d9d45ea80cb3b0f6d80cba7cd00a4a713219213a054');
-  assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
+  assert.equal(sha(NAYA_CHARACTER), 'bad845bb5b3f62d33cdfb0fadee1154919fe07b4c5e56658d5cbb205e318a2e9');
+  assert.match(NAYA_CHARACTER, /never cut an answer short just to be brief/, 'the numeric duration default is retired; depth follows the ask');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
   assert.equal(NAYA_CHARACTER.includes('never cut useful substance to meet a time or word target'), false);

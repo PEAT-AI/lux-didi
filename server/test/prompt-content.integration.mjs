@@ -17,7 +17,7 @@ assert.equal(prompt.NAYA_WORK_DELIVERY, approved.NAYA_WORK_DELIVERY);
 assert.equal(WORKER_INSTRUCTIONS, approved.WORKER_INSTRUCTIONS);
 assert.equal(EVIDENCE_SOURCES_GUIDE, approved['Text evidence guide']);
 assert.equal(workerInstructions(), approved.WORKER_INSTRUCTIONS);
-assert.ok(WORKER_INSTRUCTIONS.length === 7206);
+assert.ok(WORKER_INSTRUCTIONS.length === 7310);
 for (const name of ['NAYA_VOICE_TOOLS', 'NAYA_TOOLS', 'NAYA_BACKEND_PROCEDURE']) {
   assert.equal(prompt[name], undefined, `the retired export stays removed: ${name}`);
 }
@@ -80,7 +80,7 @@ const fullLive = openAiInstructions(prompt.composeLiveSessionInstruction({ text:
   delegatedBackend: true, records: [], trustedChars: 60000 }).text);
 const excluded = JSON.parse(readFileSync(new URL('./fixtures/prompt-character-excluded.json', import.meta.url)));
 assert.equal(createHash('sha256').update(prompt.NAYA_CHARACTER).digest('hex'),
-  '185fafd2ba7c1c79f76a9d9d45ea80cb3b0f6d80cba7cd00a4a713219213a054', 'release character contains only the authorized wording changes');
+  'bad845bb5b3f62d33cdfb0fadee1154919fe07b4c5e56658d5cbb205e318a2e9', 'release character contains only the authorized wording changes');
 assert.notEqual(prompt.NAYA_CHARACTER, excluded.NAYA_CHARACTER);
 for (const system of [ownerText.system, fullLive, openAiInstructions(none.text)]) {
   assert.equal(system.split(prompt.NAYA_CHARACTER).length - 1, 1);

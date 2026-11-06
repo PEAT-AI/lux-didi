@@ -1389,6 +1389,7 @@ export class LiveSessionOwner {
   readonly #profile: LiveProfile;
   readonly #now: () => number;
   readonly #timeZonePin: string | undefined;
+  readonly #timeZoneSource: LiveOwnerConfig['timeZoneSource'];
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
   readonly #web: WebSearchPort | undefined;
   /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
@@ -1504,6 +1505,7 @@ export class LiveSessionOwner {
     useWebSearchPort(() => this.#web);
     this.#profile = validateLiveProfile(config.profile);
     this.#timeZonePin = config.timeZone;
+    this.#timeZoneSource = config.timeZoneSource;
     const now = config.now ?? Date.now;
     this.#now = () => {
       const value = now();
@@ -1531,9 +1533,10 @@ export class LiveSessionOwner {
    * The clock this session is composed at: the observed instant written in the owner zone, that zone, and
    * which source chose it. It is stored on the session row and every later prompt reads that record.
    */
-  #clockRecord(now: number): { observedAt: string; timeZone: string; source: 'pin' | 'host' } {
+  #clockRecord(now: number): { observedAt: string; timeZone: string; source: 'pin' | 'host' | 'settings' } {
     const timeZone = this.#ownerTimeZone();
-    return { observedAt: zonedIso(new Date(now), timeZone), timeZone, source: this.#timeZonePin === undefined ? 'host' : 'pin' };
+    return { observedAt: zonedIso(new Date(now), timeZone), timeZone,
+      source: this.#timeZoneSource ?? (this.#timeZonePin === undefined ? 'host' : 'pin') };
   }
 
   /** C-DIAG109: the response pair every stall and rebuild line carries, read off the turn now in flight. */

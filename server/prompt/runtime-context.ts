@@ -115,9 +115,26 @@ function ymd(parts: { y: number; m: number; d: number }): string {
 }
 
 /** One date label plus its short weekday, from a y/m/d triple. */
-function label(y: number, m: number, d: number): string {
+function label(y: number, m: number, d: number, suffix = ''): string {
   const date = new Date(Date.UTC(y, m - 1, d));
-  return `${ymd({ y, m, d })} (${shortWeekdays[date.getUTCDay()]!})`;
+  return `${ymd({ y, m, d })} (${shortWeekdays[date.getUTCDay()]!}${suffix})`;
+}
+
+/**
+ * The one clock line every prompt opens with: weekday, date, local time, the zone and its offset. The
+ * live instruction and every helper task prompt read their clock from this function, so a call cannot
+ * carry two spellings of the same instant.
+ */
+export function nowLine(at: Date, timeZone: string): string {
+  const local = zoned(at, timeZone);
+  return `Now: ${shortWeekdays[local.weekday]!}, ${ymd(local)}, ${local.hour}:${local.minute} ${timeZone} (UTC${offset(at, timeZone)})`;
+}
+
+/** The instant written in the owner zone, offset included, so a stored observation carries its own zone. */
+export function zonedIso(at: Date, timeZone: string): string {
+  const local = zoned(at, timeZone);
+  const seconds = String(at.getUTCSeconds()).padStart(2, '0');
+  return `${ymd(local)}T${local.hour}:${local.minute}:${seconds}${offset(at, timeZone)}`;
 }
 
 /**
@@ -171,13 +188,13 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
   const now = zoned(input.now, input.timeZone);
   const base = Date.UTC(now.y, now.m - 1, now.d);
   const day = 86_400_000;
-  const tomorrow = new Date(base + day);
-  const yesterday = new Date(base - day);
-  const mondayOffset = (now.weekday + 6) % 7;
-  const monday = new Date(base - mondayOffset * day);
-  const sunday = new Date(monday.getTime() + 6 * day);
-  const weekYmd = (date: Date): string => ymd({ y: date.getUTCFullYear(), m: date.getUTCMonth() + 1, d: date.getUTCDate() });
-  const weekOffset = (date: Date): string => offset(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12)), input.timeZone);
+  // Three days back and three ahead, with today marked: the model reads a weekday off the table instead
+  // of counting days from a single date, which is where the wrong weekday comes from.
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(base + (index - 3) * day);
+    const y = date.getUTCFullYear(), m = date.getUTCMonth() + 1, d = date.getUTCDate();
+    return label(y, m, d, index === 3 ? ', today' : '');
+  });
   const refused = new Set((input.connectors ?? []).filter(row => row.state !== 'connected')
     .flatMap(row => connectorGroupNames(row.connector)));
   const available = input.connected.filter(group => !refused.has(group));
@@ -185,9 +202,8 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
   return [
     '# Runtime context',
     '',
-    `Now: ${shortWeekdays[now.weekday]!}, ${ymd(now)}, ${now.hour}:${now.minute} ${input.timeZone} (UTC${offset(input.now, input.timeZone)})`,
-    `Today: ${label(now.y, now.m, now.d)}. Tomorrow: ${label(tomorrow.getUTCFullYear(), tomorrow.getUTCMonth() + 1, tomorrow.getUTCDate())}. Yesterday: ${label(yesterday.getUTCFullYear(), yesterday.getUTCMonth() + 1, yesterday.getUTCDate())}.`,
-    `This week: ${weekYmd(monday)}T00:00:00${weekOffset(monday)} to ${weekYmd(sunday)}T23:59:59${weekOffset(sunday)}.`,
+    nowLine(input.now, input.timeZone),
+    `Days: ${days.join(', ')}.`,
     `Connected now: ${connected}.`,
     ...(input.vault === undefined ? [] : [vaultCapabilityLine(input.vault)].filter((line): line is string => line !== undefined)),
     ...(input.connectors === undefined ? [] : [connectorStateLine(input.connectors)].filter((line): line is string => line !== undefined)),

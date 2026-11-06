@@ -56,9 +56,9 @@ export const OPEN_LOOP_MAX_CHARS = 120;
  * to the speaker who said it (the model's own words are never the owner's), and no tool guidance, instruction or
  * validator text may be quoted into memory.
  */
-export function distillationPrompt(assistantName: string): string {
+export function distillationPrompt(assistantName: string, call?: { readonly startMs: number; readonly endMs: number | null; readonly timeZone: string }): string {
   return `You write a short private summary of one finished voice conversation between the owner and the assistant, whose name is ${assistantName}, so the assistant can
-recall it in a later conversation. Output JSON: {"skip": boolean, "summary": string, "openLoop": string | null}.
+recall it in a later conversation.${call === undefined ? '' : ` The conversation started ${callInstant(call.startMs, call.timeZone)} and ended ${callInstant(call.endMs, call.timeZone)}, both in ${call.timeZone}.`} Output JSON: {"skip": boolean, "summary": string, "openLoop": string | null}.
 
 Write 2 to 4 plain sentences in the past tense: what the owner wanted, what was found or decided, and anything
 the owner explicitly said was still to do. Attribute every claim: "the owner said", "${assistantName} found in the
@@ -128,6 +128,11 @@ export function capDistillationInput(text: string): { text: string; truncated: b
 
 function localDate(ms: number, timeZone: string): string {
   return new Intl.DateTimeFormat('en-GB', { dateStyle: 'long', timeZone }).format(new Date(ms));
+}
+
+/** One end of the call, told as the owner's own day and clock rather than as a UTC instant. */
+function callInstant(ms: number | null, timeZone: string): string {
+  return ms === null ? 'an unrecorded time' : new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(new Date(ms));
 }
 
 export function buildDistillationInput(input: {
@@ -316,16 +321,16 @@ const pause = (delay: SummarizerOptions['delay'], ms: number): Promise<void> =>
 
 export function createSummarizer(options: SummarizerOptions): Summarizer {
   let chain: Promise<void> = Promise.resolve();
-  const system = distillationPrompt(options.assistantName);
   const serialize = (work: () => Promise<void>): Promise<void> => {
     const guarded = async () => { try { await work(); } catch (error) { if (!(error instanceof Error && ['history_forgotten', 'history_source_changed'].includes(error.message))) throw error; } };
     chain = chain.then(guarded, guarded);
     return chain;
   };
 
-  async function callModel(input: string, dataClass: DataClass, signal: AbortSignal): Promise<ModelResult> {
+  async function callModel(input: string, dataClass: DataClass, signal: AbortSignal,
+    call: { readonly startMs: number; readonly endMs: number | null; readonly timeZone: string }): Promise<ModelResult> {
     const request: ModelRequest = {
-      system,
+      system: distillationPrompt(options.assistantName, call),
       promptVersion: SUMMARY_PROMPT_VERSION,
       contents: [{ role: 'user', parts: [{ text: input }] }],
       dataClasses: [dataClass],
@@ -402,7 +407,8 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'summary_route_class_denied', endedAt, now: options.now() }));
           return;
         }
-        result = await callModel(input.text, source.dataClass, controller.signal);
+        result = await callModel(input.text, source.dataClass, controller.signal,
+          { startMs: transcript.createdAt, endMs: endedAt, timeZone: options.timeZone });
       } catch (error) {
         // A port that surfaces the credential failure by throwing gets the same rule as one that returns it.
         lastError = error instanceof Error && error.message === 'credential_unavailable' ? 'credential_unavailable' : 'model_error';

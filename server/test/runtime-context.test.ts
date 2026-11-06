@@ -11,21 +11,19 @@ test('the runtime context block is computed from a frozen clock and an explicit 
     '# Runtime context',
     '',
     'Now: Wed, 2026-10-14, 18:05 Asia/Kolkata (UTC+05:30)',
-    'Today: 2026-10-14 (Wed). Tomorrow: 2026-10-15 (Thu). Yesterday: 2026-10-13 (Tue).',
-    'This week: 2026-10-12T00:00:00+05:30 to 2026-10-18T23:59:59+05:30.',
+    'Days: 2026-10-11 (Sun), 2026-10-12 (Mon), 2026-10-13 (Tue), 2026-10-14 (Wed, today), 2026-10-15 (Thu), 2026-10-16 (Fri), 2026-10-17 (Sat).',
     'Connected now: knowledge base, calendar.',
     'Naya can read and search, and make the owner-only writes her tools offer: alarms, calendar blocks, unsent drafts, notes and board cards. She cannot send anything to anyone, invite anyone or answer an invitation.',
   ].join('\n'));
 });
 
-test('a DST boundary week carries each endpoint day’s own offset', () => {
+test('a DST boundary week still names every day three back and three ahead', () => {
   const text = buildRuntimeContext({ now: new Date('2026-03-26T12:00:00Z'), timeZone: 'Europe/Berlin', connected: [] });
   assert.equal(text, [
     '# Runtime context',
     '',
     'Now: Thu, 2026-03-26, 13:00 Europe/Berlin (UTC+01:00)',
-    'Today: 2026-03-26 (Thu). Tomorrow: 2026-03-27 (Fri). Yesterday: 2026-03-25 (Wed).',
-    'This week: 2026-03-23T00:00:00+01:00 to 2026-03-29T23:59:59+02:00.',
+    'Days: 2026-03-23 (Mon), 2026-03-24 (Tue), 2026-03-25 (Wed), 2026-03-26 (Thu, today), 2026-03-27 (Fri), 2026-03-28 (Sat), 2026-03-29 (Sun).',
     'Connected now: none.',
     'Naya can read and search, and make the owner-only writes her tools offer: alarms, calendar blocks, unsent drafts, notes and board cards. She cannot send anything to anyone, invite anyone or answer an invitation.',
   ].join('\n'));
@@ -35,11 +33,11 @@ test('the runtime block carries only the named fields, never an owner line or pr
   const text = buildRuntimeContext({ now: new Date('2026-10-14T12:35:00Z'), timeZone: 'UTC', connected: ['mail'],
     connectors: [{ connector: 'mongoose', state: 'connected' }] });
   const lines = text.split('\n').filter(line => line.length);
-  for (const prefix of ['Now:', 'Today:', 'This week:', 'Connected now:', 'Connectors:']) {
+  for (const prefix of ['Now:', 'Days:', 'Connected now:', 'Connectors:']) {
     assert.equal(lines.filter(line => line.startsWith(prefix)).length, 1, `exactly one ${prefix} line`);
   }
   assert.ok(!/^Owner:/m.test(text), 'no owner line');
-  assert.ok(lines.every(line => line.startsWith('# Runtime context') || /^(Now|Today|This week|Connected now|Connectors):/.test(line)
+  assert.ok(lines.every(line => line.startsWith('# Runtime context') || /^(Now|Days|Connected now|Connectors):/.test(line)
     || line === 'Naya can read and search, and make the owner-only writes her tools offer: alarms, calendar blocks, unsent drafts, notes and board cards. She cannot send anything to anyone, invite anyone or answer an invitation.'));
 });
 
@@ -139,4 +137,28 @@ test('C-LUXSAVE11: Runtime context never duplicates the generated save capabilit
 test('a Trello read or write names the board group, so a declared board is never read as not connected', () => {
   assert.deepEqual(toolGroupNames(['trello_read', 'trello_write']), ['Trello board']);
   assert.ok(!toolGroupNames(['search_knowledge', 'trello_read']).some(group => /Rob/u.test(group)), 'no owner name in a public group label');
+});
+
+test('M2: the 2026-11-06 call reads the owner morning, never the UTC hour she said', () => {
+  const said = new Date('2026-11-05T23:45:58Z');
+  const owner = buildRuntimeContext({ now: said, timeZone: 'Asia/Jakarta', connected: [] });
+  const [now] = owner.split('\n').filter(line => line.startsWith('Now:'));
+  assert.equal(now, 'Now: Fri, 2026-11-06, 06:45 Asia/Jakarta (UTC+07:00)');
+  assert.doesNotMatch(owner, /23:45/u, 'the UTC hour she reported must never reach her');
+  assert.match(owner, /2026-11-06 \(Fri, today\)/u, 'the table marks her own day');
+  assert.match(owner, /2026-11-03 \(Tue\).*2026-11-09 \(Mon\)/u, 'three days back and three ahead');
+});
+
+test('M2: an override zone moves the same instant to that owner day', () => {
+  const said = new Date('2026-11-05T23:45:58Z');
+  const [now] = buildRuntimeContext({ now: said, timeZone: 'Europe/Berlin', connected: [] })
+    .split('\n').filter(line => line.startsWith('Now:'));
+  assert.equal(now, 'Now: Fri, 2026-11-06, 00:45 Europe/Berlin (UTC+01:00)');
+});
+
+test('M2: every prompt opens with exactly one Now line, and days never count past seven', () => {
+  const text = buildRuntimeContext({ now: new Date('2026-11-05T23:45:58Z'), timeZone: 'Asia/Jakarta', connected: ['calendar'] });
+  assert.equal(text.split('Now:').length - 1, 1, 'one line per prompt');
+  const days = text.split('\n').find(line => line.startsWith('Days:'))!;
+  assert.equal(days.replace(/^Days: /u, '').replace(/\.$/u, '').split(', 2026').length, 7, 'seven days');
 });

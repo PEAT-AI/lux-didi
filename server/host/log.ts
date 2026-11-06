@@ -266,6 +266,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       ...(assertionCode === undefined ? {} : { assertionCode }) };
 
   }
+  if (value.event === 'live_session_clock') {
+    // M2: the session's own clock, logged once at create: the observed instant, the owner zone and the
+    // source that chose it. No owner content, and the zone stays an IANA name.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'observedAt', 'timeZone', 'clockSource'])) return;
+    if (typeof value.liveSessionId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.liveSessionId)) return;
+    if (typeof value.observedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(value.observedAt)) return;
+    if (typeof value.timeZone !== 'string' || !/^[A-Za-z][A-Za-z0-9_+/-]{1,63}$/.test(value.timeZone)) return;
+    if (value.clockSource !== 'pin' && value.clockSource !== 'host') return;
+    return { event: 'live_session_clock', liveSessionId: value.liveSessionId, observedAt: value.observedAt,
+      timeZone: value.timeZone, clockSource: value.clockSource };
+  }
   if (value.event === 'alarm_announced') {
     // #107: the alarm block reached the provider. The proof that she was asked to speak, and how.
     if (!closedKeys(value, ['alarmId', 'event', 'mode'])) return;

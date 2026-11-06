@@ -1641,12 +1641,7 @@ export class LiveSessionOwner {
       const prior = tx.get('SELECT * FROM live_sessions WHERE owner_assistant_id=? AND idempotency_key=?', [assistantId, input.idempotencyKey]);
       if (prior) {
         if (String(prior['fingerprint']) !== fingerprintFor(String(prior['prompt_identity']))) throw new LiveError('idempotency_conflict');
-        // A prepared session whose frozen clock went stale is discarded here; the same request then composes
-        // a new one at this instant. A session already in flight is never replayed into a second answer.
-        if (String(prior['lifecycle']) !== 'accepted' || Number(prior['dispatch_intent']) !== 0 || !preparedClockStale(prior, now, timeZone)) {
-          return this.#snapshot(tx, this.#expireInTx(tx, prior, now));
-        }
-        this.#terminalInTx(tx, String(prior['live_session_id']), { state: 'expired' }, false, now, 'detached', null);
+        return this.#snapshot(tx, this.#expireInTx(tx, prior, now));
       }
       if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
       if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');

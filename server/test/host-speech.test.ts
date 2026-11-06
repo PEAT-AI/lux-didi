@@ -146,3 +146,35 @@ for (const event of ['alarm_prompt_installed', 'alarm_ready'] as const) {
     assert.equal(safeEvent({ event, alarmId: 'synthetic-alarm', mode: 'new_session', content: 'Synthetic private text' }), undefined);
   });
 }
+
+test('typed command rejections distinguish both response writes despite their shared prefix', async t => {
+  const { socket, session } = await fakeReady(t);
+  const records: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { records.push(raw as Record<string, unknown>); } });
+  t.after(detach);
+  const before = socket.sent.length;
+  session.sendText({ text: 'Synthetic typed input' });
+  const commands = socket.sent.slice(before).map(frame => JSON.parse(frame));
+  for (const command of commands) socket.deliver({ type: 'error', error: { type: 'invalid_request_error', param: 'type', client_event_id: command.event_id } });
+  const errors = records.filter(record => record.event === 'live_provider_error');
+  assert.deepEqual(errors.map(error => error.commandType), ['response.item.create', 'response.create']);
+  assert.deepEqual(errors.map(error => error.eventIdPrefix), ['cont', 'cont']);
+  for (const error of errors) assert.deepEqual(safeEvent(error), error);
+});
+
+test('recent command attribution is bounded and unknown ids preserve the rejection metadata', async t => {
+  const { socket, session } = await fakeReady(t);
+  const records: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { records.push(raw as Record<string, unknown>); } });
+  t.after(detach);
+  const first = session.sendSessionCommentary!({ text: 'Synthetic oldest note' });
+  let last: string | undefined;
+  for (let i = 0; i < 128; i++) last = session.sendSessionCommentary!({ text: 'Synthetic recent note' });
+  for (const id of [first, last, 'unknown_id']) socket.deliver({ type: 'error', error: { type: 'invalid_request_error', param: 'type', client_event_id: id } });
+  const errors = records.filter(record => record.event === 'live_provider_error');
+  assert.equal(errors.length, 3);
+  assert.equal(errors[0]!.commandType, undefined);
+  assert.equal(errors[1]!.commandType, 'session.commentary.append');
+  assert.equal(errors[2]!.clientEventId, 'unknown_id');
+  assert.equal(errors[2]!.commandType, undefined);
+});

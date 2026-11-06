@@ -1,0 +1,325 @@
+#!/usr/bin/env node
+// didi-voice-metrics: score a real call on what reached the owner, and in total, so a change can be
+// measured before and after. Read-only: the store is read from a private snapshot of state.sqlite, and the
+// app directory is never opened for writing. See docs/evals.md, "Voice metrics on real calls".
+//
+// Five measures, each with P50, P90 and n, per call and in total. All durations are milliseconds between the
+// owner's last finalized word of a turn and the moment the owner heard or learned something:
+//   latency       owner final -> first assistant audio (trace_turn.first_audible_at of the reply turn,
+//                 else the earliest playback segment that became audible)
+//   silence       while a helper task is open (tasks.created_at..tasks.updated_at): the total and the longest
+//                 stretch with no assistant playback audible
+//   groundedFact  owner final -> the first fact-bearing moment: a progress commentary (trace_event kind
+//                 progress.commentary, the local-recall and lookup line), or a helper answer the store
+//                 records as delivered to the owner's session
+//   fastEvidence  host.log fast_evidence events by outcome, with their elapsed P50 and P90 (none before FR1)
+//   progress      progress deliveries and corrections per helper task, from the store's delivery state and
+//                 the host log's own commentary_sent and task_lifecycle(revision) events (none before FR2)
+// A turn whose timestamps the record cannot supply is counted `unmeasured` for that measure, never dropped.
+const { DatabaseSync } = require('node:sqlite');
+const { existsSync, mkdtempSync, copyFileSync, readdirSync, readFileSync, rmSync, statSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
+
+const usage = `didi-voice-metrics --data-dir <dir> [--since <iso>] [--session <liveSessionId>] [--json]
+
+  --data-dir <dir>  the host data directory to read (required: this tool never guesses a live store)
+  --since <iso>     only calls whose turns opened at or after this instant
+  --session <id>    one call, instead of every call the store holds
+  --json            the same numbers as JSON, for a before/after diff
+
+Reads state.sqlite from a private snapshot and host.log (and its rotations) under <dir>/logs.
+Never writes to <dir>. Missing timestamps count as unmeasured, never as zero.`;
+
+const LOG_STREAMS = [/^host-\d{4}-\d{2}-\d{2}\.log(\.\d+)?$/, /^host\.log(\.\d+)?$/];
+
+function fail(message) {
+  process.stderr.write(`didi-voice-metrics: ${message}\n\n${usage}\n`);
+  process.exit(2);
+}
+
+function parseArguments(argv) {
+  const options = { dataDir: undefined, since: undefined, session: undefined, json: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const flag = argv[index];
+    const value = () => {
+      const next = argv[index + 1];
+      if (next === undefined || next.startsWith('--')) fail(`${flag} needs a value`);
+      index += 1;
+      return next;
+    };
+    if (flag === '--json') options.json = true;
+    else if (flag === '--help' || flag === '-h') { process.stdout.write(`${usage}\n`); process.exit(0); }
+    else if (flag === '--data-dir') options.dataDir = value();
+    else if (flag === '--since') options.since = value();
+    else if (flag === '--session') options.session = value();
+    else fail(`unknown argument ${flag}`);
+  }
+  if (options.dataDir === undefined || options.dataDir === '') fail('a data directory is required: pass --data-dir <dir>');
+  return options;
+}
+
+/** The store is read from a private copy: SQLite may recover a WAL, and the app directory is never writable here. */
+function openStore(directory) {
+  const database = join(directory, 'state.sqlite');
+  if (!existsSync(database)) fail(`no state.sqlite in ${directory}`);
+  const scratch = mkdtempSync(join(tmpdir(), 'didi-voice-metrics-'));
+  const snapshot = join(scratch, 'snapshot.sqlite');
+  let db;
+  try {
+    copyFileSync(database, snapshot);
+    for (const suffix of ['-wal', '-shm']) if (existsSync(`${database}${suffix}`)) copyFileSync(`${database}${suffix}`, `${snapshot}${suffix}`);
+    db = new DatabaseSync(snapshot);
+    db.exec('PRAGMA query_only=ON');
+  } catch (error) {
+    rmSync(scratch, { recursive: true, force: true });
+    fail(`the store could not be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  db.exec('BEGIN');
+  return {
+    all: (sql, params = []) => db.prepare(sql).all(...params),
+    get: (sql, params = []) => db.prepare(sql).get(...params),
+    close: () => { try { if (db.isTransaction) db.exec('ROLLBACK'); } finally { db.close(); rmSync(scratch, { recursive: true, force: true }); } },
+  };
+}
+
+/** Every host log line in the directory, oldest file name first, parsed; a malformed line is skipped. */
+function readLogLines(directory) {
+  const logs = join(directory, 'logs');
+  if (!existsSync(logs)) return [];
+  const lines = [];
+  for (const name of readdirSync(logs).sort()) {
+    if (!LOG_STREAMS.some(pattern => pattern.test(name))) continue;
+    for (const text of readFileSync(join(logs, name), 'utf8').split('\n')) {
+      if (text === '') continue;
+      try { const record = JSON.parse(text); if (record !== null && typeof record === 'object') lines.push(record); } catch { /* a truncated tail is not a record */ }
+    }
+  }
+  return lines;
+}
+
+/** Nearest-rank: P50 of one value is that value, and of two values the smaller. Null when nothing was measured. */
+function nearest(sorted, percent) {
+  const rank = Math.max(1, Math.ceil((percent / 100) * sorted.length));
+  return sorted[Math.min(rank, sorted.length) - 1];
+}
+
+function distribution(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  return { n: sorted.length, p50: sorted.length === 0 ? null : nearest(sorted, 50), p90: sorted.length === 0 ? null : nearest(sorted, 90) };
+}
+
+const number = value => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+
+/** One playback segment as an audible interval; a segment that never drained covers its own start instant. */
+function segment(row) {
+  const start = number(row.audible_at) ?? number(row.started_at);
+  if (start === null) return null;
+  const end = number(row.drained_at) ?? number(row.interrupted_at);
+  return [start, end === null || end < start ? start : end];
+}
+
+function mergeIntervals(intervals) {
+  const sorted = [...intervals].sort((left, right) => left[0] - right[0]);
+  const merged = [];
+  for (const [from, to] of sorted) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && from <= last[1]) last[1] = Math.max(last[1], to);
+    else merged.push([from, to]);
+  }
+  return merged;
+}
+
+/** The stretches inside [from,to] with no assistant audio: what the owner sat through in silence. */
+function silentStretches(from, to, audio) {
+  const covered = mergeIntervals(audio.map(([start, end]) => [Math.max(start, from), Math.min(end, to)]).filter(([start, end]) => end > start));
+  const stretches = [];
+  let cursor = from;
+  for (const [start, end] of covered) {
+    if (start > cursor) stretches.push([cursor, start]);
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < to) stretches.push([cursor, to]);
+  return stretches;
+}
+
+/** The owner's last finalized word of a turn; a turn with no utterance falls back to its own close. */
+function ownerFinalAt(read, turn) {
+  const row = read.get('SELECT MAX(at) AS at FROM trace_utterance WHERE turn_id=? AND role=? AND final=1', [turn.turn_id, 'owner']);
+  return number(row?.at) ?? number(turn.closed_at);
+}
+
+function firstAssistantAudio(reply, segments) {
+  const declared = number(reply.first_audible_at);
+  if (declared !== null) return declared;
+  const starts = segments.map(([start]) => start);
+  return starts.length === 0 ? null : Math.min(...starts);
+}
+
+function callMetrics(read, session, lines) {
+  const turns = read.all('SELECT turn_id,turn_index,origin,opened_at,closed_at,first_audible_at FROM trace_turn WHERE live_session_id=? ORDER BY opened_at,turn_index', [session]);
+  const playback = read.all('SELECT turn_id,audible_at,started_at,drained_at,interrupted_at FROM trace_playback WHERE live_session_id=?', [session]);
+  const audio = playback.map(segment).filter(interval => interval !== null);
+  const audioOf = turnId => playback.filter(row => row.turn_id === turnId).map(segment).filter(interval => interval !== null);
+  const commentaryAt = read.all("SELECT at FROM trace_event WHERE live_session_id=? AND kind='progress.commentary' AND at IS NOT NULL", [session])
+    .map(row => number(row.at)).filter(at => at !== null);
+  const tasks = read.all('SELECT task_id,created_at,updated_at FROM tasks WHERE live_session_id=? ORDER BY task_id', [session]);
+  const deliveries = tasks.length === 0 ? [] : read.all(
+    'SELECT d.task_id,d.state,d.updated_at FROM task_deliveries d JOIN tasks t ON t.task_id=d.task_id WHERE t.live_session_id=?', [session]);
+  const deliveredAt = deliveries.filter(row => row.state === 'delivered').map(row => number(row.updated_at)).filter(at => at !== null);
+
+  const latency = []; let latencyUnmeasured = 0;
+  const grounded = []; let groundedUnmeasured = 0;
+  for (const turn of turns) {
+    if (turn.origin !== 'owner') continue;
+    const anchor = ownerFinalAt(read, turn);
+    const reply = turns.find(candidate => candidate.origin === 'assistant' && Number(candidate.turn_index) > Number(turn.turn_index));
+    const audible = reply === undefined ? null : firstAssistantAudio(reply, audioOf(reply.turn_id));
+    if (anchor === null || audible === null || audible < anchor) latencyUnmeasured += 1;
+    else latency.push(audible - anchor);
+    const factCandidates = [...commentaryAt, ...deliveredAt].filter(at => anchor !== null && at >= anchor);
+    if (factCandidates.length === 0) groundedUnmeasured += 1;
+    else grounded.push(Math.min(...factCandidates) - anchor);
+  }
+
+  const windows = mergeIntervals(tasks.map(task => [Number(task.created_at), Number(task.updated_at)]).filter(([from, to]) => to > from));
+  let silenceN = 0; let silenceUnmeasured = 0; let silenceTotal = 0; let silenceLongest = 0;
+  for (const [from, to] of windows) {
+    // Without one audible segment the store cannot say the owner heard anything, so the window is unmeasured.
+    if (audio.length === 0) { silenceUnmeasured += 1; continue; }
+    silenceN += 1;
+    const stretches = silentStretches(from, to, audio);
+    silenceTotal += stretches.reduce((sum, [start, end]) => sum + (end - start), 0);
+    silenceLongest = Math.max(silenceLongest, ...stretches.map(([start, end]) => end - start), 0);
+  }
+
+  const fastLines = lines.filter(record => record.event === 'fast_evidence' && record.liveSessionId === session);
+  const outcomes = {};
+  for (const record of fastLines) { const label = typeof record.outcome === 'string' ? record.outcome : 'unknown'; outcomes[label] = (outcomes[label] ?? 0) + 1; }
+  const elapsed = fastLines.map(record => number(record.elapsedMs)).filter(ms => ms !== null);
+  const fast = distribution(elapsed);
+
+  const progressDeliveries = {};
+  for (const row of deliveries) {
+    const task = progressDeliveries[row.task_id] ?? (progressDeliveries[row.task_id] = {});
+    task[row.state] = (task[row.state] ?? 0) + 1;
+  }
+  const reports = {};
+  for (const record of lines.filter(line => line.event === 'commentary_sent' && line.liveSessionId === session)) {
+    const reason = typeof record.reason === 'string' ? record.reason : 'unknown';
+    reports[reason] = (reports[reason] ?? 0) + 1;
+  }
+  const corrections = {};
+  for (const record of lines.filter(line => line.event === 'task_lifecycle' && line.phase === 'revision' && typeof line.taskId === 'string'
+    && tasks.some(task => task.task_id === line.taskId))) {
+    corrections[record.taskId] = (corrections[record.taskId] ?? 0) + 1;
+  }
+
+  const latencyStats = distribution(latency);
+  const groundedStats = distribution(grounded);
+  return {
+    liveSessionId: session,
+    latency: { ...latencyStats, unmeasured: latencyUnmeasured },
+    silence: { n: silenceN, unmeasured: silenceUnmeasured, totalMs: silenceTotal, longestMs: silenceLongest },
+    groundedFact: { ...groundedStats, unmeasured: groundedUnmeasured },
+    fastEvidence: { n: fast.n, outcomes: sortKeys(outcomes), p50: fast.p50, p90: fast.p90 },
+    progress: { deliveries: sortKeys(progressDeliveries), reports: sortKeys(reports), corrections: sortKeys(corrections) },
+    raw: { latency, latencyUnmeasured, grounded, groundedUnmeasured, silenceTotal, silenceLongest, silenceN, silenceUnmeasured, elapsed, outcomes, progressDeliveries, reports, corrections },
+  };
+}
+
+function sortKeys(map) {
+  return Object.fromEntries(Object.entries(map).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) =>
+    [key, typeof value === 'number' ? value : sortKeys(value)]));
+}
+
+function totalMetrics(calls) {
+  const raws = calls.map(call => call.raw);
+  const flat = pick => raws.flatMap(raw => raw[pick]);
+  const sum = pick => raws.reduce((total, raw) => total + raw[pick], 0);
+  const mergeCounts = pick => {
+    const merged = {};
+    for (const raw of raws) for (const [key, value] of Object.entries(raw[pick])) {
+      if (typeof value === 'number') merged[key] = (merged[key] ?? 0) + value;
+      else merged[key] = { ...(merged[key] ?? {}) , ...Object.fromEntries(Object.entries(value)) };
+    }
+    return sortKeys(merged);
+  };
+  const deliverStates = {};
+  for (const raw of raws) for (const [task, states] of Object.entries(raw.progressDeliveries)) {
+    deliverStates[task] = deliverStates[task] ?? {};
+    for (const [state, count] of Object.entries(states)) deliverStates[task][state] = (deliverStates[task][state] ?? 0) + count;
+  }
+  const latency = distribution(flat('latency'));
+  const grounded = distribution(flat('grounded'));
+  const elapsed = distribution(flat('elapsed'));
+  const silenceTotals = raws.filter(raw => raw.silenceN > 0).map(raw => raw.silenceTotal);
+  const silenceLongests = raws.filter(raw => raw.silenceN > 0).map(raw => raw.silenceLongest);
+  const delivered = distribution(silenceTotals);
+  const longest = distribution(silenceLongests);
+  const outcomes = {};
+  for (const raw of raws) for (const [outcome, count] of Object.entries(raw.outcomes)) outcomes[outcome] = (outcomes[outcome] ?? 0) + count;
+  return {
+    latency: { ...latency, unmeasured: sum('latencyUnmeasured') },
+    silence: { n: silenceTotals.length, unmeasured: raws.filter(raw => raw.silenceN === 0).length, totalMs: sum('silenceTotal'),
+      p50: delivered.p50, p90: delivered.p90, longestMs: raws.reduce((longestMs, raw) => Math.max(longestMs, raw.silenceLongest), 0),
+      longestP50: longest.p50, longestP90: longest.p90 },
+    groundedFact: { ...grounded, unmeasured: sum('groundedUnmeasured') },
+    fastEvidence: { n: elapsed.n, outcomes: sortKeys(outcomes), p50: elapsed.p50, p90: elapsed.p90 },
+    progress: { deliveries: sortKeys(deliverStates), reports: mergeCounts('reports'), corrections: mergeCounts('corrections') },
+  };
+}
+
+function duration(ms) {
+  return ms === null || ms === undefined ? 'unmeasured' : `${ms} ms`;
+}
+
+function stats(label, entry) {
+  return `  ${label.padEnd(13)} n=${entry.n} unmeasured=${entry.unmeasured ?? 0} p50=${duration(entry.p50)} p90=${duration(entry.p90)}`;
+}
+
+function counts(map) {
+  const entries = Object.entries(map);
+  return entries.length === 0 ? 'none' : entries.map(([key, value]) => (typeof value === 'number' ? `${key}=${value}` : `${key}{${counts(value)}}`)).join(' ');
+}
+
+function render(calls, total) {
+  const rows = [];
+  for (const call of calls) {
+    rows.push(`call ${call.liveSessionId}`);
+    rows.push(stats('latency', call.latency));
+    rows.push(`  ${'silence'.padEnd(13)} n=${call.silence.n} unmeasured=${call.silence.unmeasured} total=${duration(call.silence.totalMs)} longest=${duration(call.silence.longestMs)}`);
+    rows.push(stats('firstFact', call.groundedFact));
+    rows.push(`  ${'fastEvidence'.padEnd(13)} n=${call.fastEvidence.n} p50=${duration(call.fastEvidence.p50)} p90=${duration(call.fastEvidence.p90)} ${counts(call.fastEvidence.outcomes)}`);
+    rows.push(`  ${'progress'.padEnd(13)} deliveries=${counts(call.progress.deliveries)} reports=${counts(call.progress.reports)} corrections=${counts(call.progress.corrections)}`);
+  }
+  rows.push(`total (${calls.length} call${calls.length === 1 ? '' : 's'})`);
+  rows.push(stats('latency', total.latency));
+  rows.push(`  ${'silence'.padEnd(13)} n=${total.silence.n} unmeasured=${total.silence.unmeasured} total=${duration(total.silence.totalMs)} p50=${duration(total.silence.p50)} p90=${duration(total.silence.p90)} longest=${duration(total.silence.longestMs)} longestP50=${duration(total.silence.longestP50)} longestP90=${duration(total.silence.longestP90)}`);
+  rows.push(stats('firstFact', total.groundedFact));
+  rows.push(`  ${'fastEvidence'.padEnd(13)} n=${total.fastEvidence.n} p50=${duration(total.fastEvidence.p50)} p90=${duration(total.fastEvidence.p90)} ${counts(total.fastEvidence.outcomes)}`);
+  rows.push(`  ${'progress'.padEnd(13)} deliveries=${counts(total.progress.deliveries)} reports=${counts(total.progress.reports)} corrections=${counts(total.progress.corrections)}`);
+  return `${rows.join('\n')}\n`;
+}
+
+function main() {
+  const options = parseArguments(process.argv.slice(2));
+  if (!existsSync(options.dataDir) || !statSync(options.dataDir).isDirectory()) fail(`${options.dataDir} is not a directory`);
+  const since = options.since === undefined ? null : Date.parse(options.since);
+  if (since !== null && Number.isNaN(since)) fail(`--since is not an ISO instant: ${options.since}`);
+  const read = openStore(options.dataDir);
+  try {
+    const lines = readLogLines(options.dataDir);
+    const stored = read.all('SELECT DISTINCT live_session_id AS id FROM trace_turn ORDER BY live_session_id').map(row => row.id);
+    const selected = options.session === undefined ? stored : stored.filter(id => id === options.session);
+    if (options.session !== undefined && selected.length === 0) fail(`no trace turns for session ${options.session}`);
+    const calls = selected.map(id => ({ id, turns: read.all('SELECT opened_at FROM trace_turn WHERE live_session_id=?', [id]) }))
+      .filter(entry => since === null || entry.turns.some(turn => Number(turn.opened_at) >= since))
+      .map(entry => callMetrics(read, entry.id, lines));
+    const total = totalMetrics(calls);
+    if (options.json) process.stdout.write(`${JSON.stringify({ calls: calls.map(({ raw, ...rest }) => rest), total }, null, 2)}\n`);
+    else process.stdout.write(render(calls.map(({ raw, ...rest }) => rest), total));
+  } finally { read.close(); }
+}
+
+main();

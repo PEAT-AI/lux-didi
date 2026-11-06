@@ -71,3 +71,10 @@ test('identity floor remains 400 estimated tokens after charging the shared back
   assert.ok(result.text.includes(text), 'the shared header must not consume the protected identity floor');
   assert.ok(estimatedTokens(result.text) <= 2_000);
 });
+
+test('explicit entry and typed identity facts share one authority and salience ranking', () => {
+  const entry = { id: 'entry', text: 'A lower salience explicit entry', salience: 0.1 };
+  const typed = item('typed', { authority: 'explicit_owner', salience: 0.9 });
+  const result = compileMemoryBlock({ ...input, entries: [entry], items: [typed] });
+  assert.ok(result.text.indexOf(typed.text) < result.text.indexOf(entry.text));
+});

@@ -54,7 +54,7 @@ test('production runtime emits one sourced partial before final and rejects a du
     } catch (error) { reached.reject(error); throw error; }
   }, async () => ({ status: 'ok', text: 'The synthetic review is Tuesday.', references: [], next_cursor: null, coverage: 'Synthetic calendar record.', repair: null }));
   const pending = f.call.input('Synthetic review question', 1);
-  await reached.promise;
+  await Promise.race([reached.promise, pending.then(answer => { throw new Error(`Worker settled before reporting progress: ${JSON.stringify(answer.failure)}`); })]);
   // Accept every part of the progress envelope before asking for the final.
   for (let i = 0; i < f.sent.length; i++) f.call.delivery.accepted(`c${i + 1}`);
   const before = f.sent.map(item => item.text).join(' ');

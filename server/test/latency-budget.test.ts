@@ -104,6 +104,7 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
     assert.ok(lines.some(line => line.event === 'gptlive_append_ack'));
   }
   // FR1: a cued final runs the host's own local read inside its own budget, after the helper has started.
+  opened.session.sendAudio({ pcm: pcm16(2_400), dataClass: 'ordinary' });
   opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'What did I tell you about last week?' });
   clock.advance(700);
   await until(() => lines.some(line => line.event === 'fast_evidence'));

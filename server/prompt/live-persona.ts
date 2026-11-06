@@ -1,4 +1,4 @@
-import { CONTEXT_BUDGET, estimatedTokens, selectWholeItems, type BudgetItem } from './context-budget.js';
+import { CONTEXT_BUDGET, ESTIMATED_CHARS_PER_TOKEN, estimatedTokens, selectWholeItems, type BudgetItem } from './context-budget.js';
 import { compileMemoryBlock, type MemoryBlockInput } from './memory-block.js';
 import { commentaryEnvelope } from '../tasks/delivery.js';
 import { createHash } from 'node:crypto';
@@ -77,9 +77,9 @@ const maxOptionalBytes = 4096;
 /** One provisional production ceiling for complete trusted Chat and Live instructions. */
 export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
 /** Startup target derived from the conservative estimated-token allocation, including rendered separators. */
-export const LIVE_INSTRUCTION_TARGET_CHARS = CONTEXT_BUDGET.target * 3.2;
+export const LIVE_INSTRUCTION_TARGET_CHARS = CONTEXT_BUDGET.target * ESTIMATED_CHARS_PER_TOKEN;
 /** Hard admission retains margin below the provider instruction ceiling. */
-export const LIVE_INSTRUCTION_HARD_LIMIT = CONTEXT_BUDGET.hard * 3.2;
+export const LIVE_INSTRUCTION_HARD_LIMIT = CONTEXT_BUDGET.hard * ESTIMATED_CHARS_PER_TOKEN;
 /**
  * The opening input for a fresh seeded recovery (release 3g-c): the connection dropped and returned, so
  * continue the conversation instead of greeting. Exact text is asserted in tests and sent as the opening
@@ -270,14 +270,14 @@ export function peopleRosterWithin(room: number): string | undefined { return pe
  * Pin authored whole paragraphs to the lore allocation, including the composer's wrapper.
  * No per-call input participates in selection; ties retain authored order and content-hash ids.
  */
-function clipOwnerLore(text: string, limit = Math.floor(CONTEXT_BUDGET.sections.lore.ceiling * 3.2)): string {
+function clipOwnerLore(text: string, limit = Math.floor(CONTEXT_BUDGET.sections.lore.ceiling * ESTIMATED_CHARS_PER_TOKEN)): string {
   const marker = text.startsWith(OWNER_LORE_MARKER) ? OWNER_LORE_MARKER : '';
   const raw = text.slice(marker.length);
   const body = raw.startsWith(OWNER_LORE_LEADER) && raw.endsWith(OWNER_LORE_CLOSER)
     ? raw.slice(OWNER_LORE_LEADER.length, -OWNER_LORE_CLOSER.length) : raw;
   const items = body.split(/\n\s*\n/u).filter(part => part.trim()).map(part => ({ id: digest(part), text: part }));
   const selected = selectWholeItems(marker + OWNER_LORE_LEADER.trimEnd(), items,
-    Math.floor(limit / 3.2) - estimatedTokens(OWNER_LORE_CLOSER));
+    Math.floor(limit / ESTIMATED_CHARS_PER_TOKEN) - estimatedTokens(OWNER_LORE_CLOSER));
   return selected.selectedIds.length ? marker + OWNER_LORE_LEADER + items.filter(item => selected.selectedIds.includes(item.id)).map(item => item.text).join(separator) + OWNER_LORE_CLOSER : '';
 }
 
@@ -413,7 +413,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   const tools = toolsText;
   const runtime = runtimeText;
   const dropped: Entry[] = input.memory && memory === undefined ? [{ id: 'memory', text: '' }] : [];
-  people = peopleSectionWithin(Math.floor(CONTEXT_BUDGET.sections.people.ceiling * 3.2));
+  people = peopleSectionWithin(Math.floor(CONTEXT_BUDGET.sections.people.ceiling * ESTIMATED_CHARS_PER_TOKEN));
   const entries = select(tools, memory, runtime);
   if (estimatedTokens(assemble(entries.map(entry => entry.text))) > CONTEXT_BUDGET.hard) throw new PersonaOverlayError('instruction_too_large');
   const text = assemble(entries.map(entry => entry.text));
@@ -694,6 +694,14 @@ export function composeLiveSessionInstruction(input: {
     items: [], entries: input.records.map(record => ({ id: record.id, text: record.text, ...(record.capturedAt === undefined ? {} : { capturedAt: record.capturedAt }) })), summaries: [] };
   const calendarItems: BudgetItem[] = [input.calendar, input.alarms?.trim() ? `Armed alarms: ${input.alarms}` : undefined].filter((text): text is string => Boolean(text?.trim()))
     .flatMap(text => text.split(/\n|; /u)).filter(Boolean).map((text, index) => ({ id: `calendar:${index}`, text }));
+  const [hour = 0, minute = 0] = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .format(now).split(':').map(Number);
+  const proximity = (text: string): number => {
+    const match = /^\s*(\d{2}):(\d{2})\b/u.exec(text);
+    if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return Infinity;
+    return Math.abs(Number(match[1]) * 60 + Number(match[2]) - hour * 60 - minute);
+  };
+  calendarItems.sort((a, b) => proximity(a.text) - proximity(b.text) || a.id.localeCompare(b.id));
   const snapshot = peopleSnapshot();
   const mentioned = [...blockInput.summaries.map(summary => ({ at: summary.startedAt, text: summary.text })),
     ...blockInput.entries.map(entry => ({ at: entry.capturedAt ?? 0, text: entry.text })),
@@ -743,7 +751,10 @@ export function composeLiveSessionInstruction(input: {
   return { text: rendered.text,
     selectedIds: rendered.block.selectedIds.filter(id => recordIds.has(id)),
     omitted: rendered.block.omitted.filter(item => recordIds.has(item.id) && item.reason === 'budget').map(item => ({ id: item.id, reason: 'budget' as const })),
-    sections: rendered.sections.map(section => ({ id: section.id, chars: section.text.length, estimatedTokens: estimatedTokens(section.text) })),
+    sections: rendered.sections.map((section, index) => {
+      const text = (index ? separator : '') + section.text;
+      return { id: section.id, chars: text.length, estimatedTokens: estimatedTokens(text) };
+    }),
     earlierConversationsIncluded: rendered.block.summaryIds.length > 0,
     summaryIds: rendered.block.summaryIds,
     conversationChars: rendered.block.parts[3]!.chars,

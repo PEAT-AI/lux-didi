@@ -82,7 +82,7 @@ export function compileMemoryBlock(input: MemoryBlockInput) {
   const firstParts = [now, identity, loops];
   const prefix = [MEMORY_BACKGROUND, ...firstParts.map(part => part.text)].join('\n\n');
   // Charge shared framing to remaining conversation room, without ever crossing a part's floor.
-  const remaining = Math.floor((CONTEXT_BUDGET.sections.memory.ceiling * ESTIMATED_CHARS_PER_TOKEN - prefix.length - 2) / ESTIMATED_CHARS_PER_TOKEN);
+  const remaining = Math.floor((CONTEXT_BUDGET.sections.memory.ceiling * ESTIMATED_CHARS_PER_TOKEN - prefix.length) / ESTIMATED_CHARS_PER_TOKEN);
   const conversations = selectWholeItems('# Last conversations', summaries, Math.min(budget('conversations'), remaining));
   const parts = [...firstParts, conversations];
   for (const part of parts) omitted.push(...part.omitted);
@@ -91,6 +91,6 @@ export function compileMemoryBlock(input: MemoryBlockInput) {
     selectedIds: parts.flatMap(part => part.selectedIds),
     summaryIds: conversations.selectedIds,
     omitted,
-    parts: parts.map(part => ({ chars: part.text.length, estimatedTokens: estimatedTokens(part.text) })),
+    parts: parts.map(part => ({ chars: part.text.length + 2, estimatedTokens: estimatedTokens('\n\n' + part.text) })),
   };
 }

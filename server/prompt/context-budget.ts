@@ -38,7 +38,7 @@ export function selectWholeItems(heading: string, items: readonly BudgetItem[], 
   let text = heading;
   for (const item of items) {
     const candidate = [text, item.text].filter(Boolean).join('\n\n');
-    if (estimatedTokens(candidate) > budget) omitted.push({ id: item.id, reason: 'budget' });
+    if (estimatedTokens('\n\n' + candidate) > budget) omitted.push({ id: item.id, reason: 'budget' });
     else { text = candidate; selected.push(item); }
   }
   return { text, selectedIds: selected.map(item => item.id), omitted };

@@ -52,6 +52,7 @@ test('the helper zone is the session row zone, so the call cannot be read two wa
   // The host resolved its own process zone; the session record outranks it for this session's prompts.
   assert.equal(sessionClockZone(store, 'live-clock'), 'Asia/Jakarta');
   assert.equal(sessionClockZone(store, 'text-session-with-no-live-row'), undefined, 'a text session falls back to the configured zone');
-  const first = taskInstructions({ timeZone: sessionClockZone(store, 'live-clock'), now: () => SAID }).split('\n')[0];
+  const zone = sessionClockZone(store, 'live-clock');
+  const first = taskInstructions({ ...(zone === undefined ? {} : { timeZone: zone }), now: () => SAID }).split('\n')[0];
   assert.equal(first, 'Now: Fri, 2026-11-06, 06:45 Asia/Jakarta (UTC+07:00)');
 });

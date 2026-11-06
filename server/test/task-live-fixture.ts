@@ -30,7 +30,8 @@ export async function taskLiveFixture(t: TestContext, infer?: Infer, timeContext
   const profile = validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'cedar', keyReference: 'synthetic-reference',
     audio: { inputRate: 8000, outputRate: 24000 }, route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic task voice', dataClass: 'ordinary' },
     limits: { handshakeMs: 1000, idleMs: 600000, sessionMs: 1200000, closeMs: 50 } });
-  const owner = createLiveSessionOwner({ store, voice, profile, timeZone: 'UTC',
+  // M2: the session and its helper share one zone, so the row the helper reads is the one composed here.
+  const owner = createLiveSessionOwner({ store, voice, profile, timeZone: timeContext.timeZone ?? 'UTC',
     createTaskRuntime: hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined), bindings: () => [],
       timeZone: 'UTC', effectCheck: async () => true,
       infer: infer ?? (async () => new Promise<Inference>(resolve => { inference.push(resolve); })), ...timeContext,

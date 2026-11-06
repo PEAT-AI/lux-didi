@@ -4956,7 +4956,12 @@ test('alarm session speaks its reminder, repeats after silence and acknowledges 
 test('alarm due during a live call injects once and unrelated earlier speech cannot acknowledge it', async t => {
   const clock = new DeadlineClock();
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
+  const parts: string[] = [];
+  const port: LiveVoicePort = { capabilities: fake.port.capabilities, open: (request, control) => ({
+    ...fake.port.open(request, control),
+    sendSessionCommentary: ({ text }) => { parts.push(text); return `synthetic_alarm_${parts.length}`; },
+  }) };
+  const h = await harness(t, { port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
   const { session, attachment } = await openPort(h, 'wake-existing');
   const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
   t.after(() => scheduler.stop());
@@ -4974,8 +4979,12 @@ test('alarm due during a live call injects once and unrelated earlier speech can
   // A different key names the same occurrence, so it is refused at the route, never opened again.
   assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner', 'synthetic-other-key').status, 'attempted');
   assert.equal(fake.sessionsOpened, 1);
-  assert.equal(fake.texts.length, 1);
-  assert.match(fake.texts[0]!, /call the bank/);
+  const envelope = parts.map(commentaryPart);
+  assert.ok(envelope.length > 1);
+  assert.equal(new Set(envelope.map(part => part.id)).size, 1, 'one alarm announcement envelope');
+  assert.equal(envelope.filter(part => part.final).length, 1);
+  assert.match(envelope.map(part => part.content ?? '').join(''), /call the bank/);
+  assert.equal(fake.texts.length, 0, 'the alarm is not typed owner input');
   assert.equal(scheduler.list()[0]!.state, 'ringing');
   fake.emit({ type: 'inputTranscription', text: 'got it', finished: true });
   await settlePort();

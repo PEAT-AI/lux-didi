@@ -3,13 +3,14 @@ import { test, type TestContext } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { fakeReady } from './openai-live-voice-fixture.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { commentaryPart } from './commentary-test.js';
 import { safeEvent } from '../host/log.js';
 
 // Reject host notes accidentally becoming typed owner turns. These structural checks
 // complement the adapter wire tests below; they do not simulate a whole alarm call.
 const source = readFileSync(new URL('../../live/index.ts', import.meta.url), 'utf8');
 for (const [name, start, end] of [
-  ['alarm opening', '  #sendAlarmOpening(', '  #ringingAlarms('],
+  ['alarm opening', '  #sendHostSpeech(', '  #ringingAlarms('],
   ['mute offer', 'handle.mutedOfferTimer = this.#schedule(', 'handle.mutedOfferTimer.unref'],
   ['continuation', 'const ask = handle.session.', 'this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS'],
 ] as const) {
@@ -105,8 +106,19 @@ test('alarm opening waits for session.started and announces only on its first au
   socket.deliver({ type: 'session.started', session: { id: 'synthetic-session' } });
   assert.equal((await attachment.ready).terminal, null); await flush();
   const opening = commands().filter(command => command.type === 'session.commentary.append');
-  assert.equal(opening.length, 1);
-  assert.equal(opening[0]!.delegation_id, null);
+  assert.ok(opening.length > 1, 'a full alarm instruction exceeds one 450-character item');
+  const parts = opening.map(command => {
+    assert.equal(command.delegation_id, null);
+    assert.ok(String(command.content).length <= 450);
+    return commentaryPart(String(command.content));
+  });
+  assert.deepEqual(parts.map(part => part.part), parts.map((_, i) => `${i + 1}/${parts.length}`));
+  assert.ok(parts.every(part => part.id === parts[0]!.id));
+  assert.equal(parts.at(-1)!.final, true);
+  assert.match(String(parts[0]!.cause), /alarm is due now/i);
+  const content = parts.map(part => part.content ?? '').join('');
+  assert.ok(content.length > 450);
+  assert.match(content, /Synthetic owner/);
   assert.equal(commands().filter(command => command.type === 'response.create').length, 0);
   assert.equal(events('alarm_ready').length, 1);
   assert.equal(events('alarm_announced').length, 0);

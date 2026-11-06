@@ -87,7 +87,8 @@ async function openHost(t: TestContext) {
   const context = { clientId: 'synthetic', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
   const created = owner.create({ idempotencyKey: 'synthetic-alarm-call', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic owner', scheduledTime: '08:00', alarmId: 'synthetic-alarm', ringDeadlineUtc: now + 60000 } }, context);
   const attachment = owner.attach({ liveSessionId: created.liveSessionId }, context);
-  t.after(async () => { attachment.close(); await attachment.done; detach(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const consumed = (async () => { for await (const _chunk of attachment.output) { /* Native playback consumes the host event stream. */ } })();
+  t.after(async () => { attachment.close(); await attachment.done; await consumed; detach(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   const flush = async () => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
   const commands = () => socket.sent.map(frame => JSON.parse(frame) as Record<string, unknown>);
   const events = (name: string) => records.filter(record => record.event === name);

@@ -71,7 +71,7 @@ async function openHost(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-host-speech-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
   const socket = new FakeSocket();
-  const voice = new OpenAiLiveVoiceAdapter(options({ clock, socketFactory: () => {
+  const voice = new OpenAiLiveVoiceAdapter(options({ clock, limits: { handshakeMs: 1000, idleMs: 600000, sessionMs: 1200000, closeMs: 50 }, socketFactory: () => {
     queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
     return socket as unknown as import('ws').default;
   } }));

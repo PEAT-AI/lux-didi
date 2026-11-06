@@ -81,7 +81,7 @@ assert.deepEqual(persona.buildOpeningFacts({ now: 0, timeZone: 'UTC', familyName
 // 10.11: each new rule is a judgment she applies, and neither public text carries a said line.
 for (const rule of [
   'Everything else is yours and you answer it yourself',
-  'Speak of looking something up only in the turn you hand it off',
+  "say you're looking only after hand-off, never guess the outcome",
   'A no_action means answer from this conversation and your own mind',
   'You cannot see work in progress',
   'give what is there rather than only that it is incomplete',

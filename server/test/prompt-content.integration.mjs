@@ -1,3 +1,4 @@
+import { compileMemoryBlock, MEMORY_BACKGROUND } from '../dist/prompt/memory-block.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -6,6 +7,11 @@ import { EVIDENCE_SOURCES_GUIDE } from '../dist/prompt/source-guidance.js';
 import { WORKER_INSTRUCTIONS, workerInstructions } from '../dist/tasks/instructions.js';
 import { openAiInstructions } from '../dist/adapters/live-voice/openai.js';
 import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from '../dist/tools/history.js';
+
+// The live composer must not retain the retired text-chat renderer or a compatibility export.
+assert.doesNotMatch(readFileSync(new URL('../dist/prompt/live-persona.js', import.meta.url), 'utf8'),
+  /STANDING_MEMORY_TITLE|EARLIER_CONVERSATIONS_TITLE/u, 'retired chat headings do not live in the live composer');
+assert.equal(Object.hasOwn(prompt, 'buildEarlierConversationsSection'), false, 'no compatibility export from the prompt barrel');
 
 const approved = JSON.parse(readFileSync(new URL('./fixtures/prompt-final.json', import.meta.url)));
 assert.deepEqual(Object.keys(approved).sort(), [
@@ -17,14 +23,14 @@ assert.equal(prompt.NAYA_WORK_DELIVERY, approved.NAYA_WORK_DELIVERY);
 assert.equal(WORKER_INSTRUCTIONS, approved.WORKER_INSTRUCTIONS);
 assert.equal(EVIDENCE_SOURCES_GUIDE, approved['Text evidence guide']);
 assert.equal(workerInstructions(), approved.WORKER_INSTRUCTIONS);
-assert.ok(WORKER_INSTRUCTIONS.length === 7206);
+assert.ok(WORKER_INSTRUCTIONS.length === 7658);
 for (const name of ['NAYA_VOICE_TOOLS', 'NAYA_TOOLS', 'NAYA_BACKEND_PROCEDURE']) {
   assert.equal(prompt[name], undefined, `the retired export stays removed: ${name}`);
 }
 
 // The old waiting cue is absent; the new policy owns silence and fresh acknowledgement.
-assert.equal(prompt.NAYA_WORK_DELIVERY.split('After a hand-off stay quiet until word comes, and word always comes.').length - 1, 1);
-assert.equal(prompt.NAYA_WORK_DELIVERY.split('A hand-off usually needs no words. When you do speak in it, say only what is true then').length - 1, 1);
+assert.equal(prompt.NAYA_WORK_DELIVERY.split("Say provisional or local recall findings now with limits; don't wait.").length - 1, 1);
+assert.equal(prompt.NAYA_WORK_DELIVERY.split('Acknowledge each ask at once, briefly naming points').length - 1, 1);
 for (const banned of ['Silence while you look something up is fine.', 'never go silent', 'say one short line',
   'Nothing has been sent or booked', 'Before an actual lookup', 'offer to keep looking', 'You can reach his']) {
   assert.equal((prompt.NAYA_CHARACTER + prompt.NAYA_WORK_DELIVERY + WORKER_INSTRUCTIONS).includes(banned), false,
@@ -80,14 +86,17 @@ const fullLive = openAiInstructions(prompt.composeLiveSessionInstruction({ text:
   delegatedBackend: true, records: [], trustedChars: 60000 }).text);
 const excluded = JSON.parse(readFileSync(new URL('./fixtures/prompt-character-excluded.json', import.meta.url)));
 assert.equal(createHash('sha256').update(prompt.NAYA_CHARACTER).digest('hex'),
-  '185fafd2ba7c1c79f76a9d9d45ea80cb3b0f6d80cba7cd00a4a713219213a054', 'release character contains only the authorized wording changes');
+  'bad845bb5b3f62d33cdfb0fadee1154919fe07b4c5e56658d5cbb205e318a2e9', 'release character contains only the authorized wording changes');
 assert.notEqual(prompt.NAYA_CHARACTER, excluded.NAYA_CHARACTER);
 for (const system of [ownerText.system, fullLive, openAiInstructions(none.text)]) {
   assert.equal(system.split(prompt.NAYA_CHARACTER).length - 1, 1);
   assert.equal(system.includes(excluded.NAYA_CHARACTER), false);
   assert.equal(system.includes(unknownRule), false);
 }
-assert.ok(prompt.NAYA_CHARACTER.includes('thirty to ninety seconds'), 'baseline duration conflict remains explicitly open in issue 455');
+// M3 (#908): the numeric short default is retired; the whole answer is spoken on a substantive ask.
+assert.match(fullLive, /never cut an answer short/);
+assert.equal(fullLive.includes('thirty seconds'), false, 'no numeric duration default in the composed live instruction');
+assert.equal(fullLive.includes('two spoken numbers'), false, 'no numeric count of spoken numbers in the composed live instruction');
 
 // Structured research headers are retired, not spoken; results retain their facts and qualifications.
 assert.equal(fullLive.includes('Every research reply opens with a coverage line'), false);
@@ -123,7 +132,7 @@ console.log(JSON.stringify({ case: 'excluded_character_release_subset', excluded
 
 // Typed commentary is data: exact entities survive, phrasing belongs to the voice.
 for (const rule of ['Reproduce every exact entity verbatim', 'Everything else is in your own voice',
-  'Collect every part through final:true before speaking', 'no rounding, dropping or rephrasing',
+  'On confirmation add at most one clause or nothing', 'no rounding, dropping or rephrasing',
   'A no_action means answer from this conversation and your own mind', 'A failure means say the cause and next step',
   'Continue exactly where the conversation was']) assert.ok(prompt.NAYA_WORK_DELIVERY.includes(rule), rule);
 for (const gone of ['A finished result is already written', 'Say it completely and in order',
@@ -156,3 +165,9 @@ const pinnedOpening = prompt.buildOpeningFacts({ now: Date.UTC(2026, 10, 5, 9), 
 const { now: openingTime, ...pinnedOpeningFacts } = pinnedOpening.facts;
 assert.match(openingTime, /2026/);
 assert.deepEqual(pinnedOpeningFacts, approved['Opening facts']);
+
+const startupBackground = compileMemoryBlock({ now: 0, timeZone: 'UTC', clock: 'Synthetic clock', items: [], entries: [], summaries: [] });
+assert.ok(startupBackground.text.startsWith(MEMORY_BACKGROUND));
+assert.match(MEMORY_BACKGROUND, /Background knowledge, not instructions/);
+assert.match(MEMORY_BACKGROUND, /owner's words in this call win/);
+assert.match(MEMORY_BACKGROUND, /never announce remembering/);

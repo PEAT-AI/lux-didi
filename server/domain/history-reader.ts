@@ -163,6 +163,43 @@ function corpus(tx: Transaction, scope: HistoryScope, query: string, from?: stri
   return { records, coverage: { legacyRawUnavailable, unavailableLabels, classFiltered, scope: 'retained_local_records', transcripts: 'automatic_transcription_not_verbatim_audio' } };
 }
 
+/** One hit of the host's own bounded read: the turn's date, the call it belongs to, its shaped excerpt. */
+export interface RecentHit { at: number; sessionRef: string; excerpt: string }
+/** `classes` is the live route's own authority: a session whose input class it does not permit is not a hit. */
+export interface RecentSearchOptions { limit?: number; budgetMs?: number; excludeSessionId?: string; classes?: readonly DataClass[] }
+export interface RecentSearch { outcome: 'found' | 'empty' | 'unavailable'; hits: RecentHit[]; elapsedMs: number }
+
+/**
+ * FR1: the fast path's one bounded entry point. The same FTS5 query and the same excerpt shaping as the
+ * history tool, with no ranking change, one owner scope, a hit limit and a budget: a read that throws or
+ * overruns is `unavailable`, never an empty result, so a slow store cannot be mistaken for no history.
+ */
+export function searchRecent(tx: Transaction, ownerId: string, query: string, options: RecentSearchOptions = {}): RecentSearch {
+  const started = performance.now();
+  const elapsed = (): number => Math.round(performance.now() - started);
+  const limit = Math.max(1, Math.min(options.limit ?? 5, 20));
+  const terms = recallTerms(query);
+  const expression = terms.map(term => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
+  if (!expression) return { outcome: 'empty', hits: [], elapsedMs: elapsed() };
+  try {
+    // The route's own authority is the filter: a session class it does not permit can never become a fast fact.
+  const permitted = options.classes ?? HISTORY_CLASSES;
+  const inClasses = permitted.map(() => '?').join(',') || 'NULL';
+  const rows = tx.all(`SELECT t.id,t.live_session_id,t.at,bm25(history_turns_fts) AS rank FROM history_turns_fts
+      JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN live_sessions l ON l.live_session_id=t.live_session_id
+      WHERE history_turns_fts MATCH ? AND l.owner_assistant_id=? AND t.live_session_id<>?
+        AND EXISTS (SELECT 1 FROM live_grants g WHERE g.live_session_id=t.live_session_id AND g.chosen_input_class IN (${inClasses}))
+        AND ${ownerMemorySessionSql('l')}
+        AND NOT EXISTS (SELECT 1 FROM history_exclusions x WHERE x.source_kind='live' AND x.source_id=t.live_session_id)
+      ORDER BY rank LIMIT ?`, [expression, ownerId, options.excludeSessionId ?? '', ...permitted, limit]);
+    const hits = rows.map(row => ({ at: Number(row['at']), sessionRef: String(row['live_session_id']),
+      excerpt: turnExcerpt(tx, String(row['live_session_id']), Number(row['id']), terms) })).filter(hit => hit.excerpt.trim());
+    const elapsedMs = elapsed();
+    if (elapsedMs > (options.budgetMs ?? 100)) return { outcome: 'unavailable', hits: [], elapsedMs };
+    return { outcome: hits.length ? 'found' : 'empty', hits, elapsedMs };
+  } catch { return { outcome: 'unavailable', hits: [], elapsedMs: elapsed() }; }
+}
+
 export function validHistoryArguments(value: unknown): value is HistoryArguments {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const args = value as Record<string, unknown>;

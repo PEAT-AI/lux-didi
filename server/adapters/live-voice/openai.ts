@@ -167,7 +167,7 @@ function capabilitiesOf(): LiveVoiceCapabilities {
 function object(value: unknown): value is ObjectValue { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function fail(code: LiveVoiceErrorCode): never { throw new LiveVoiceError(code); }
 /** S4a-R4: the command family a rejected client command names, as a closed token for the receipt. */
-const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'] as const;
+const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'scm', 'other'] as const;
 type CommandKind = (typeof COMMAND_KINDS)[number];
 
 /** S4a-R2 (c): what a provider error is, decided by its own code or type and never by a field's presence.
@@ -1069,7 +1069,7 @@ class Session implements LiveVoiceSession {
   /** One client command id, so a provider error frame can be tied to the command that earned it (3r F, S4a-R4).
    *  The prefix names the command family: a rejected `tool_out_` answer is not the same event as a rejected
    *  `response.create`. */
-  private commandId(kind: 'cont' | 'cmt' | 'thk'): string {
+  private commandId(kind: 'cont' | 'cmt' | 'thk' | 'scm'): string {
     this.commandSequence += 1;
     const id = `${kind}_${this.commandSequence}`;
     this.recordCommand(id, kind);
@@ -1288,6 +1288,18 @@ class Session implements LiveVoiceSession {
   }
   sendCommentary(input: { text: string }): boolean {
     return this.latestDelegationId !== undefined && this.sendTaskAnswer({ ...input, delegationId: this.latestDelegationId }) !== undefined;
+  }
+  /**
+   * FR1: general session context, which the provider accepts with no delegation at all, so local recall still
+   * reaches her while a delegation is current. Same guards as the task answer; never a task identity.
+   */
+  sendSessionCommentary(input: { text: string }): string | undefined {
+    if (this.draining || this.terminal || !this.isReady) return undefined;
+    if (!input.text.length || input.text.length > 450) return undefined;
+    const commandId = this.commandId('scm');
+    if (!this.write(JSON.stringify({ type: 'session.commentary.append', event_id: commandId, delegation_id: null, content: input.text }))) return undefined;
+    this.commentaryCommands.set(commandId, null);
+    return commandId;
   }
   sendTaskAnswer(input: { text: string; delegationId: string | null }): string | undefined {
     if (this.draining || this.terminal || !this.isReady || input.delegationId !== (this.latestDelegationId ?? null)) return undefined;

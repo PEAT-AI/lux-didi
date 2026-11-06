@@ -1,3 +1,6 @@
+import { insertItem } from '../domain/memory-items.js';
+import { resolveLiveMemory } from '../host/live.js';
+import { compileMemoryBlock } from '../prompt/memory-block.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -19,7 +22,7 @@ import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
 import { createSummarizer } from '../services/summarize.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
-import { buildEarlierConversationsSection, composeLiveInstruction, composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
+import { composeLiveInstruction, composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { DomainContext, SourceRef } from '../contracts/domain.js';
 
 class CountingModel implements ModelPort {
@@ -611,7 +614,8 @@ test('a distilled session A is injected into session B chat context and Live ins
         VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,1,'ended',?,?,?,?,NULL)`,
         ['live-A', f.store.assistantId, f.store.authorityEpoch, 'key-A', 'fp-A', 'client', 'audit', 'profile', 'prompt', 'terminal',
           JSON.stringify({ state: 'closed', code: 'normal' }), 0, 0, 0]);
-      for (const text of ['one', 'two']) tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)', ['live-A', 'inputTranscription', text, text.length, 0]);
+      // Substantive owner turns: the summary floor is one turn that carries a noun phrase, not small talk.
+      for (const text of ['I moved to Lisbon last month on a work contract', 'and the timezone changed with me']) tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)', ['live-A', 'inputTranscription', text, text.length, 0]);
       // The distiller reads the trusted history eligibility row the terminal path records.
       recordHistorySession(tx, 'live-A', f.store.assistantId, ['ordinary'], [], 0);
     });
@@ -633,10 +637,13 @@ test('a distilled session A is injected into session B chat context and Live ins
     assert.equal(row.summary, summaryText);
 
     // MEM1 Live instruction: the same store read the Live composer uses.
-    const section = f.store.transaction(tx => buildEarlierConversationsSection(summaries.injectionCandidates(tx), { now: 0, timeZone: 'UTC' }));
-    assert.match(section.section, /moved to Lisbon/);
+    const candidates = f.store.transaction(tx => summaries.injectionCandidates(tx));
+    const memoryBlockInput = { now: 0, timeZone: 'UTC', clock: 'Synthetic clock', items: [], entries: [],
+      summaries: candidates.map(summary => ({ id: summary.id, sessionId: summary.liveSessionId, startedAt: summary.endedAt, text: summary.summary })) };
+    const section = compileMemoryBlock(memoryBlockInput);
+    assert.match(section.text, /moved to Lisbon/);
     const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
-    const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
+    const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, memoryBlockInput });
     assert.equal(voice.earlierConversationsIncluded, true);
     assert.ok(voice.text.includes('moved to Lisbon'), 'the Live instruction carries the past summary');
 
@@ -648,4 +655,29 @@ test('a distilled session A is injected into session B chat context and Live ins
     assert.ok(request.system.includes('[earlier-conversations]'), 'the chat prompt carries the section');
     assert.ok(request.system.includes('moved to Lisbon'), 'the chat prompt carries the past summary');
   } finally { f.store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('M0: a fresh note wins a clipped memory budget by captured chronology, not id', async () => {
+  const { composeLiveSessionInstruction } = await import('../prompt/live-persona.js');
+  const records = [
+    { id: 'z-old', text: 'O'.repeat(900), capturedAt: 100 },
+    { id: 'a-middle', text: 'M'.repeat(900), capturedAt: 200 },
+    { id: 'm-new', text: 'N'.repeat(900), capturedAt: 300 },
+  ];
+  const result = composeLiveSessionInstruction({ text: 'SYNTHETIC BASE', tools: [], records, trustedChars: 60_000 });
+  assert.deepEqual(result.selectedIds, ['m-new', 'a-middle']);
+  assert.deepEqual(result.omitted.map(record => record.id), ['z-old']);
+});
+
+
+test('the resolver does not truncate active typed facts before authority and budget selection', t => {
+  const f = fixture();
+  t.after(() => f.close());
+  const ids = f.store.transaction(tx => Array.from({ length: 201 }, (_, index) => insertItem(tx, {
+    kind: 'durable_fact', text: `Synthetic typed fact ${index}`, subject: 'synthetic resolver corpus',
+    validFrom: 0, createdAt: 0, createdBy: 'synthetic-owner', authority: 'explicit_owner', salience: index === 200 ? 0 : 1,
+  }).id));
+  const records = f.store.transaction(tx => resolveLiveMemory(tx)).filter(record => record.memoryItem);
+  assert.equal(records.length, ids.length);
+  assert.ok(records.some(record => record.id === ids[200]), 'lower salience cannot exclude an active fact before the compiler sees it');
 });

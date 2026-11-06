@@ -42,7 +42,17 @@ test('memory eligibility integration: entry and parent class matrix agrees with 
     }
     const automatic = f.store.transaction(resolveLiveMemory);
     const routed = f.store.transaction(tx => historyLookup(tx, f.store, 'Synthetic matrix'));
-    assert.deepEqual(automatic.map(row => row.id), ['ordinary-ordinary']);
+    assert.deepEqual({
+      ordinary: automatic.filter(row => row.dataClass === 'ordinary').map(row => row.id).sort(),
+      openai: automatic.filter(row => ['ordinary', 'private', 'sensitive'].includes(row.dataClass)).map(row => [row.id, row.dataClass]).sort(),
+      unknown: automatic.filter(row => row.dataClass === 'unknown').map(row => row.id).sort(),
+    }, {
+      ordinary: ['ordinary-ordinary'],
+      openai: [['ordinary-ordinary', 'ordinary'], ['ordinary-private', 'private'], ['ordinary-sensitive', 'sensitive'],
+        ['private-ordinary', 'private'], ['private-private', 'private'], ['private-sensitive', 'sensitive'],
+        ['sensitive-ordinary', 'sensitive'], ['sensitive-private', 'sensitive'], ['sensitive-sensitive', 'sensitive']],
+      unknown: ['ordinary-unknown', 'private-unknown', 'sensitive-unknown', 'unknown-ordinary', 'unknown-private', 'unknown-sensitive', 'unknown-unknown'],
+    });
     assert.equal(routed.lines.length, 1); assert.ok(routed.lines[0]!.includes('ordinary-ordinary'));
     assert.ok(!routed.text.includes('ordinary-unknown'), 'missing parent label fails closed');
   } finally { f.cleanup(); }
@@ -106,7 +116,7 @@ test('memory eligibility integration: real summarizer rejects private input befo
           VALUES (?,?,?,?,?,?,?,?,?,'terminal',0,0,0,0,1,'ended',?,?,?,?)`, [id, f.store.assistantId, f.store.authorityEpoch, id, id, 'synthetic', 'synthetic-audit', 'synthetic-profile', 'synthetic-prompt', JSON.stringify({ state: 'closed', code: 'normal' }), NOW, NOW, NOW]);
         tx.run('INSERT INTO live_grants VALUES (?,?,?,?,?,?,?,?,?,?)', [id, id, 'openai', 'gpt-live-1', 'marin', 'synthetic-key', JSON.stringify(['ordinary', 'private', 'sensitive']), dataClass, 1, NOW]);
         tx.run('INSERT INTO history_sessions(live_session_id,owner_id,data_class,revision,created_at) VALUES(?,?,?,1,?)', [id, f.store.assistantId, dataClass, NOW]);
-        for (const text of ['Synthetic owner first turn', 'Synthetic owner second turn']) tx.run('INSERT INTO live_journal (live_session_id,kind,text,finished,payload_bytes,arrived_at) VALUES (?,\'inputTranscription\',?,1,?,?)', [id, text, text.length, NOW]);
+        for (const text of ['Synthetic owner first turn about the trip', 'Synthetic owner second turn about the plan']) tx.run('INSERT INTO live_journal (live_session_id,kind,text,finished,payload_bytes,arrived_at) VALUES (?,\'inputTranscription\',?,1,?,?)', [id, text, text.length, NOW]);
       });
       await summarizer.distill(id);
       const stored = f.store.transaction(tx => getBySession(tx, id))!;

@@ -79,6 +79,26 @@ Synthetic providers prove routing, ordering, acknowledgement state, holds and bo
 They cannot prove audibility, exact wording, model weaving, or remembered meaning. Real-wire trials
 established null-id commentary and retained history; transcript matches are not delivery receipts.
 
+### Fast evidence (FR1)
+
+A finished utterance that refers to the past or to his calendar is read by the host itself, with no model
+call and no network. `classifyCue` matches whole words only: memory cues are the phrases that point at
+something already said (last time, I told you, you said, we talked, remember, yesterday, a month name, a
+weekday name); calendar cues are today, tomorrow, this week, next week, meeting, calendar, schedule,
+appointment. A memory cue runs one bounded FTS5 read over her call history; a calendar cue reads the
+digest the session already holds. The whole read is budgeted at 100 ms, and a read that throws or overruns
+sends nothing.
+
+When the read finds something it appends one commentary group, kind `partial`, opening with
+`Local recall, provisional, the helper is still checking:` and carrying at most five facts, each dated and
+capped at 240 characters, so every item stays inside the 450-character transport limit. It rides
+`session.commentary.append` with a null delegation id, which the provider accepts as general session
+context even while a delegation is current (`sendSessionCommentary`), and it is marked as local recall so
+she never presents it as the helper's answer. Zero hits send nothing at all. The read runs after the helper
+has already started and is never awaited on its path, so it never holds or moves the reply. One host event,
+`fast_evidence`, records the cue classes, the outcome, the hit count, the elapsed budget and whether the
+channel took the items.
+
 ### Fewer rebuilds, by holding them rather than shortening anything (C-REBUILD)
 
 Three shapes were measured on the 10-25 to 11-01 window (19 owner rebuilds): 7 tore down a response in flight under 9.7 s old, 2 followed a response's end within 4 s, and 8 had no response at all for 29 s or more. The council's ruling is one rule applied three times: a rebuild trigger may only be lengthened or removed, never shortened, and no filler speech may answer a silence he was happy to leave.
@@ -216,7 +236,7 @@ The release owner runs the real-wire probe and synthetic replay separately.
 
 ### Typed work commentary
 
-The voice receives fenced `COMMENTARY` JSON as data, never a sentence supplied by the host to read aloud. A logical envelope is an ordered sequence of commentary items, each at most 450 characters including its JSON and fence. Items share a short envelope `id`, `part` (`i/n`), and `final` marker. Header items carry `kind` (`result`, `partial`, `no_action`, or `failure`), `cause`, `what_failed`, `next_step`, and `exact`; further header items can continue the exact list. Content items carry helper prose. The voice collects all parts through `final:true` before answering. Transport acceptance and the delivery record advance per item, not per logical envelope. A fresh session receives the complete unfinished envelope from part 1, including already accepted headers and exact entities. The cumulative unique-item acceptance count is preserved, never treated as evidence that facts were spoken. Recovery context seeds also carry the complete envelope.
+The voice receives fenced `COMMENTARY` JSON as data, never a sentence supplied by the host to read aloud. A logical envelope is an ordered sequence of commentary items, each at most 450 characters including its JSON and fence. Items share a short envelope `id`, `part` (`i/n`), and `final` marker. Header items carry `kind` (`result`, `partial`, `no_action`, or `failure`), `cause`, `what_failed`, `next_step`, and `exact`; further header items can continue the exact list. Content items carry helper prose. The voice speaks provisional or local recall findings at once with their limits, without waiting for later parts; she never speaks the fence, keys or counters. Transport acceptance and the delivery record advance per item, not per logical envelope. A fresh session receives the complete unfinished envelope from part 1, including already accepted headers and exact entities. The cumulative unique-item acceptance count is preserved, never treated as evidence that facts were spoken. Recovery context seeds also carry the complete envelope.
 
 Exact entities are reproduced verbatim, including names, dates, times, amounts, numbers and qualifications. Everything else is phrased in her own voice, with no invented facts, filler or meta-status. Requested full results are told completely once. `partial` gives what exists and names the gap; `no_action` answers from the conversation without mentioning a lookup; `failure` gives the supplied cause and repair once without inventing a next step. Work runs in silence.
 
@@ -251,3 +271,9 @@ The host's closed illness-word list is a conservative backstop; the persona's fl
 ## How deep an answer is
 
 For information asks, the helper includes every supported fact that matters to the question, in time or relevance order. Overlapping facts appear once; incidental hits stay out. Missing information is named at the end. Length follows the facts, without a target or a recap. There is no preamble or narration of the search. Banter, greetings and remarks without a lookup stay short and in character. Later words can revise an earlier fragment; the answer addresses the latest whole request.
+
+### Progressive sourced findings
+
+When the helper holds a sourced fact answering part of the question but still needs further reads, it may call `report_progress` once per task revision with one to five `{ text, source }` findings and a plain `still_checking` description. A second call returns `already_reported`. The host immediately acknowledges `{ delivered: true }` without waiting for speech or stopping the read loop. It records a progress delivery and sends a `partial` commentary beginning `Provisional, still checking <still_checking>:` through the existing provider-ready, owner-quiet, output-quiet and current-revision gates. Superseded revisions never deliver. Item size stays at 450 characters. A pending progress envelope finishes before its queued final result.
+
+She briefly acknowledges each ask with the points understood, mentions looking only after a hand-off starts, and never guesses the outcome or fills the wait. Provisional findings must contain sourced facts, not plans or promises. The helper sees its earlier report in its tool history: the final adds new detail rather than repeating that finding, confirms it in at most one clause or nothing, or plainly states what changed, the new fact and what it replaces. She likewise says corrections out loud and keeps confirmations to at most one clause, retaining full detail when warranted. Runs without a progress call retain the existing final delivery behavior. Offline replay rows test the rubric, not real provider behavior.

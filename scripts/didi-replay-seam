@@ -1,0 +1,136 @@
+#!/usr/bin/env node
+// Read-only replay: --data-dir <store-copy> <liveSessionId> [--json].
+// Content output is private. Missing instrumentation is not evidence of absence.
+const { DatabaseSync } = require('node:sqlite');
+const { readFileSync, readdirSync } = require('node:fs');
+const { join } = require('node:path');
+const missing = name => `missing:${name}`;
+function classifyTiming(row) {
+  if (!Number.isFinite(row.retrieval_returned_at)) return missing('retrieval_returned_at');
+  if (!Number.isFinite(row.first_audio_at)) return missing('first_audio_at');
+  if (Number.isFinite(row.owner_final_at) && row.first_audio_at < row.owner_final_at) return 'invalid:first_audio_before_owner_final';
+  return row.retrieval_returned_at > row.first_audio_at ? 'late' : 'early';
+}
+const restricted = /\b(HR|payroll|cap table|deal valuation|executive pay|salary|salaries|compensation|recruitment|recruiting|hiring|interviews?|candidates?|job description|chief|CRO|VP|salary bands)\b/i;
+function resultKind(value) {
+  let parsed; try { parsed = JSON.parse(value); } catch { return 'missing:retrieval_result'; }
+  const records = parsed?.records ?? parsed?.response?.records ?? parsed?.response?.data?.records ?? parsed?.entries ?? parsed?.results ?? parsed?.data?.entries;
+  return Array.isArray(records) ? (records.length ? 'found' : 'empty') : 'missing:retrieval_result';
+}
+function replay(dataDir, session) {
+  const db = new DatabaseSync(join(dataDir, 'state.sqlite'), { readOnly: true });
+  try {
+    const turns = db.prepare("SELECT * FROM trace_turn WHERE live_session_id=? ORDER BY opened_at,turn_index").all(session);
+    const logs = [];
+    for (const name of readdirSync(join(dataDir, 'logs')).filter(n => /^host\.log(?:\.|$)/.test(n))) {
+      for (const line of readFileSync(join(dataDir, 'logs', name), 'utf8').split('\n')) {
+        let event; try { event = JSON.parse(line); } catch { continue; }
+        if (event.liveSessionId === session) logs.push({ ...event, at: Date.parse(event.timestamp) });
+      }
+    }
+    logs.sort((a, b) => a.at - b.at);
+    const tasks = db.prepare('SELECT * FROM tasks WHERE live_session_id=? OR live_session_id IS NULL').all(session);
+    const directHistoryCalls = db.prepare("SELECT execution_id,state,created_at FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='conversation_history'").all(session);
+    const rows = [];
+    let skipped = 0, skippedNonOwner = 0;
+    for (const turn of turns.filter(t => t.origin === 'owner')) {
+      const utterances = db.prepare('SELECT * FROM trace_utterance WHERE turn_id=? AND final=1 ORDER BY at').all(turn.turn_id);
+      // Exclude restricted rows before retaining any content in the output.
+      if (utterances.some(u => restricted.test(u.text ?? ''))) { skipped++; continue; }
+      const owner = utterances.filter(u => u.role === 'owner').at(-1);
+      if (/^\[host note, not the owner\]/i.test(owner?.text ?? '')) { skippedNonOwner++; continue; }
+      const model = utterances.find(u => u.role === 'model');
+      const events = logs.filter(e => e.turnId === turn.turn_id);
+      const starts = events.filter(e => e.event === 'task_lifecycle' && ['start','revision'].includes(e.phase));
+      const identities = starts.filter(e => tasks.some(t => t.task_id === e.taskId));
+      const taskIds = [...new Set(identities.map(e => e.taskId))];
+      const matchesRevision = (taskId, revision) => identities.some(e => e.taskId === taskId && e.revision === revision);
+      const recordedOperations = taskIds.flatMap(id => db.prepare("SELECT * FROM task_operations WHERE task_id=? AND tool IN ('conversation_history','search_memory','read_memory') ORDER BY created_at").all(id))
+        .filter(op => matchesRevision(op.task_id, op.task_revision)).sort((a, b) => a.created_at - b.created_at);
+      const operations = recordedOperations.filter(op => ['search_memory','read_memory'].includes(op.tool));
+      const historicalHistoryOperations = recordedOperations.filter(op => op.tool === 'conversation_history')
+        .map(op => ({ operation_id: op.operation_id, task_revision: op.task_revision, state: op.state,
+          created_at: op.created_at, updated_at: op.updated_at }));
+      const responses = db.prepare('SELECT * FROM trace_response WHERE live_session_id=? AND turn_id=? ORDER BY created_at').all(session, turn.turn_id);
+      const audio = logs.find(e => e.event === 'response_first_audio' && responses.some(r => r.response_key === e.responseKey));
+      const firstAudio = Number.isFinite(turn.first_audible_at) ? turn.first_audible_at
+        : Number.isFinite(audio?.firstAudioAt) ? audio.firstAudioAt : null;
+      const firstAudioSource = Number.isFinite(turn.first_audible_at) ? 'trace_turn.first_audible_at'
+        : Number.isFinite(audio?.firstAudioAt) ? 'host_log.firstAudioAt' : missing('first_audio_source');
+      const deliveries = taskIds.flatMap(id => db.prepare('SELECT * FROM task_deliveries WHERE task_id=? ORDER BY updated_at').all(id))
+        .filter(d => matchesRevision(d.task_id, d.task_revision));
+      const taskEvents = logs.filter(e => matchesRevision(e.taskId, e.revision));
+      // tool_calls is a separate durable evidence source, not a timestamp for completion.
+      const calls = taskIds.flatMap(id => db.prepare('SELECT execution_id,state,intent_json FROM tool_calls WHERE run_id=?').all(id));
+      const retrievals = operations.map(op => ({
+        operation_id: op.operation_id, task_revision: op.task_revision, tool: op.tool,
+        retrieval_started_at: op.created_at,
+        retrieval_returned_at: op.state === 'committed' ? op.updated_at : missing('retrieval_returned_at'),
+        result: op.state === 'committed' ? resultKind(op.result) : op.state,
+      }));
+      const first = retrievals[0];
+      const helperStarted = starts[0]?.at;
+      const commentaryAppended = taskEvents.find(e => e.event === 'task_delivery' && e.state === 'accepted')?.at;
+      const finalAt = owner?.at;
+      const validAudio = Number.isFinite(firstAudio) && Number.isFinite(finalAt) && firstAudio >= finalAt;
+      const row = {
+        turn_id: turn.turn_id, owner_final_at: owner?.at ?? missing('owner_final_at'),
+        helper_started_at: helperStarted ?? missing('helper_started_at'),
+        // Current live path emits no keyed delegation-creation record. Do not probe a nonexistent host event.
+        delegation_created_at: missing('delegation_created_at'),
+        delegation_created_source: 'not-recorded: current live path emits no keyed creation event',
+        first_commentary_appended_at: commentaryAppended ?? missing('first_commentary_appended_at'),
+        owner_final_to_first_audio_ms: validAudio ? firstAudio - finalAt : missing('valid_owner_final_to_first_audio'),
+        helper_start_to_first_commentary_ms: Number.isFinite(helperStarted) && Number.isFinite(commentaryAppended) && commentaryAppended >= helperStarted
+          ? commentaryAppended - helperStarted : missing('valid_helper_start_to_first_commentary'),
+        audio_preceded_first_commentary: validAudio && Number.isFinite(commentaryAppended)
+          ? firstAudio < commentaryAppended : missing('audio_commentary_comparison'),
+        retrieval_started_at: first?.retrieval_started_at ?? missing('retrieval_started_at'),
+        retrieval_returned_at: first?.retrieval_returned_at ?? missing('retrieval_returned_at'),
+        response_create_at: responses[0]?.created_at ?? missing('response_create_at'),
+        first_audio_at: firstAudio ?? missing('first_audio_at'),
+        first_audio_source: firstAudioSource,
+        first_audio_log_written_at: audio?.at ?? missing('first_audio_log_written_at'),
+        her_first_words: model?.text ?? missing('her_first_words'),
+        delivery_part_at: taskEvents.find(e => e.event === 'task_delivery' && e.state === 'sent')?.at ?? missing('delivery_part_at'),
+        delivery_record_at: deliveries.find(d => d.state === 'delivered')?.updated_at ?? missing('delivery_record_at'),
+        owner_words: owner?.text ?? missing('owner_words'),
+        memory_cued: /\b(last time|I told you|you said|my trip|memory|remember|recall|yesterday|previously|last call)\b/i.test(owner?.text ?? ''),
+        cue_review: 'manual review required, including unanchored possessives',
+        first_words_verdict: 'manual review required', later_contradiction: 'manual review required',
+        retrievals, historical_history_operations: historicalHistoryOperations, retrieval_ran: retrievals.length ? 'yes' : 'not-recorded', tool_call_count: calls.length,
+        task_settled_at: taskEvents.find(e => e.event === 'task_settled')?.at ?? missing('task_settled_at'),
+      };
+      row.timing = classifyTiming(row);
+      rows.push(row);
+    }
+    const deltas = rows.filter(r => r.memory_cued && ['late','early'].includes(r.timing))
+      .map(r => r.retrieval_returned_at - r.first_audio_at).sort((a, b) => a - b);
+    return { session, direct_history_call_count: directHistoryCalls.length, skipped_restricted_rows: skipped, skipped_non_owner_turns: skippedNonOwner, rows, measured_cued_turns: deltas.length,
+      denominator: { calls: 1, retained_turns: rows.length, cued_turns: rows.filter(r => r.memory_cued).length,
+        cue_definition: 'lexical candidates, not manual adjudication', eligible_pairs: deltas.length },
+      median_ms: deltas.length ? (deltas[Math.floor((deltas.length - 1) / 2)] + deltas[Math.floor(deltas.length / 2)]) / 2 : missing('median'),
+      p90_ms: deltas.length ? deltas[Math.ceil(deltas.length * .9) - 1] : missing('p90'),
+      caveat: 'Only explicit turn/task/response identifiers joined. Missing events cannot refute a race. Lexical cues require private manual review.' };
+  } finally { db.close(); }
+}
+module.exports = { classifyTiming, replay };
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const index = args.indexOf('--data-dir');
+  const dataDir = index < 0 ? undefined : args.splice(index, 2)[1];
+  const json = args.includes('--json');
+  const session = args.find(a => a !== '--json');
+  if (!dataDir || !session) { console.error('usage: didi-replay-seam --data-dir <copy> <liveSessionId> [--json]'); process.exitCode = 2; }
+  else {
+    try {
+      const result = replay(dataDir, session);
+      if (json) console.log(JSON.stringify(result, null, 2));
+      else {
+        const columns = ['turn_id','owner_final_at','helper_started_at','retrieval_started_at','retrieval_returned_at','response_create_at','first_audio_at','her_first_words','delivery_part_at','timing','delegation_created_at','first_commentary_appended_at','owner_final_to_first_audio_ms','helper_start_to_first_commentary_ms','audio_preceded_first_commentary','first_audio_source','first_audio_log_written_at','memory_cued','retrieval_ran','first_words_verdict','later_contradiction','cue_review'];
+        console.log(columns.join('\t'));
+        for (const row of result.rows) console.log(columns.map(k => String(row[k]).replace(/[\t\r\n]/g, ' ')).join('\t'));
+      }
+    } catch (error) { console.error(error.message); process.exitCode = 1; }
+  }
+}

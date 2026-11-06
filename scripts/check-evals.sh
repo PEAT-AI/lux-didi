@@ -42,6 +42,9 @@ cp test/eval-release/judge-prompt.md test/eval-release/mutations.json dist/test/
 bounded 240 'the scripted self-test' node dist/eval/selftest.js "$root"
 # C-EVALS2 tier 2 and tier 3: the release runner in fake-model mode, the post-call review, the fixture provenance.
 bounded 240 'the release-tier tests' node --test --test-timeout=30000 dist/test/eval-release/*.test.js
+# FR3: the voice metrics reader is graded on a synthetic store and log built in the worktree; it never opens a
+# real data directory, so this step is cheap and stays in the release PR.
+bounded 120 'the voice metrics test' node --test --test-timeout=30000 dist/test/voice-metrics.test.js
 # C-EVALS2 honesty probe (a): every known mutation must make the suite it guards fail. --no-build: tsc just ran.
 bounded 600 'the mutation probe' bash "$root/scripts/eval-mutation-probe.sh" --no-build
 # C-EVALS3: the combined-tree gate and the sensitivity runner test their own fixtures here, so a gate

@@ -14,7 +14,7 @@ import { turnScriptBucket, turnScriptCounts } from '../live/index.js';
 const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'];
 const LIVE_SESSION_ID = '11111111-2222-4333-8444-555555555555';
 
-const SIZE = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
+const SIZE = { event: 'live_instruction_sizes', total: 100, estimatedTokens: 32, stablePrefixChars: 30, stablePrefixEstimatedTokens: 10, fixedChars: 30, fixedEstimatedTokens: 10, overTarget: false, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
 
 // Release 3: the shed receipt carries the speech and silence split of what the uplink dropped, counts only.
 const SHED = { event: 'uplink_shed', bytes: 42_528, bufferedPeak: 123_904, shedRuns: 1, drainBytesPerSec: 19_200, notOpenBytes: 0,
@@ -38,7 +38,7 @@ test('live_instruction_sizes keeps a closed section schema of counts only', () =
   assert.equal(safeEvent({ ...SIZE, total: 1.5 }), undefined, 'a non-integer total is refused');
   assert.equal(safeEvent({ ...SIZE, total: -1 }), undefined, 'a negative total is refused');
   for (const id of SECTIONS) {
-    assert.equal(!!safeEvent({ ...SIZE, total: 1, sections: { [id]: 1 } }), true, `${id} is a known section id`);
+    assert.equal(!!safeEvent({ ...SIZE, total: 1, estimatedTokens: 1, stablePrefixChars: 0, stablePrefixEstimatedTokens: 0, fixedChars: 0, fixedEstimatedTokens: 0, sections: { [id]: 1 } }), true, `${id} is a known section id`);
   }
 });
 
@@ -146,13 +146,15 @@ test('research_subcall keeps a real error code but drops a free-text one', () =>
 });
 // C-CONTINUITY R-02/R-09: the recovery line carries the cause its outcome earned and the socket's own close
 // code and sanitized reason beside the seed size.
-const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', cause: 'network', closeCode: 1006, closeReason: 'upstream reset', reason: 'transport_error', seedTurns: 3, seedChars: 120, msSinceDrop: 21_000, pickup: 'connection', liveSessionId: LIVE_SESSION_ID, generation: 4 };
+const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', cause: 'network', closeCode: 1006, closeReason: 'upstream reset', reason: 'transport_error', seedTurns: 3, seedChars: 120, condensed: false, digestChars: 0, msSinceDrop: 21_000, pickup: 'connection', liveSessionId: LIVE_SESSION_ID, generation: 4 };
 test('live_recovery keeps a closed metadata-only shape', () => {
   assert.deepEqual(safeEvent(RECOVERY), RECOVERY);
   assert.equal(safeEvent({ ...RECOVERY, extra: 1 }), undefined, 'an extra key fails closed');
   assert.equal(safeEvent({ ...RECOVERY, path: 'carrier_pigeon' }), undefined, 'an unknown path is refused');
   assert.equal(safeEvent({ ...RECOVERY, closeCode: 70000 }), undefined, 'an out-of-range close code is refused');
   assert.equal(safeEvent({ ...RECOVERY, seedChars: -1 }), undefined, 'a negative seed size is refused');
+  assert.equal(safeEvent({ ...RECOVERY, condensed: 'yes' }), undefined, 'the condensed flag stays a boolean');
+  assert.equal(safeEvent({ ...RECOVERY, digestChars: -1 }), undefined, 'a negative digest size is refused');
   assert.equal(safeEvent({ ...RECOVERY, cause: 'the-network-was-bad' }), undefined, 'the cause stays a closed set');
   assert.equal(safeEvent({ ...RECOVERY, pickup: 'radio' }), undefined, 'the pickup stays a closed set');
   assert.equal(safeEvent({ ...RECOVERY, closeReason: 'line one\nline two' }), undefined, 'a multi-line close reason is refused');
@@ -535,6 +537,17 @@ test('every event handed to the host-log emitter has a safeEvent branch', () => 
   assert.deepEqual(missing, [], `events handed to the emitter with no safeEvent branch: ${missing.join(', ')}`);
 });
 
+test('M2: the session clock line keeps its closed shape and drops anything else', () => {
+  const line = { event: 'live_session_clock', liveSessionId: 'session-1', observedAt: '2026-11-06T06:45:58+07:00', timeZone: 'Asia/Jakarta', clockSource: 'host' };
+  assert.deepEqual(safeEvent(line), line);
+  assert.deepEqual(safeEvent({ ...line, clockSource: 'settings' }), { ...line, clockSource: 'settings' }, 'the owner settings zone is a source');
+  assert.deepEqual(safeEvent({ ...line, clockSource: 'pin' }), { ...line, clockSource: 'pin' });
+  assert.equal(safeEvent({ ...line, clockSource: 'guessed' }), undefined, 'the source stays a closed set');
+  assert.equal(safeEvent({ ...line, timeZone: 'the owner zone' }), undefined, 'the zone stays an IANA name');
+  assert.equal(safeEvent({ ...line, observedAt: '2026-11-06T06:45:58Z' }), undefined, 'the instant carries its offset');
+  assert.equal(safeEvent({ ...line, text: 'owner words' }), undefined, 'no owner content rides this line');
+});
+
 test('the new receipt events keep their closed shape and drop anything else', () => {
   assert.deepEqual(safeEvent({ event: 'lux_note_stage', staged: true, digest: 'a1b2c3d4e5f6' }),
     { event: 'lux_note_stage', staged: true, digest: 'a1b2c3d4e5f6' });
@@ -752,4 +765,29 @@ test('connector_failure permits only closed refresh classes and integer HTTP sta
   assert.equal(safeEvent({ ...base, exceptionClass: 'private issuer detail' }), undefined);
   for (const httpStatus of [99, 600, 400.5, '400', NaN]) assert.equal(safeEvent({ ...base, httpStatus }), undefined);
   assert.equal(safeEvent({ ...base, httpStatus: 400, body: 'PRIVATE' }), undefined);
+});
+
+
+test('startup omission and target-overrun diagnostics are closed and content-free', () => {
+  const omitted = { event: 'live_context_item_omitted', id: `lore:${'a'.repeat(64)}`, reason: 'budget' };
+  assert.deepEqual(safeEvent(omitted), omitted);
+  assert.equal(safeEvent({ ...omitted, text: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...omitted, reason: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...omitted, id: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  const overrun = { event: 'live_context_target_overrun', estimatedTokens: 10_000, fixedEstimatedTokens: 9_100,
+    sections: [{ id: 'base', chars: 29_120, estimatedTokens: 9_100 }] };
+  assert.deepEqual(safeEvent(overrun), overrun);
+  assert.equal(safeEvent({ ...overrun, text: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...overrun, sections: [{ ...overrun.sections[0], text: 'SYNTHETIC PRIVATE CONTENT' }] }), undefined);
+  assert.equal(safeEvent({ ...overrun, sections: [{ id: 'SYNTHETIC PRIVATE CONTENT', chars: 1, estimatedTokens: 1 }] }), undefined);
+});
+
+test('estimated startup counts reject negative, nonnumeric and unknown fields', () => {
+  for (const key of ['estimatedTokens', 'stablePrefixChars', 'stablePrefixEstimatedTokens', 'fixedChars', 'fixedEstimatedTokens']) {
+    assert.equal(safeEvent({ ...SIZE, [key]: -1 }), undefined);
+    assert.equal(safeEvent({ ...SIZE, [key]: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  }
+  assert.equal(safeEvent({ ...SIZE, overTarget: 'yes' }), undefined);
+  assert.equal(safeEvent({ ...SIZE, stablePrefixChars: 101 }), undefined);
+  assert.equal(safeEvent({ ...SIZE, fixedChars: 31 }), undefined);
 });

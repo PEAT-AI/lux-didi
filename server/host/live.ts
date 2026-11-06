@@ -1,3 +1,5 @@
+import { itemsForSubject } from '../domain/memory-items.js';
+import { historySessionEvidence } from '../domain/history-lifecycle.js';
 import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { hostTaskFactory } from '../tasks/host.js';
@@ -6,8 +8,8 @@ import { boundTextModel, pinProviderBinding, type PinnedProviderBinding } from '
 import { ConfigError } from '../config/files.js';
 import { validateLiveProfile } from '../live/config.js';
 import * as memory from '../domain/memory.js';
-import { entryAndParentOrdinary } from '../domain/labels.js';
-import { listStandingMemory, type StandingMemoryItem } from '../memory/import.js';
+import { HISTORY_CLASSES } from '../domain/history-lifecycle.js';
+import { listStandingMemory } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import { credentialsFor, loadProviderConfig, seedScope, slotKeyPresent } from '../config/index.js';
@@ -201,38 +203,67 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     const failed: LiveStatusPayload = { ...status, status: 'error', code };
     return { service: new UnconfiguredLive(failed), status: failed };
   }
+  // M2: the owner's own zone wins over the machine's, so a host clock on the wrong zone is correctable.
+  const preferencesZone = loaded.status === 'configured' ? loaded.config.preferences.timeZone : undefined;
+  const ownerZone = preferencesZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const vault = new VaultWriter({ store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: now ?? Date.now, log: event => hostLogEvent(event) });
   const createTaskRuntime = testing?.createTaskRuntime ?? hostTaskFactory({ store, vault, models: loadTaskModels(configDir),
     credentials: testing?.credentials ?? credentialsFor(configDir), bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [],
     executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timeZone: ownerZone,
     ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
   });
-  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime, ...(testing?.schedule ? { schedule: testing.schedule } : {}), memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
+  // The host zone is never pinned: #ownerTimeZone resolves Intl at compose time, so a Mac zone change between
+  // calls reaches the next call. Only the owner's own settings zone is pinned, because nothing else knows it.
+  const owner = createLiveSessionOwner({ store, voice, profile, createTaskRuntime,
+    ...(preferencesZone === undefined ? {} : { timeZone: preferencesZone, timeZoneSource: 'settings' as const }),
+    ...(testing?.schedule ? { schedule: testing.schedule } : {}), memorySource: resolveLiveMemory, ...(tools ? { tools } : {}), ...(researchWeb ? { web: researchWeb } : {}), ...(now ? { now } : {}) });
   binding?.onInvalidated(() => owner.invalidate('profile'));
   tools?.registerAuthoritySource?.(async (runId, signal) => signal.aborted ? null : owner.lookupAuthority(runId) ?? owner.lookupJobAuthority(runId));
   return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };
 }
 
-/** Same durable entries and routing labels as text chat. Unknown or non-ordinary labels never leave this port. */
+/** Resolve durable candidates once; the Live owner applies its route's class set at admission. */
 export const resolveLiveMemory: LiveMemorySource = tx => {
-  const ids = tx.all('SELECT id,session_id FROM entries ORDER BY id').filter(row =>
-    entryAndParentOrdinary(tx, String(row['id']), String(row['session_id']))
-  ).map(row => String(row['id']));
+  const rows = tx.all(`SELECT e.id,el.data_class AS entry_class,pl.data_class AS parent_class
+    FROM entries e JOIN sessions s ON s.id=e.session_id
+    LEFT JOIN routing_labels el ON el.subject_kind='entry' AND el.subject_id=e.id
+      AND el.revision=(SELECT MAX(revision) FROM routing_labels WHERE subject_kind='entry' AND subject_id=e.id)
+    LEFT JOIN routing_labels pl ON pl.subject_kind='session' AND pl.subject_id=s.id
+      AND pl.revision=(SELECT MAX(revision) FROM routing_labels WHERE subject_kind='session' AND subject_id=s.id)
+    ORDER BY e.captured_at DESC,e.id`);
+  const classes = new Map(rows.map(row => {
+    const entry = HISTORY_CLASSES.find(value => value === row['entry_class']);
+    const parent = HISTORY_CLASSES.find(value => value === row['parent_class']);
+    const dataClass = entry === undefined || parent === undefined ? 'unknown' as const
+      : HISTORY_CLASSES[Math.max(HISTORY_CLASSES.indexOf(entry), HISTORY_CLASSES.indexOf(parent))]!;
+    return [String(row['id']), dataClass] as const;
+  }));
+  const ids = rows.map(row => String(row['id']));
   const records: ReturnType<typeof memory.resolveEntries> = [];
   for (let offset = 0; offset < ids.length; offset += memory.MAX_RESOLVE_ENTRIES) {
     records.push(...memory.resolveEntries(tx, ids.slice(offset, offset + memory.MAX_RESOLVE_ENTRIES)));
   }
-  // An imported note carries its ranking with it, and the standing records lead the list in rank order:
-  // the prompt renders them as given, so entry-id order never decides the section.
   const ranked = listStandingMemory(tx);
   const resolved = new Map(records.map(record => [record.entryId, record]));
-  const standing = ranked.flatMap((item): { id: string; text: string; dataClass: 'ordinary'; standing?: StandingMemoryItem }[] => {
+  const standing = ranked.flatMap(item => {
     const record = resolved.get(item.id);
-    return record === undefined ? [] : [{ id: record.entryId, text: record.text, dataClass: 'ordinary', standing: item }];
+    return record === undefined ? [] : [{ id: record.entryId, text: record.text, capturedAt: record.capturedAt,
+      dataClass: classes.get(record.entryId)!, standing: item }];
   });
   const taken = new Set(standing.map(record => record.id));
-  const plain = records.filter(record => !taken.has(record.entryId)).map(record => ({ id: record.entryId, text: record.text, dataClass: 'ordinary' as const }));
-  return [...standing, ...plain];
+  const plain = records.filter(record => !taken.has(record.entryId)).map(record => ({ id: record.entryId, text: record.text,
+    capturedAt: record.capturedAt, dataClass: classes.get(record.entryId)! }));
+  const order = ['ordinary', 'private', 'sensitive', 'unknown'] as const;
+  const items = tx.all("SELECT DISTINCT subject FROM memory_items WHERE status='active' ORDER BY subject")
+    .flatMap(row => itemsForSubject(tx, String(row['subject'])).filter(item => item.status === 'active'));
+  const typed = items.map(memoryItem => {
+    const sourceSessionIds = tx.all('SELECT DISTINCT session_id FROM memory_sources WHERE memory_id=? ORDER BY session_id', [memoryItem.id])
+      .map(row => String(row['session_id']));
+    const sourceClasses = sourceSessionIds.map(id => historySessionEvidence(tx, id)?.dataClass ?? 'unknown');
+    const dataClass = order[sourceClasses.length ? Math.max(...sourceClasses.map(value => order.indexOf(value))) : 3]!;
+    return { id: memoryItem.id, text: memoryItem.text, dataClass, memoryItem, sourceSessionIds };
+  });
+  return [...standing, ...plain, ...typed];
 };

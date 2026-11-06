@@ -47,6 +47,13 @@ test('closed preference schema rejects unknowns, unbounded settings and owner/cl
   assert.ok(Object.isFrozen(validatePreferences(rawPreferences, 'alice')));
 });
 
+test('M2: the owner zone is an optional preference, and only a real IANA name is accepted', () => {
+  assert.equal(validatePreferences(rawPreferences, 'alice').timeZone, undefined, 'absent means the host zone');
+  assert.equal(validatePreferences({ ...rawPreferences, timeZone: 'Asia/Jakarta' }, 'alice').timeZone, 'Asia/Jakarta');
+  for (const bad of ['', 'Mars/Olympus', 'x'.repeat(70)])
+    rejects('invalid_time_zone', () => validatePreferences({ ...rawPreferences, timeZone: bad }, 'alice'));
+});
+
 test('explicit BCP47 locales canonicalize without defaults, inference or English fallback', () => {
   for (const [supplied, canonical] of [['de-de', 'de-DE'], ['hi-in', 'hi-IN'], ['de-DE', 'de-DE'], ['hi-IN', 'hi-IN'], ['es-419', 'es-419'], ['zh-hant-tw', 'zh-Hant-TW']]) {
     const preferences = validatePreferences({ ...rawPreferences, language: supplied }, 'alice');
@@ -341,10 +348,10 @@ test('public voice and worker policies contain judgments, not lines to recite', 
   const { NAYA_WORK_DELIVERY } = await import('../prompt/live-persona.js');
   const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
   const { createHash } = await import('node:crypto');
-  assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), '0c1175c50b1d3c863113a69cb0afade6cd3e4661864f1b15e4456847bfd340db', 'Architect-authored voice text stays exact');
-  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), '0c81b1deb3de645689a2125e2c39a2246322213aef5755bbb13fc9a1634924aa', 'Architect-authored worker text stays exact');
+  assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), '9c1bbaf3182f03085a8d5b1c67b6ccfd3886cba0a583f4b2513a931c1a5025b4', 'Architect-authored voice text stays exact');
+  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), '5b96e6ceacd480f755c63e966177a14d9ff9e511198a5258a84382a1cf992351', 'Architect-authored worker text stays exact');
   // 10.11: the mandated scope, searching and speech rules re-pin the worker block to its measured size (TR-R5).
-  assert.ok(WORKER_INSTRUCTIONS.length === 7206);
+  assert.ok(WORKER_INSTRUCTIONS.length === 7658);
   for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
     assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);
     assert.doesNotMatch(text.replace('{"status":"no_action"}', ''), /["“][^"”]+["”]/, 'no quoted prose to recite outside the required JSON schema');

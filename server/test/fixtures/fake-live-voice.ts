@@ -20,7 +20,7 @@ export interface FakeLiveVoice {
   readonly toolResponses: LiveToolResponse[][];
   /** Every text input the host pushed, so a test can see the dead-air nudge itself (#538). */
   readonly texts: string[];
-  readonly taskAnswers: { delegationId: string; text: string; commandId: string }[];
+  readonly taskAnswers: { delegationId: string | null; text: string; commandId: string }[];
   /** How many provider sessions the host closed, so a test can tell a nudge from a recreate (#538). */
   readonly closes: number;
   /** Push one event into the open session (a no-op before the first open). */
@@ -46,7 +46,7 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
   const requests: LiveVoiceRequest[] = [];
   const toolResponses: LiveToolResponse[][] = [];
   const texts: string[] = [];
-  const taskAnswers: { delegationId: string; text: string; commandId: string }[] = [];
+  const taskAnswers: { delegationId: string | null; text: string; commandId: string }[] = [];
   let closes = 0;
   let sessionsOpened = 0;
   let emit: (event: FakeLiveVoiceEvent) => void = () => {};
@@ -83,6 +83,11 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
         events,
         done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return 'sent'; },
+        sendSessionCommentary(input: { text: string }): string | undefined {
+          if (!input.text.length || input.text.length > 450) return undefined;
+          const commandId = `synthetic-command-${taskAnswers.length + 1}`;
+          taskAnswers.push({ text: input.text, delegationId: null, commandId }); return commandId;
+        },
         sendTaskAnswer(input: { text: string; delegationId: string }): string | undefined {
           if (closed) return undefined;
           const commandId = `synthetic-command-${taskAnswers.length + 1}`;

@@ -1,3 +1,4 @@
+import { compileMemoryBlock } from '../prompt/memory-block.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -7,7 +8,7 @@ import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
-import { buildEarlierConversationsSection, earlierConversationsBudget } from '../prompt/live-persona.js';
+import { buildEarlierConversationsSection } from '../chat/context.js';
 import { composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences } from '../prompt/index.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
@@ -85,8 +86,9 @@ function summarizer(store: Store, model: ModelPort | null, assistantName = 'Naya
 
 function withTurns(store: Store, id: string, outcome?: string): void {
   seedSession(store, id, outcome === undefined ? {} : { outcome });
-  seedTurn(store, id, 'inputTranscription', 'one');
-  seedTurn(store, id, 'inputTranscription', 'two');
+  // Substantive on purpose: the floor is one owner turn that carries a noun phrase, not small talk.
+  seedTurn(store, id, 'inputTranscription', 'I want to plan the trip to the coast next weekend');
+  seedTurn(store, id, 'inputTranscription', 'and I would like the tickets booked before Friday');
 }
 
 /** A real GeminiAdapter over a deterministic SSE transport, so controlled() is exercised for real. */
@@ -192,7 +194,7 @@ test('a model skip writes status skipped and no summary text', async () => {
   } finally { h.cleanup(); }
 });
 
-test('sessions with fewer than two finished owner turns are skipped without calling the model', async () => {
+test('a call with no substantive owner turn is skipped without calling the model', async () => {
   const h = open();
   try {
     seedSession(h.store, 's-thin');
@@ -205,12 +207,62 @@ test('sessions with fewer than two finished owner turns are skipped without call
   } finally { h.cleanup(); }
 });
 
+// M9 #914: the floor was two owner turns and lost 95 of 227 calls their summary. One substantive turn
+// is enough; a call of greetings only is still skipped, so small talk never becomes a summary.
+test('one substantive owner turn earns a summary', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-one-turn');
+    seedTurn(h.store, 's-one-turn', 'inputTranscription', 'I am flying to Phuket next Friday with my daughter');
+    seedTurn(h.store, 's-one-turn', 'outputTranscription', 'Next Friday, then: I will keep the morning free.');
+    const model = new FakeModel([reply('{"skip": false, "summary": "He plans to fly to Phuket next Friday with his daughter."}')]);
+    await summarizer(h.store, model).distill('s-one-turn');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-one-turn'))!;
+    assert.equal(row.status, 'complete');
+    assert.equal(model.calls, 1);
+  } finally { h.cleanup(); }
+});
+
+test('a greeting-only call is skipped however many turns it has', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-small-talk');
+    seedTurn(h.store, 's-small-talk', 'inputTranscription', 'hello');
+    seedTurn(h.store, 's-small-talk', 'outputTranscription', 'Hello, how are you?');
+    seedTurn(h.store, 's-small-talk', 'inputTranscription', 'good thanks, and you');
+    seedTurn(h.store, 's-small-talk', 'outputTranscription', 'Ready when you are.');
+    seedTurn(h.store, 's-small-talk', 'inputTranscription', 'great, bye');
+    const model = new FakeModel([reply('{"skip": false, "summary": "should not be used"}')]);
+    await summarizer(h.store, model).distill('s-small-talk');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-small-talk'))!;
+    assert.equal(row.status, 'skipped');
+    assert.equal(row.skipReason, 'too_few_turns');
+    assert.equal(model.calls, 0);
+  } finally { h.cleanup(); }
+});
+
+test('a canary session schedules no summary at all, so it can never become memory', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-canary-schedule');
+    seedTurn(h.store, 's-canary-schedule', 'inputTranscription', 'Ring the household bell and report the tone');
+    h.store.transaction(tx => tx.run('UPDATE live_sessions SET idempotency_key=? WHERE live_session_id=?',
+      ['canary:boot', 's-canary-schedule']));
+    const model = new FakeModel([reply('{"skip": false, "summary": "should not be used"}')]);
+    const pass = summarizer(h.store, model);
+    pass.schedule('s-canary-schedule');
+    await pass.settleOnExit(2_000);
+    assert.equal(model.calls, 0);
+    assert.equal(h.store.transaction(tx => summaries.getBySession(tx, 's-canary-schedule')), null);
+  } finally { h.cleanup(); }
+});
+
 test('a private-labelled session is never distilled', async () => {
   const h = open();
   try {
     seedSession(h.store, 's-private', { inputClass: 'private' });
-    seedTurn(h.store, 's-private', 'inputTranscription', 'one');
-    seedTurn(h.store, 's-private', 'inputTranscription', 'two');
+    seedTurn(h.store, 's-private', 'inputTranscription', 'my medical appointment is on Tuesday morning');
+    seedTurn(h.store, 's-private', 'inputTranscription', 'and the prescription needs collecting before it');
     const model = new FakeModel([reply('{"skip": false, "summary": "must never reach the model"}')]);
     await summarizer(h.store, model).distill('s-private');
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-private'))!;
@@ -345,10 +397,10 @@ test('voice and text chat render the same summary for the same past session', ()
 
     const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
     const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [],
-      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
+      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, memoryBlockInput: { now: NOW, timeZone: 'UTC', clock: new Date(NOW).toISOString(), entries: [], items: [], summaries: candidates.map(candidate => ({ id: candidate.id, sessionId: candidate.liveSessionId, startedAt: candidate.endedAt, text: candidate.summary })) } });
     assert.equal(voice.earlierConversationsIncluded, true);
     assert.ok(voice.text.includes('moved to Lisbon'));
-    assert.ok(voice.text.includes('# Earlier conversations'));
+    assert.ok(voice.text.includes('# Last conversations'));
 
     const compiled = compilePrompt({
       ownerId: h.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
@@ -418,23 +470,24 @@ test('host-start recovery re-queues the newest 30 failed-deadline sessions whose
   } finally { h.cleanup(); }
 });
 
-test('twenty complete summaries fill the space left under the target instead of the old six', () => {
+test('the compiled conversation budget selects a newest-first whole-summary prefix from twenty admitted candidates', () => {
   const h = open();
   try {
     for (let i = 0; i < 20; i++) insertPastSummary(h.store, `past-${String(i).padStart(2, '0')}`,
-      `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}.`, NOW - i * 3_600_000);
+      `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}. ${'Synthetic detail '.repeat(8)}`, NOW - i * 3_600_000);
     const candidates = h.store.transaction(tx => summaries.injectionCandidates(tx));
     assert.equal(candidates.length, 20);
-    const build = (earlierSection?: string) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
-      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(earlierSection ? { earlierConversations: earlierSection } : {}) });
-    const basis = build();
-    const section = buildEarlierConversationsSection(candidates, { now: NOW + 1, timeZone: 'UTC', maxChars: earlierConversationsBudget(basis.text.length) });
-    assert.ok(section.selectedIds.length > 6, `kept ${section.selectedIds.length} summaries`);
-    assert.equal(section.omitted.length, 20 - section.selectedIds.length);
-    assert.deepEqual(section.selectedIds, candidates.map(candidate => candidate.id).filter(id => section.selectedIds.includes(id)), 'newest first');
-    const composed = build(section.section);
+    const input = { now: NOW + 1, timeZone: 'UTC', clock: new Date(NOW).toISOString(), entries: [], items: [],
+      summaries: candidates.map(candidate => ({ id: candidate.id, sessionId: candidate.liveSessionId, startedAt: candidate.endedAt, text: candidate.summary })) };
+    const block = compileMemoryBlock(input);
+    assert.ok(block.summaryIds.length > 6 && block.summaryIds.length < 20);
+    assert.deepEqual(block.summaryIds, candidates.filter(candidate => block.summaryIds.includes(candidate.id)).map(candidate => candidate.id));
+    for (const candidate of candidates) assert.equal(block.text.includes(candidate.summary), block.summaryIds.includes(candidate.id));
+    const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
+      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, memoryBlockInput: input });
     assert.equal(composed.earlierConversationsIncluded, true);
-    assert.ok(composed.text.length > basis.text.length);
+    assert.deepEqual(composed.summaryIds, block.summaryIds);
+    assert.ok(block.parts[3]!.estimatedTokens <= 800);
   } finally { h.cleanup(); }
 });
 

@@ -201,7 +201,7 @@ test('default model and effort are applied without provider-specific caller code
 test('review-owned worker instructions are short and preserve absence after widening', async () => {
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   // 10.11: the mandated worker rules re-pin the block to its measured size (TR-R5).
-assert.ok(WORKER_INSTRUCTIONS.length === 7206);
+assert.ok(WORKER_INSTRUCTIONS.length === 7658);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
   assert.match(WORKER_INSTRUCTIONS, /Absence\./);
 });
@@ -307,14 +307,15 @@ test('worker inference receives presentation style and private owner lore', asyn
     input: 'synthetic', signal: new AbortController().signal, profile,
     infer: async (request: InferRequest) => { received = request.instructions; return { text: 'complete', calls: [] }; } };
   await runWorker(options);
-  assert.ok(received.startsWith(`${WORKER_INSTRUCTIONS}\n\n`));
+  assert.match(received, /^Now: /u, 'the prompt opens with one clock line');
+  assert.ok(received.slice(received.indexOf('\n\n') + 2).startsWith(`${WORKER_INSTRUCTIONS}\n\n`), 'the worker guidance follows the clock line');
   assert.match(received, /SYNTHETIC STYLE/);
   assert.match(received, /SYNTHETIC LORE/);
   received = '';
   const { profile: omittedProfile, ...withoutProfile } = options;
   assert.ok(omittedProfile);
   await runWorker(withoutProfile);
-  assert.equal(received, WORKER_INSTRUCTIONS);
+  assert.equal(received.replace(/^Now: [^\n]*\n\n/u, ''), WORKER_INSTRUCTIONS);
 });
 
 test('company search preserves the native ref rather than a numeric record id', async () => {
@@ -391,10 +392,9 @@ test('revision joins a still-running read without aborting it', async () => {
   assert.equal(answer.findings[0]?.text, 'Synthetic finding');
 });
 
-test('deadline composes completed evidence without tools and gives composition 24 seconds', async () => {
+test('expired revision returns completed evidence without a new compose within the budget', async () => {
   const { runWorker } = await import('../tasks/worker.js');
-  const clock = new TaskTestClock(), localDone = taskDeferred<void>(), webStarted = taskDeferred<void>(), composing = taskDeferred<void>();
-  const composition = taskDeferred<import('../tasks/worker.js').Inference>();
+  const clock = new TaskTestClock(), localDone = taskDeferred<void>(), webStarted = taskDeferred<void>();
   const registry = createRegistry({ authority: new FakeAuthority(), execute: async name => {
     if (name === 'search_memory') return documentResult('Synthetic local finding', 'memory:1');
     webStarted.resolve(); return new Promise(() => {});
@@ -403,22 +403,19 @@ test('deadline composes completed evidence without tools and gives composition 2
   reads.set = (key, value) => { Map.prototype.set.call(reads, key, value); localDone.resolve(); return reads; };
   let hop = 0;
   const work = runWorker({ registry, reads, clock, identity: { task_id: 'fixture', task_revision: 1, connection_generation: 1 }, input: 'synthetic', signal: new AbortController().signal,
-    infer: async request => {
-      if (++hop === 1) return { text: '', calls: [{ id: 'local', name: 'search_memory', args: { query: 'synthetic' } }, { id: 'web', name: 'search_web', args: { query: 'synthetic' } }] };
-      assert.equal(request.tools.length, 0);
-      assert.ok(request.outputs.some(output => output.result.text === 'Synthetic local finding'));
-      assert.ok(request.outputs.some(output => output.name === 'search_web' && output.result.status === 'failed'));
-      composing.resolve(); return composition.promise;
+    infer: async () => {
+      hop++;
+      return { text: '', calls: [{ id: 'local', name: 'search_memory', args: { query: 'synthetic' } }, { id: 'web', name: 'search_web', args: { query: 'synthetic' } }] };
     } });
   await Promise.all([localDone.promise, webStarted.promise]);
   clock.advance(36000);
-  await Promise.race([composing.promise, work.then(() => { throw new Error('Worker returned without composing completed evidence'); })]);
-  clock.advance(13000);
-  composition.resolve({ text: 'Synthetic local finding. Web did not finish.', calls: [] });
   const answer = await work;
   assert.equal(answer.status, 'incomplete');
-  assert.equal(answer.text, 'Synthetic local finding. Web did not finish.');
+  assert.equal(answer.failure?.reason_code, 'deadline');
+  assert.match(answer.text, /Synthetic local finding/);
   assert.equal(answer.findings.length, 1);
+  assert.equal(hop, 1, 'expired revision must not make a fresh compose inference');
+  assert.ok(clock.now() <= 38000);
 });
 
 

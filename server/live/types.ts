@@ -40,7 +40,12 @@ export interface LiveLimits {
   wsBufferedBytes: number;
 }
 
-export interface LiveMemoryRecord { readonly id: string; readonly text: string; readonly dataClass: DataClass | 'unknown' }
+export interface LiveMemoryRecord {
+  readonly id: string; readonly text: string; readonly dataClass: DataClass | 'unknown';
+  readonly capturedAt?: number;
+  readonly memoryItem?: import('../domain/memory-items.js').MemoryItem;
+  readonly sourceSessionIds?: readonly string[];
+}
 export type LiveMemorySource = (tx: import('../contracts/storage.js').Transaction) => readonly LiveMemoryRecord[];
 export interface LiveMemoryProvenance {
   readonly status: 'empty' | 'selected' | 'partial' | 'omitted';
@@ -129,6 +134,8 @@ export interface LiveOwnerConfig {
   readonly now?: () => number;
   /** IANA timezone of the host clock, for the runtime context; defaults to the process timezone. */
   readonly timeZone?: string;
+  /** Where that zone came from: the owner's settings, a test pin, or the host process. Logged, never guessed. */
+  readonly timeZoneSource?: 'pin' | 'host' | 'settings';
   /** Trusted in-process timer seam; not a transport or an error callback. */
   readonly schedule?: (callback: () => void, delayMs: number) => { unref(): void; cancel(): void };
 }

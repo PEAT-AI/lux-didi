@@ -73,7 +73,7 @@ const PROGRESS_SKIP_REASONS = ['settled', 'no_channel', 'budget', 'interval', 'n
 const CEILING_OUTCOMES = ['timeout', 'uncertain'];
 const LATE_OUTCOMES = ['completed', 'failed'];
 /** S4a-R4: the command families a rejected client event id can name. */
-const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
+const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'scm', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 /** W1: the Mongoose sign-in hops and the closed outcomes each may name (MongooseSignInHop in host/mongoose-login.ts). */
 const SIGNIN_ENDPOINTS = ['knowledge', 'data', 'crm', 'trello'];
@@ -124,6 +124,14 @@ const isCallKey = (value: unknown): value is string => isSafeId(value) || (typeo
 const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
 const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
   && value.every(path => typeof path === 'string' && TRELLO_WRITE_ARGUMENT_FIELDS.includes(path));
+/** M9 #914: the dreaming operation names, and the closed refusals the validator may log. */
+const DREAMING_OPS: readonly string[] = ['add', 'supersede', 'invalidate', 'noop', 'document', 'unknown'];
+const DREAMING_REFUSALS: readonly string[] = ['turn_outside_session', 'explicit_owner_protected', 'unknown_target', 'duplicate',
+  'invalid_json', 'missing_operations', 'too_many_operations', 'not_an_object', 'missing_turn_ids', 'missing_target',
+  'unknown_operation', 'unknown_kind', 'empty_text', 'text_too_long', 'unknown_subject', 'missing_salience',
+  'invalid_salience', 'unparsable_event_at', 'unparsable_valid_until', 'model_noop'];
+/** Counts by operation, as `add:1 supersede:2`: a closed summary, never the text of an item. */
+const isSafeOps = (value: unknown): value is string => typeof value === 'string' && /^(|(add|supersede|invalidate|noop):\d{1,6}( (add|supersede|invalidate|noop):\d{1,6})*)$/.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 /** C-PITCH: a fundamental frequency in Hz, or null when the response had no voiced frames. */
 const isSafeHz = (value: unknown): value is number | null =>
@@ -265,6 +273,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: value.event, alarmId: value.alarmId, scheduledMs: value.scheduledMs, actualMs: value.actualMs, reason: value.reason,
       ...(assertionCode === undefined ? {} : { assertionCode }) };
 
+  }
+  if (value.event === 'live_session_clock') {
+    // M2: the session's own clock, logged once at create: the observed instant, the owner zone and the
+    // source that chose it. No owner content, and the zone stays an IANA name.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'observedAt', 'timeZone', 'clockSource'])) return;
+    if (typeof value.liveSessionId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.liveSessionId)) return;
+    if (typeof value.observedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(value.observedAt)) return;
+    if (typeof value.timeZone !== 'string' || !/^[A-Za-z][A-Za-z0-9_+/-]{1,63}$/.test(value.timeZone)) return;
+    if (value.clockSource !== 'settings' && value.clockSource !== 'pin' && value.clockSource !== 'host') return;
+    return { event: 'live_session_clock', liveSessionId: value.liveSessionId, observedAt: value.observedAt,
+      timeZone: value.timeZone, clockSource: value.clockSource };
   }
   if (value.event === 'alarm_announced') {
     // #107: the alarm block reached the provider. The proof that she was asked to speak, and how.
@@ -817,18 +836,36 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
   }
   if (value.event === 'live_instruction_sizes') {
-    // Closed shape: a total, per-section character counts (every id a known section), the effective
-    // languageCode (or `unset`) and the voice name; never any text.
-    if (Object.keys(value).sort().join(',') !== ['event','total','sections','languageCode','voice'].sort().join(',')) return;
-    if (!Number.isSafeInteger(value.total) || Number(value.total) < 0) return;
+    const numeric = ['total', 'estimatedTokens', 'stablePrefixChars', 'stablePrefixEstimatedTokens', 'fixedChars', 'fixedEstimatedTokens'] as const;
+    if (!closedKeys(value, ['event', ...numeric, 'sections', 'languageCode', 'voice', 'overTarget'])) return;
+    if (numeric.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0) || typeof value.overTarget !== 'boolean') return;
+    if (Number(value.stablePrefixChars) > Number(value.total) || Number(value.fixedChars) > Number(value.stablePrefixChars)) return;
     if (!isSafeToken(value.voice)) return;
     if (value.languageCode !== 'unset' && (typeof value.languageCode !== 'string' || !/^[a-z]{2}(?:-[A-Z]{2})?$/.test(value.languageCode))) return;
     const sections = value.sections;
     if (!sections || typeof sections !== 'object' || Array.isArray(sections)) return;
     const ids = Object.keys(sections);
-    if (ids.length > 16 || ids.some(id => !(LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes(id)
+    if (ids.length > LIVE_INSTRUCTION_SECTION_IDS.length || ids.some(id => !(LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes(id)
       || !Number.isSafeInteger((sections as Record<string, unknown>)[id]) || Number((sections as Record<string, unknown>)[id]) < 0)) return;
-    return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])), languageCode: value.languageCode, voice: value.voice };
+    return { ...Object.fromEntries(['event', ...numeric, 'languageCode', 'voice', 'overTarget'].map(key => [key, value[key]])),
+      sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])) };
+  }
+  if (value.event === 'live_context_item_omitted') {
+    if (!closedKeys(value, ['event', 'id', 'reason']) || typeof value.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(value.id)) return;
+    if (typeof value.reason !== 'string' || !['budget', 'duplicate', 'superseded', 'invalid', 'expired', 'not-yet-valid'].includes(value.reason)) return;
+    return { event: value.event, id: value.id, reason: value.reason };
+  }
+  if (value.event === 'live_context_target_overrun') {
+    if (!closedKeys(value, ['event', 'estimatedTokens', 'fixedEstimatedTokens', 'sections'])) return;
+    if (['estimatedTokens', 'fixedEstimatedTokens'].some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
+    if (!Array.isArray(value.sections) || value.sections.length > LIVE_INSTRUCTION_SECTION_IDS.length) return;
+    for (const section of value.sections) {
+      if (!section || typeof section !== 'object' || Array.isArray(section) || !closedKeys(section, ['id', 'chars', 'estimatedTokens'])
+        || !(LIVE_INSTRUCTION_SECTION_IDS as readonly unknown[]).includes(section.id)
+        || !Number.isSafeInteger(section.chars) || section.chars < 0 || !Number.isSafeInteger(section.estimatedTokens) || section.estimatedTokens < 0) return;
+    }
+    return { event: value.event, estimatedTokens: value.estimatedTokens, fixedEstimatedTokens: value.fixedEstimatedTokens,
+      sections: value.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) };
   }
   if (value.event === 'conversation_summary_injection') {
     // Closed shape: how many summaries were injected, how many were dropped, and the section size.
@@ -880,6 +917,28 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Number.isSafeInteger(value.turns) || Number(value.turns) < 0 || Number(value.turns) > 10_000) return;
     return { event: 'memory_note', remembered: value.remembered, code: value.code, words: value.words, supported: value.supported, supportRatio: value.supportRatio, turns: value.turns };
   }
+  if (value.event === 'memory_excluded') {
+    if (!closedKeys(value, ['event', 'liveSessionId', 'reasons', 'yielded']) ||
+      typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) ||
+      !value.reasons || typeof value.reasons !== 'object' || Array.isArray(value.reasons) ||
+      !Array.isArray(value.yielded) || value.yielded.length > 3) return;
+    const reasons = value.reasons as Record<string, unknown>;
+    const keys = ['class', 'yield', 'legacy', 'source', 'budget'] as const;
+    if (!closedKeys(reasons, [...keys]) || keys.some(key => !isSafeCount(reasons[key]))) return;
+    const yielded: { id: string; before: number; after: number }[] = [];
+    for (const item of value.yielded) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+      const section = item as Record<string, unknown>;
+      if (!closedKeys(section, ['id', 'before', 'after']) ||
+        !['owner-lore', 'opening-options', 'previous-openers'].includes(String(section.id)) ||
+        !isSafeCount(section.before) || !isSafeCount(section.after) || section.after >= section.before ||
+        yielded.some(previous => previous.id === section.id)) return;
+      yielded.push({ id: String(section.id), before: section.before, after: section.after });
+    }
+    if (reasons.yield !== yielded.length) return;
+    return { event: 'memory_excluded', liveSessionId: value.liveSessionId,
+      reasons: { class: reasons.class, yield: reasons.yield, legacy: reasons.legacy, source: reasons.source, budget: reasons.budget }, yielded };
+  }
   if (value.event === 'standing_memory_selection') {
     // Counts and one size only: how many whole notes the build selected and left out, and the section's
     // character size. Never a note id or any text.
@@ -888,6 +947,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return;
     }
     return { event: 'standing_memory_selection', selected: value.selected, omitted: value.omitted, chars: value.chars };
+  }
+  if (value.event === 'fast_evidence') {
+    // FR1: which cue classes a final carried, what the host's own local read reached, how many hits it shaped,
+    // its elapsed budget and whether the commentary channel took the items. Never a query word, never an excerpt.
+    if (!closedKeys(value, ['event', 'cue', 'outcome', 'hits', 'elapsed_ms', 'sent'])) return;
+    if (!['memory', 'calendar', 'memory+calendar'].includes(String(value.cue))) return;
+    if (!['found', 'empty', 'unavailable'].includes(String(value.outcome))) return;
+    if (!Number.isSafeInteger(value.hits) || Number(value.hits) < 0 || Number(value.hits) > 20) return;
+    if (!Number.isSafeInteger(value.elapsed_ms) || Number(value.elapsed_ms) < 0 || Number(value.elapsed_ms) > 60_000) return;
+    if (typeof value.sent !== 'boolean') return;
+    return { event: 'fast_evidence', cue: value.cue, outcome: value.outcome, hits: value.hits, elapsed_ms: value.elapsed_ms, sent: value.sent };
   }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.
@@ -988,7 +1058,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
-    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'cause', 'closeCode', 'closeReason', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'pickup', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'cause', 'closeCode', 'closeReason', 'reason', 'seedTurns', 'seedChars', 'condensed', 'digestChars', 'msSinceDrop', 'pickup', 'liveSessionId', 'generation'].sort().join(',')) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation)) return;
     if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
@@ -1001,9 +1071,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!(value.reason === null || isSafeToken(value.reason))) return;
     if (!isSafeCloseReason(value.closeReason)) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
+    // C-RECOVERY (a): whether the seed bound dropped exchanges, and the size of the host-compiled digest line.
+    if (typeof value.condensed !== 'boolean' || !isSafeCount(value.digestChars)) return;
     // C-PICKUP: which pickup the rebuilt session was opened with; a closed set, so no spoken text rides here.
     if (!isSafeMember(value.pickup, ['mute', 'connection', 'quiet', 'none'])) return;
-    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, pickup: value.pickup, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, condensed: value.condensed, digestChars: value.digestChars, msSinceDrop: value.msSinceDrop, pickup: value.pickup, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_terminal') {
     if (!closedKeys(value, ['event', 'liveSessionId', 'code'])) return;
@@ -1720,6 +1792,27 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const pct = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 6400;
     if (!mb(value.rssMb) || !mb(value.heapUsedMb) || !pct(value.cpuPct)) return;
     return { event: 'host_resources', rssMb: value.rssMb, heapUsedMb: value.heapUsedMb, cpuPct: value.cpuPct };
+  }
+  if (value.event === 'dreaming_done' || value.event === 'dreaming_backlog' || value.event === 'dreaming_op_rejected') {
+    // M9 #914: the dreaming pass counts operations and names a refusal; it never logs a turn, a subject
+    // or a memory sentence, so a line here proves the pass ran without carrying owner content.
+    if (value.event === 'dreaming_done') {
+      if (!closedKeys(value, ['event', 'liveSessionId', 'jobId', 'ops', 'rejected', 'coverageGap', 'elapsedMs'])) return;
+      if (!isSafeId(value.liveSessionId) || !isSafeId(value.jobId) || !isSafeOps(value.ops) ||
+        !isSafeCount(value.rejected) || !isSafeCount(value.coverageGap) || !isSafeCount(value.elapsedMs)) return;
+      return { event: 'dreaming_done', liveSessionId: value.liveSessionId, jobId: value.jobId, ops: value.ops,
+        rejected: value.rejected, coverageGap: value.coverageGap, elapsedMs: value.elapsedMs };
+    }
+    if (value.event === 'dreaming_backlog') {
+      if (!closedKeys(value, ['event', 'sessionsProcessed', 'sessionsRemaining', 'ops', 'elapsedMs'])) return;
+      if (!isSafeCount(value.sessionsProcessed) || !isSafeCount(value.sessionsRemaining) || !isSafeOps(value.ops) ||
+        !isSafeCount(value.elapsedMs)) return;
+      return { event: 'dreaming_backlog', sessionsProcessed: value.sessionsProcessed, sessionsRemaining: value.sessionsRemaining,
+        ops: value.ops, elapsedMs: value.elapsedMs };
+    }
+    if (!closedKeys(value, ['event', 'liveSessionId', 'op', 'reason'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeMember(value.op, DREAMING_OPS) || !isSafeMember(value.reason, DREAMING_REFUSALS)) return;
+    return { event: 'dreaming_op_rejected', liveSessionId: value.liveSessionId, op: value.op, reason: value.reason };
   }
   if (value.event === 'opener_facts') {
     // Opening diagnostics admit counts only, never facts, topic keys or delivered words.

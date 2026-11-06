@@ -32,7 +32,7 @@ group_build() {
     --target ES2023 --module NodeNext --moduleResolution NodeNext --strict \
     --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --esModuleInterop \
     --rootDir . --outDir dist test/task-call.test.ts test/task-delivery.test.ts \
-    test/tasks-lifecycle.test.ts test/task-authority.test.ts || return 1
+    test/tasks-lifecycle.test.ts test/task-authority.test.ts test/context-budget.test.ts test/memory-block.test.ts || return 1
   # Historical direct-save comparison used the deleted voice-tool carrier. Current helper receipts run below.
 
 }
@@ -41,7 +41,7 @@ group_build() {
 # Public tool guidance is also composed by text, memory and summary surfaces.
 group_guidance() {
   node_test_files --test-reporter=tap --test-timeout=30000 dist/test/tools-builtin-intent.test.js  || return 1
-  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/prompt.test.js dist/test/live-persona.test.js dist/test/chat.test.js dist/test/memory-context.test.js dist/test/memory-import.test.js dist/test/summaries.test.js || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/context-budget.test.js dist/test/memory-block.test.js dist/test/prompt.test.js dist/test/live-persona.test.js dist/test/chat.test.js dist/test/memory-context.test.js dist/test/memory-import.test.js dist/test/summaries.test.js || return 1
   node test/prompt-content.integration.mjs || return 1
 }
 
@@ -64,7 +64,7 @@ group_knowledge() {
 # The conversation continuity suite (#1021) pins mute, unmute and seeding; the resumption and watchdog suites
 # ride along because the seed and the provider lifetime are what they assert.
 group_live() {
-  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/live-continuity.test.js dist/test/live-dead-air.test.js dist/test/live-resumption.test.js dist/test/live-watchdog.test.js dist/test/heard-silence.test.js dist/test/live-mute.test.js dist/test/live-recovery.test.js dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/stop-phrase.test.js dist/test/live-summary.test.js dist/test/live-memory-note.test.js  dist/test/naya-logs.test.js dist/test/warm-context.test.js dist/test/people.test.js dist/test/trace.test.js dist/test/store-retention.test.js dist/test/timeline.test.js  dist/test/lux-save-natural.test.js dist/test/voice-replay.test.js dist/test/live-rebuild-sweep.test.js    dist/test/continuity-replay.test.js | tee "$work/test.log" || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/live-session-stale.test.js dist/test/live-recovery-seed.test.js dist/test/live-continuity.test.js dist/test/live-dead-air.test.js dist/test/live-resumption.test.js dist/test/live-watchdog.test.js dist/test/heard-silence.test.js dist/test/live-mute.test.js dist/test/live-recovery.test.js dist/test/live-voice.test.js dist/test/live-selection.test.js dist/test/live-session.test.js dist/test/stop-phrase.test.js dist/test/live-summary.test.js dist/test/live-memory-note.test.js dist/test/memory-cues.test.js dist/test/fast-evidence.test.js  dist/test/naya-logs.test.js dist/test/warm-context.test.js dist/test/people.test.js dist/test/trace.test.js dist/test/store-retention.test.js dist/test/timeline.test.js  dist/test/lux-save-natural.test.js dist/test/voice-replay.test.js dist/test/live-rebuild-sweep.test.js    dist/test/continuity-replay.test.js | tee "$work/test.log" || return 1
   grep -Eq '^# tests [1-9][0-9]*$' "$work/test.log" || { echo 'Zero selected live session tests' >&2; return 1; }
   grep -Eq '^# fail 0$' "$work/test.log" || { echo 'Selected live session tests failed' >&2; return 1; }
 }

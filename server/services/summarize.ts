@@ -3,7 +3,7 @@ import type { DataClass, ModelPort, ModelRequest, ModelResult } from '../adapter
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import { OPEN_TOOL_NAMES } from '../tools/open.js';
-import { HISTORY_CLASSES, historyForgotten, historySessionEvidence } from '../domain/history-lifecycle.js';
+import { HISTORY_CLASSES, historyForgotten, historySessionEvidence, ownerMemorySession } from '../domain/history-lifecycle.js';
 import { guardWriteClaims, writeFacts } from '../domain/write-claims.js';
 import * as summaries from '../domain/summaries.js';
 
@@ -45,7 +45,8 @@ export const SUMMARY_START_SETTLE_BUDGET_MS = 2_000;
 export const SUMMARY_EXIT_SETTLE_BUDGET_MS = SUMMARY_DEADLINE_BUDGET_MS;
 /** The newest retryable sessions a single host start re-queues; older ones wait for a later start. */
 export const SUMMARY_RECOVERY_LIMIT = 30;
-export const SUMMARY_MIN_OWNER_TURNS = 2;
+/** One substantive owner turn is enough: 188 of 227 calls carried nothing else and lost their summary. */
+export const SUMMARY_MIN_OWNER_TURNS = 1;
 
 /** How long the separate open-loop line may be; the prompt asks for the same bound. */
 export const OPEN_LOOP_MAX_CHARS = 120;
@@ -56,9 +57,9 @@ export const OPEN_LOOP_MAX_CHARS = 120;
  * to the speaker who said it (the model's own words are never the owner's), and no tool guidance, instruction or
  * validator text may be quoted into memory.
  */
-export function distillationPrompt(assistantName: string): string {
+export function distillationPrompt(assistantName: string, call?: { readonly startMs: number; readonly endMs: number | null; readonly timeZone: string }): string {
   return `You write a short private summary of one finished voice conversation between the owner and the assistant, whose name is ${assistantName}, so the assistant can
-recall it in a later conversation. Output JSON: {"skip": boolean, "summary": string, "openLoop": string | null}.
+recall it in a later conversation.${call === undefined ? '' : ` The conversation started ${callInstant(call.startMs, call.timeZone)} and ended ${callInstant(call.endMs, call.timeZone)}, both in ${call.timeZone}.`} Output JSON: {"skip": boolean, "summary": string, "openLoop": string | null}.
 
 Write 2 to 4 plain sentences in the past tense: what the owner wanted, what was found or decided, and anything
 the owner explicitly said was still to do. Attribute every claim: "the owner said", "${assistantName} found in the
@@ -130,6 +131,11 @@ function localDate(ms: number, timeZone: string): string {
   return new Intl.DateTimeFormat('en-GB', { dateStyle: 'long', timeZone }).format(new Date(ms));
 }
 
+/** One end of the call, told as the owner's own day and clock rather than as a UTC instant. */
+function callInstant(ms: number | null, timeZone: string): string {
+  return ms === null ? 'an unrecorded time' : new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(new Date(ms));
+}
+
 export function buildDistillationInput(input: {
   readonly assistantName: string;
   readonly turns: readonly DistillationTurn[];
@@ -168,27 +174,52 @@ export function readToolOutcomes(tx: Transaction, liveSessionId: string): readon
   return rows.flatMap(row => toolOutcomeOf(row) ?? []);
 }
 
+const SMALL_TALK_WORDS: ReadonlySet<string> = new Set(['hello', 'hi', 'hey', 'thanks', 'thank', 'okay', 'ok',
+  'yes', 'no', 'yeah', 'sure', 'goodbye', 'bye', 'morning', 'night', 'great', 'nice', 'cool', 'please', 'sorry']);
+
+/**
+ * A substantive owner turn carries a noun phrase and more than four words. The test is deliberately
+ * mechanical: a greeting, an acknowledgement or a one-word answer never earns a summary.
+ */
+export function isSubstantiveOwnerTurn(text: string): boolean {
+  const words = text.trim().split(/\s+/).filter(word => word.length > 0);
+  if (words.length <= 4) return false;
+  return words.some(word => {
+    const bare = word.toLowerCase().replace(/[^a-z]/g, '');
+    return bare.length >= 4 && !SMALL_TALK_WORDS.has(bare);
+  });
+}
+
 export interface SessionTranscript {
   readonly turns: readonly DistillationTurn[];
   readonly toolNames: readonly string[];
   readonly ownerTurns: number;
+  /** Owner turns that carry a noun phrase and more than four words; small talk is not one. */
+  readonly substantiveOwnerTurns: number;
   readonly endedAt: number | null;
   readonly createdAt: number;
+  /** The zone the session was composed in, so the distillate is read in the owner's own day. */
+  readonly timeZone?: string;
 }
 
 /** Read finished owner and assistant turns in order, plus the tool names used (never tool results). */
 export function readSessionTranscript(tx: Transaction, liveSessionId: string): SessionTranscript {
-  const session = tx.get('SELECT created_at, terminal_at FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
+  const session = tx.get('SELECT created_at, terminal_at, time_zone FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
   const rows = tx.all('SELECT kind, text, tool_json, finished FROM live_journal WHERE live_session_id=? ORDER BY journal_id', [liveSessionId]);
   const turns: DistillationTurn[] = [];
   const toolNames: string[] = [];
   const pending: Record<'inputTranscription' | 'outputTranscription', string> = { inputTranscription: '', outputTranscription: '' };
   let ownerTurns = 0;
+  let substantiveOwnerTurns = 0;
   const flush = (kind: 'inputTranscription' | 'outputTranscription') => {
     const text = pending[kind].trim();
     pending[kind] = '';
     if (!text) return;
-    if (kind === 'inputTranscription') { ownerTurns += 1; turns.push({ speaker: 'owner', text }); }
+    if (kind === 'inputTranscription') {
+      ownerTurns += 1;
+      if (isSubstantiveOwnerTurn(text)) substantiveOwnerTurns += 1;
+      turns.push({ speaker: 'owner', text });
+    }
     else turns.push({ speaker: 'assistant', text });
   };
   for (const row of rows) {
@@ -204,9 +235,10 @@ export function readSessionTranscript(tx: Transaction, liveSessionId: string): S
     }
   }
   flush('inputTranscription'); flush('outputTranscription');
-  return { turns, toolNames, ownerTurns,
+  return { turns, toolNames, ownerTurns, substantiveOwnerTurns,
     endedAt: session && session['terminal_at'] !== null && session['terminal_at'] !== undefined ? Number(session['terminal_at']) : null,
-    createdAt: session ? Number(session['created_at']) : Date.now() };
+    createdAt: session ? Number(session['created_at']) : Date.now(),
+    ...(session && typeof session['time_zone'] === 'string' && session['time_zone'] ? { timeZone: String(session['time_zone']) } : {}) };
 }
 
 /** Parse the model's JSON, tolerating a fenced block. Returns null on a validation failure. */
@@ -316,16 +348,16 @@ const pause = (delay: SummarizerOptions['delay'], ms: number): Promise<void> =>
 
 export function createSummarizer(options: SummarizerOptions): Summarizer {
   let chain: Promise<void> = Promise.resolve();
-  const system = distillationPrompt(options.assistantName);
   const serialize = (work: () => Promise<void>): Promise<void> => {
     const guarded = async () => { try { await work(); } catch (error) { if (!(error instanceof Error && ['history_forgotten', 'history_source_changed'].includes(error.message))) throw error; } };
     chain = chain.then(guarded, guarded);
     return chain;
   };
 
-  async function callModel(input: string, dataClass: DataClass, signal: AbortSignal): Promise<ModelResult> {
+  async function callModel(input: string, dataClass: DataClass, signal: AbortSignal,
+    call: { readonly startMs: number; readonly endMs: number | null; readonly timeZone: string }): Promise<ModelResult> {
     const request: ModelRequest = {
-      system,
+      system: distillationPrompt(options.assistantName, call),
       promptVersion: SUMMARY_PROMPT_VERSION,
       contents: [{ role: 'user', parts: [{ text: input }] }],
       dataClasses: [dataClass],
@@ -373,7 +405,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'summary_route_class_denied' });
       return;
     }
-    if (transcript.ownerTurns < SUMMARY_MIN_OWNER_TURNS) {
+    if (transcript.substantiveOwnerTurns < SUMMARY_MIN_OWNER_TURNS) {
       options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'too_few_turns', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
       emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'too_few_turns' });
       return;
@@ -386,7 +418,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     }
     // The in-flight row: a host that exits during the model call leaves it for the next start to retry.
     options.store.transaction(tx => summaries.markSummaryPending(tx, liveSessionId, options.now(), provenance));
-    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, toolOutcomes, dateMs: endedAt, timeZone: options.timeZone, injected });
+    // The session's own zone outranks the host's: a call composed on another day is read on that day.
+    const zone = transcript.timeZone ?? options.timeZone;
+    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, toolOutcomes, dateMs: endedAt, timeZone: zone, injected });
     const truncated = input.truncated || !!runOptions.deadHost;
     emit({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
     const startedAt = options.now();
@@ -402,7 +436,8 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'summary_route_class_denied', endedAt, now: options.now() }));
           return;
         }
-        result = await callModel(input.text, source.dataClass, controller.signal);
+        result = await callModel(input.text, source.dataClass, controller.signal,
+          { startMs: transcript.createdAt, endMs: endedAt, timeZone: zone });
       } catch (error) {
         // A port that surfaces the credential failure by throwing gets the same rule as one that returns it.
         lastError = error instanceof Error && error.message === 'credential_unavailable' ? 'credential_unavailable' : 'model_error';
@@ -499,6 +534,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
 
   return {
     schedule(liveSessionId: string): void {
+      // Canary and eval sessions never become the owner's memory (lux 98495): they get no turn log,
+      // no summary row and therefore no dreaming job.
+      if (!options.store.transaction(tx => ownerMemorySession(tx, liveSessionId))) return;
       options.store.transaction(tx => persistHistoryTurns(tx, liveSessionId));
       void serialize(() => distill(liveSessionId)).catch(() => { /* never surfaces on the close path */ });
     },

@@ -35,6 +35,11 @@
       "budgetMs": 8000,
       "measuredP50Ms": 5000,
       "basis": "recon Q2/Q3: the host's own no-output rung, the 8,000 ms dead-air bound the field run breaches in 5.9% of runs"
+    },
+    "finalToFastEvidenceMs": {
+      "budgetMs": 100,
+      "measuredP50Ms": 0,
+      "basis": "FR1: the host's own local read of the store and the cached digest, measured on the fixture; an overrun sends nothing and logs unavailable"
     }
   }
 }

@@ -172,6 +172,9 @@ export interface LiveVoiceSession {
    *  that cannot carry progress speech leaves it out and the host keeps its own continuation nudge. Returns
    *  `false` when the adapter refused the append; a host that hears `false` must not claim the line was spoken. */
   sendTaskAnswer?(input: { text: string; delegationId: string | null }): string | undefined;
+  /** FR1: general session context with no delegation id, so local recall still reaches her mid-delegation.
+   *  Returns the command id, or `undefined` when the transport refused to write it. */
+  sendSessionCommentary?(input: { text: string }): string | undefined;
   sendCommentary?(input: { text: string }): boolean | void;
   endAudioStream(): void;
   close(): void;

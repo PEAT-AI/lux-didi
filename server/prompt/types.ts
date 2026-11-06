@@ -4,6 +4,8 @@ export interface Preferences extends Owned {
   /** Canonical explicit BCP47 locale, validated with Intl.Locale; not fluency proof. */
   language: string; register: 'plain' | 'formal';
   humor: 'off' | 'dry'; verbosity: 'brief' | 'balanced' | 'detailed';
+  /** M2: the owner's own IANA zone, the settings override of the host clock; absent means the host's zone. */
+  timeZone?: string;
 }
 declare const validated: unique symbol;
 export type ValidatedPreferences = Readonly<Preferences> & { readonly [validated]: true };
@@ -50,7 +52,7 @@ export interface CompiledPrompt {
     historyIds: string[]; savedReceiptIds: string[];
   };
 }
-export type ErrorCode = 'schema' | 'owner' | 'classification' | 'version' | 'budget' | 'duplicate' | 'snapshot' | 'invalid_locale';
+export type ErrorCode = 'schema' | 'owner' | 'classification' | 'version' | 'budget' | 'duplicate' | 'snapshot' | 'invalid_locale' | 'invalid_time_zone';
 export class PromptCompileError extends Error {
   constructor(readonly code: ErrorCode) { super(`Prompt compilation failed: ${code}`); this.name = 'PromptCompileError'; }
 }

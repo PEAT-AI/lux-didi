@@ -295,3 +295,14 @@ class Domain implements DomainPort {
 export function createDomainPort(deps: DomainDeps): DomainPort {
   return new Domain(deps.outbox, deps.resolveTarget ?? null);
 }
+
+// Typed memory (issue #913): the dreaming pass writes through these, the start
+// block reads through them, and the forget cascade fences them by generation.
+export {
+  MEMORY_KINDS, activeItems, claimJob, completeJob, expireDue, failJob, forgetScope,
+  generationNow, insertItem, invalidateItem, itemsForSubject, job, sources, supersedeItem,
+} from './memory-items.js';
+export type {
+  ActiveItemQuery, ForgetScope, MemoryAuthority, MemoryItem, MemoryJob, MemoryJobState,
+  MemoryKind, MemorySourceInput, MemorySourceTurn, MemoryStatus, NewMemoryItem,
+} from './memory-items.js';

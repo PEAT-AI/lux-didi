@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The memory test CLI: score a store copy against a golden file (issue #912 part B).
+#
+#   scripts/didi-memory-eval --store <copy> --golden <file> --out <json> \
+#       [--answers <recorded-first-answers.json>] [--strict] [--data-dir <copy>] [--verifier]
+#
+# Reads the copy and never writes it. Without --answers the first-answer and
+# latency stages report not_run; without --verifier no model is called at all.
+# Exit 1 when a bar is missed, 2 on a usage or build error.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+runner="$root/server/dist/memory/eval-runner.js"
+if [[ ! -s "$runner" ]]; then
+  echo 'didi-memory-eval BLOCKED: no build; run `bash scripts/run-local.sh --build-only` first' >&2
+  exit 2
+fi
+exec node "$runner" "$@"

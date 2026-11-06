@@ -1,11 +1,14 @@
 import { peopleSnapshot } from '../people/index.js';
 import { pruneOpeningTopics } from '../runtime/task-schema.js';
-import { commentaryEnvelope, commentaryItems, resultCommentary } from '../tasks/delivery.js';
+import { buildFastEvidence } from './fast-evidence.js';
+import { classifyCue } from './memory-cues.js';
+import { commentaryEnvelope, commentaryItems, resultCommentary, type Commentary } from '../tasks/delivery.js';
 import { TaskCall } from '../tasks/call.js';
 import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
+import { searchRecent } from '../domain/history-reader.js';
 import * as summaries from '../domain/summaries.js';
 import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm, type ClaimClock } from '../domain/write-claims.js';
 import { readToolOutcomes } from '../services/summarize.js';
@@ -18,7 +21,7 @@ import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapsh
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningFacts } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, zonedIso, type OpeningFacts } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -438,6 +441,16 @@ export function recordDeliveredOpening(tx: Transaction, callId: string, now: num
 
 /** Contract 1023 N8: how recent the call that just ended must be for its own words to seed the opener. */
 const FRESH_THREAD_WINDOW_MS = 2 * 60 * 1000;
+/**
+ * The zone a live session's memory is stamped in: the zone recorded when the session was composed, so a
+ * note written during a call carries the owner's own day. A row with no recorded zone falls back to the
+ * host's zone, which is the last of the sources the session clock itself uses.
+ */
+function sessionTimeZone(tx: Transaction, liveSessionId: string): string {
+  const row = tx.get('SELECT time_zone FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
+  const recorded = String(row?.['time_zone'] ?? '');
+  return recorded || Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
 /** The closed set of past calls the open-loop option may draw on, newest first. */
 const OPEN_LOOP_SOURCES = 3;
 
@@ -452,10 +465,12 @@ export function staleRefusedNoteSessions(tx: Transaction, ownerId: string): Read
 
 /** Contract 1023 N8: the stored open_loop column of the eligible past calls, newest first. The summary text is
  *  never mined for a cue word, so a call whose distillation stored no loop offers none. */
+const OPENING_CONTEXT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
 export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number, refused: ReadonlySet<string> = new Set()): { text: string; lastSeenAt: number; sessionId: string }[] {
   const rows = tx.all(`SELECT s.live_session_id AS id, s.open_loop AS loop, s.ended_at AS seen_at FROM conversation_summaries s
     WHERE s.status='complete' AND s.open_loop IS NOT NULL AND s.ended_at IS NOT NULL AND s.ended_at<=? AND s.ended_at>=?
-    ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - EARLIER_CONVERSATIONS_WINDOW_MS]);
+    ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - OPENING_CONTEXT_WINDOW_MS]);
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   const loops: { text: string; lastSeenAt: number; sessionId: string }[] = [];
   for (const row of rows) {
@@ -601,11 +616,15 @@ export const SEED_MESSAGE_LIMIT = 127;
 export const SEED_TOKEN_PROXY_LIMIT = 8_192;
 export const SEED_TOKEN_PROXY_CHARS = SEED_TOKEN_PROXY_LIMIT * 4;
 interface SeedTurnLike { role: 'user' | 'model'; text: string }
+/** C-RECOVERY (a): the limits one seeded history is built inside. The digest tightens them by its own size. */
+interface SeedBound { charLimit?: number; messageLimit?: number }
 /** C-RECOVERY (a): the one bound every seeded open passes through. The seed is grouped into exchanges at
  *  finished-turn boundaries, the oldest whole exchange goes first, the latest exchange is never dropped, and the
  *  history plus every appended turn stays inside the adapter's message ceiling and its token proxy, so a large
  *  conversation shrinks instead of being refused. */
-export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], appended: readonly T[] = []): { turns: T[]; chars: number; condensed: boolean } {
+export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], appended: readonly T[] = [], bound: SeedBound = {}): { turns: T[]; chars: number; condensed: boolean; dropped: T[] } {
+  const charLimit = bound.charLimit ?? SEED_CHAR_LIMIT;
+  const messageLimit = bound.messageLimit ?? SEED_MESSAGE_LIMIT;
   const exchanges: T[][] = [];
   for (const turn of [...transcript, ...appended]) {
     if (turn.role === 'user' || exchanges.length === 0) exchanges.push([turn]);
@@ -614,19 +633,76 @@ export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], a
   const count = (groups: readonly T[][]): number => groups.reduce((sum, group) => sum + group.length, 0);
   const total = (groups: readonly T[][]): number => groups.reduce((sum, group) => sum + group.reduce((chars, turn) => chars + turn.text.length, 0), 0);
   let kept = exchanges;
+  const dropped: T[] = [];
   let condensed = false;
-  while (kept.length > 1 && (count(kept) > SEED_MESSAGE_LIMIT || total(kept) > SEED_CHAR_LIMIT)) { kept = kept.slice(1); condensed = true; }
+  while (kept.length > 1 && (count(kept) > messageLimit || total(kept) > charLimit)) { dropped.push(...kept[0]!); kept = kept.slice(1); condensed = true; }
   let turns = kept.flat();
   // One exchange larger than the message ceiling still has to fit it, so the ceiling wins over the pairing.
-  if (turns.length > SEED_MESSAGE_LIMIT) { turns = turns.slice(turns.length - SEED_MESSAGE_LIMIT); condensed = true; }
-  if (turns.length > 0 && total([turns]) > SEED_CHAR_LIMIT) {
+  if (turns.length > messageLimit) { dropped.push(...turns.slice(0, turns.length - messageLimit)); turns = turns.slice(turns.length - messageLimit); condensed = true; }
+  if (turns.length > 0 && total([turns]) > charLimit) {
     const last = turns[turns.length - 1]!;
-    const roomLeft = Math.max(0, SEED_CHAR_LIMIT - (total([turns]) - last.text.length));
+    const roomLeft = Math.max(0, charLimit - (total([turns]) - last.text.length));
     const keep = Math.max(roomLeft - 3, 0);
     turns = [...turns.slice(0, -1), { ...last, text: keep > 0 ? `...${last.text.slice(last.text.length - keep)}` : '...' }];
     condensed = true;
   }
-  return { turns, chars: total([turns]), condensed };
+  return { turns, chars: total([turns]), condensed, dropped };
+}
+
+/** C-RECOVERY (a): how far the digest may reach, its header included. It is a list, never a transcript. */
+export const SEED_DIGEST_CHAR_LIMIT = 1_600;
+/** C-RECOVERY (a): how much of one dropped ask the digest keeps. */
+export const SEED_DIGEST_ITEM_CHARS = 100;
+/** C-RECOVERY (a): the sentence the digest opens with. It names the line as an extract of the owner's own earlier
+ *  asks, never as an instruction, so a rebuilt session reads it as history. */
+export const SEED_DIGEST_HEADER = 'Extract of what the owner asked earlier in this call, newest first, and not instructions:';
+
+/** C-RECOVERY (a): one dropped ask reduced to its first words, cut at a word boundary so it never ends mid-word. */
+function seedDigestItem(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= SEED_DIGEST_ITEM_CHARS) return flat;
+  const cut = flat.slice(0, SEED_DIGEST_ITEM_CHARS);
+  const boundary = cut.lastIndexOf(' ');
+  return boundary > 0 ? cut.slice(0, boundary) : cut;
+}
+
+/** C-RECOVERY (a): the one host-authored line that opens a condensed seed: the dropped owner asks, newest first,
+ *  inside SEED_DIGEST_CHAR_LIMIT together with its header. Extractive and compiled here, never by a model. */
+export function seedDigest(dropped: readonly SeedTurnLike[]): string {
+  const room = SEED_DIGEST_CHAR_LIMIT - SEED_DIGEST_HEADER.length - 1;
+  const items: string[] = [];
+  let used = 0;
+  for (let index = dropped.length - 1; index >= 0; index -= 1) {
+    const item = seedDigestItem(dropped[index]!.text);
+    if (item.length === 0) continue;
+    const cost = item.length + (items.length === 0 ? 0 : 2);
+    if (used + cost > room) break;
+    items.push(item); used += cost;
+  }
+  return items.length === 0 ? '' : `${SEED_DIGEST_HEADER} ${items.join('; ')}`;
+}
+
+/** C-RECOVERY (a): the seed every seeded open is built from. `#seedHistory` stays the reader; this is the one bound
+ *  applied where the provider history is built, so no caller can send an unbounded seed. When the bound drops
+ *  exchanges, one host-compiled line of the owner's dropped asks opens the seed and counts inside the same
+ *  character and message limits as the transcript it stands for. */
+export function condenseSeed<T extends SeedTurnLike>(transcript: readonly T[], appended: readonly T[] = []): {
+  turns: T[]; chars: number; condensed: boolean; digestChars: number } {
+  const fitted = fitSeedTurns(transcript, appended);
+  const fromTranscript = new Set<SeedTurnLike>(transcript);
+  const droppedAsks = fitted.dropped.filter(turn => turn.role === 'user' && fromTranscript.has(turn));
+  const digest = droppedAsks.length === 0 ? '' : seedDigest(droppedAsks);
+  const template = transcript[0] ?? appended[0];
+  if (digest.length === 0 || template === undefined) {
+    return { turns: fitted.turns, chars: fitted.chars, condensed: fitted.condensed, digestChars: 0 };
+  }
+  // The digest rides inside the same two limits, so the exchange bound is tightened by exactly its own size.
+  const again = fitSeedTurns(transcript, appended, {
+    charLimit: SEED_CHAR_LIMIT - digest.length, messageLimit: SEED_MESSAGE_LIMIT - 1 });
+  // The digest is one host-authored owner turn of its own at the head of the seed, so every kept exchange stays
+  // whole and verbatim behind it, and its size is counted in both seed limits.
+  const turns: T[] = [{ ...template, role: 'user' as const, text: digest }, ...again.turns];
+  return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0), condensed: true, digestChars: digest.length };
 }
 /**
  * C-CONTINUITY item 3: the header the research ledger rides under. The ledger is the host's own extractive
@@ -1257,9 +1333,11 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const existing = memory.rememberedLiveEntry(tx, externalId);
   if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, metrics);
   const clock = { now: () => now };
-  const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
+  // The note belongs to the session's own zone: the stamp on it is the owner's day, never a literal UTC.
+  const notesZone = sessionTimeZone(tx, liveSessionId);
+  const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: notesZone }, clock);
   labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
-  const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: 'UTC',
+  const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: notesZone,
     source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present', note: `kind:${args.kind}` } }, clock);
   labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
   // A fragment kept is a partial memory, never a silent one: she says which words were saved.
@@ -1355,6 +1433,7 @@ export class LiveSessionOwner {
   readonly #profile: LiveProfile;
   readonly #now: () => number;
   readonly #timeZonePin: string | undefined;
+  readonly #timeZoneSource: LiveOwnerConfig['timeZoneSource'];
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
   readonly #web: WebSearchPort | undefined;
   /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
@@ -1470,6 +1549,7 @@ export class LiveSessionOwner {
     useWebSearchPort(() => this.#web);
     this.#profile = validateLiveProfile(config.profile);
     this.#timeZonePin = config.timeZone;
+    this.#timeZoneSource = config.timeZoneSource;
     const now = config.now ?? Date.now;
     this.#now = () => {
       const value = now();
@@ -1493,6 +1573,16 @@ export class LiveSessionOwner {
     return this.#timeZonePin ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
 
+  /**
+   * The clock this session is composed at: the observed instant written in the owner zone, that zone, and
+   * which source chose it. It is stored on the session row and every later prompt reads that record.
+   */
+  #clockRecord(now: number): { observedAt: string; timeZone: string; source: 'pin' | 'host' | 'settings' } {
+    const timeZone = this.#ownerTimeZone();
+    return { observedAt: zonedIso(new Date(now), timeZone), timeZone,
+      source: this.#timeZoneSource ?? (this.#timeZonePin === undefined ? 'host' : 'pin') };
+  }
+
   /** C-DIAG109: the response pair every stall and rebuild line carries, read off the turn now in flight. */
   #stallFacts(handle: ActiveSession): { responseCreated: boolean; msSinceResponseCreated: number | null } {
     return stallResponseFacts({ ownerFinalAt: handle.inputFinalAt, responseCreatedAt: handle.responseCreatedAt, now: this.#now() });
@@ -1502,10 +1592,11 @@ export class LiveSessionOwner {
   /** The per-call memory of which Mongoose endpoints were already announced (C-SIGNIN-LIVE). */
   readonly #connectorNotes = new ConnectorNotes();
 
-  #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
+  #liveRuntimeContext(toolNames: readonly string[], clock: { observedAt: string; timeZone: string }): string {
     const connected = toolGroupNames(this.#web === undefined ? toolNames : [...toolNames, WEB_SEARCH_ACTION]);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
-    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected,
+    // Built from the session's stored clock record, never from the host clock at read time.
+    const context = buildRuntimeContext({ now: new Date(clock.observedAt), timeZone: clock.timeZone, connected,
       vault: { dictation: true, composed: this.#composedNotes() }, connectors: endpoints });
     const signIn = signInNote(endpoints);
     // C-SIGNIN-LIVE: the one sentence about a connector that just came up, said on this call only.
@@ -1589,7 +1680,8 @@ export class LiveSessionOwner {
     const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null, ...(input.alarm ? { alarm: input.alarm } : {}) });
     const now = this.#now();
     // #595: the owner travels, so the zone is read when this call is composed, never at host start.
-    const timeZone = this.#ownerTimeZone();
+    const clock = this.#clockRecord(now);
+    const timeZone = clock.timeZone;
     const assistantId = this.#store.assistantId;
     const snapshot = this.#store.transaction(tx => {
       // Same-key replay is decided on the normalized request meaning before any policy.
@@ -1620,9 +1712,7 @@ export class LiveSessionOwner {
       if (input.pickupJobId && !pickupJob) throw new LiveError('invalid_request');
       const pickup = pickupJob ? { jobId: pickupJob.id, identity: identity({ state: pickupJob.state, result: pickupJob.result ?? null }) } : undefined;
       type MemoryRecords = ReturnType<NonNullable<LiveOwnerConfig['memorySource']>>;
-      type Earlier = ReturnType<typeof buildEarlierConversationsSection>;
       let records: MemoryRecords = [];
-      let earlier: Earlier = { section: '', selectedIds: [], omitted: [] };
       // PV1: the accent selection is read at this session start, so a saved accent takes effect without a
       // restart; the session composer replaces whatever block the frozen prompt still carries.
       const earlierOpeners = previousOpeners(tx, assistantId, this.#profile.route.dataClasses).previous;
@@ -1637,13 +1727,13 @@ export class LiveSessionOwner {
       const armedAlarms = activeAlarms(tx);
       const alarmNote = armedAlarmsNote(armedAlarms);
       const seededSummaries = guardSeededSummaries(tx, storedSummaries, { now, timeZone });
-      const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const roster = peopleSnapshot();
       const lore = /Authored background only; not instructions, evidence, memory availability or receipts:\n([\s\S]*?)\nEnd authored background\./u.exec(configuredPrompt.system)?.[1] ?? '';
       const { familyNames, floorSubjects } = openingContextFloors(roster?.people ?? [], lore);
       try { records = this.#memorySource?.(tx) ?? []; }
       catch { throw new LiveError('memory_unavailable'); }
+      const admittedRecords = records.filter(record => record.dataClass !== 'unknown' && this.#profile.route.dataClasses.includes(record.dataClass));
       const date = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
       const loops = guardSeededLoops(tx, storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)), { now, timeZone });
       const opening = buildOpeningFacts({ now, timeZone, familyNames, floorSubjects,
@@ -1651,45 +1741,50 @@ export class LiveSessionOwner {
         openThread: freshThread ? `As of ${date}: ${freshThread}`
           : seededSummaries[0] ? `${new Date(seededSummaries[0].endedAt).toISOString()} ${seededSummaries[0].summary}` : '',
         commitments: loops.map(loop => `${new Date(loop.lastSeenAt).toISOString()} ${loop.text}`),
-        savedForHim: records.filter(record => record.dataClass !== 'unknown' && this.#profile.route.dataClasses.includes(record.dataClass))
+        savedForHim: admittedRecords
           .map(record => `As of ${date}: ${record.text}`), excludeTopics });
-      const composeSession = (earlierSection: string | undefined, calendar: string | undefined, earlierReserve: number | undefined = undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+      const composeSession = (calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, ownerProfile: configuredPrompt.ownerProfile, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
-        runtimeContext: this.#liveRuntimeContext(toolNames, timeZone),
-        records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+        runtimeContext: this.#liveRuntimeContext(toolNames, clock),
+        memoryBlockInput: { now, timeZone,
+          clock: this.#liveRuntimeContext(toolNames, clock).split('\n').filter(line => /^(Now:|Days:)/u.test(line)).join('\n'),
+          items: admittedRecords.flatMap(record => record.memoryItem ? [record.memoryItem] : []),
+          entries: admittedRecords.filter(record => !record.memoryItem).map(record => ({ id: record.id, text: record.text, ...(record.capturedAt === undefined ? {} : { capturedAt: record.capturedAt }) })),
+          sources: Object.fromEntries(admittedRecords.filter(record => record.memoryItem).map(record => [record.id, record.sourceSessionIds ?? []])),
+          summaries: seededSummaries.map(summary => ({ id: summary.id, sessionId: summary.liveSessionId, startedAt: summary.endedAt, text: summary.summary })),
+        },
+        records: admittedRecords, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         now, timeZone,
         ...(calendar ? { calendar } : {}),
         ...(alarmNote === undefined ? {} : { alarms: alarmNote }),
-        ...(earlierReserve === undefined ? {} : { earlierReserve }),
-        ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),
         ...(pickup ? { pickupNote: pickupInstruction } : {}), ...(excludeTopics.length ? { openersNote: `Do not reopen these delivered topics: ${JSON.stringify(excludeTopics)}.` } : {}),
         openingFacts: opening.section });
       // Memory is frozen at CREATE and fresh at the next CREATE (R1F/R1G), so it is always read here.
-      try { records = this.#memorySource?.(tx) ?? []; }
-      catch { throw new LiveError('memory_unavailable'); }
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
-        // #108: the basis already holds the summary reserve back, so the budget below is the room that
-        // exists after the notes yielded, not the leftovers of a stale target. With nothing stored to
-        // put in the reserve the notes keep their room (review F4).
-        const reserve = seededSummaries.length === 0 ? undefined : EARLIER_CONVERSATIONS_RESERVE_CHARS;
-        const basis = composeSession(undefined, this.#calendar, reserve);
-        earlier = buildEarlierConversationsSection(seededSummaries,
-          { now, timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+        const result = composeSession(this.#calendar);
         this.#sections = { persona: configuredPrompt.system, memory: [],
-          summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],
-          summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
+          summary: undefined, summaryIds: [...result.summaryIds], summaryOmitted: [], calendar: this.#calendar };
         this.#warm.adopt(this.#sections);
-        return earlier.section ? composeSession(earlier.section, this.#calendar, reserve) : basis;
+        return result;
       };
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
-      console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, estimatedTokens: composed.estimatedTokens, stablePrefixChars: composed.stablePrefixChars, stablePrefixEstimatedTokens: composed.stablePrefixEstimatedTokens, fixedChars: composed.fixedChars, fixedEstimatedTokens: composed.fixedEstimatedTokens, overTarget: composed.overTarget, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
+      const summaryIds = new Set(seededSummaries.map(summary => summary.id));
+      const summaryOmissions = composed.itemOmissions.filter(item => summaryIds.has(item.id));
+      for (const omission of composed.itemOmissions) console.error(JSON.stringify({ event: 'live_context_item_omitted', id: omission.id, reason: omission.reason }));
+      if (composed.overTarget) console.error(JSON.stringify({ event: 'live_context_target_overrun', estimatedTokens: composed.estimatedTokens, fixedEstimatedTokens: composed.fixedEstimatedTokens, sections: composed.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) }));
       // M2: what the standing section did with its own budget, once per build, including the build that
       // selected nothing: that zero is the line a "my memory did not reach the call" report needs.
+      hostLogEvent({ event: 'memory_excluded', liveSessionId,
+        reasons: { class: summarySelection.coverage.classFiltered + records.length - admittedRecords.length,
+          yield: composed.yielded.length, legacy: summarySelection.coverage.legacyUnavailable,
+          source: summarySelection.coverage.sourceUnavailable,
+          budget: composed.omitted.length + summaryOmissions.length }, yielded: composed.yielded });
       hostLogEvent({ event: 'standing_memory_selection', selected: composed.standing.selected,
         omitted: composed.standing.omitted, chars: composed.standing.chars });
       // R7: the digest's own state, so a suppressed or failed read is a line and not a silence. Metadata
@@ -1701,12 +1796,12 @@ export class LiveSessionOwner {
       hostLogEvent({ event: 'opener_facts', day: opening.facts.day.length, commitments: opening.facts.commitments.length, saved_for_him: opening.facts.saved_for_him.length, open_thread: Number(opening.facts.open_thread.length > 0), exclude_topics: opening.facts.exclude_topics.length });
       const memory = { status: composed.omitted.length ? composed.selectedIds.length ? 'partial' : 'omitted' : composed.selectedIds.length ? 'selected' : 'empty',
         selectedIds: composed.selectedIds, omitted: composed.omitted };
-      const injectedSummaryIds = [...new Set([...(composed.earlierConversationsIncluded ? earlier.selectedIds : []),
+      const injectedSummaryIds = [...new Set([...(composed.earlierConversationsIncluded ? composed.summaryIds : []),
         ...(composed.sections.some(section => section.id === 'opening-options') && seededSummaries[0] ? [seededSummaries[0].id] : [])])];
       const injectedOpeners = composed.sections.some(section => section.id === 'previous-openers') ? earlierOpeners : [];
       const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
-      const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...(composed.selectedIds.length ? ['ordinary' as const] : [])]);
-      if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
+      const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...admittedRecords.flatMap(record => composed.selectedIds.includes(record.id) && record.dataClass !== 'unknown' ? [record.dataClass] : [])]);
+      if (injectedSummaryIds.length || summaryOmissions.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: summaryOmissions.length, chars: composed.conversationChars });
       const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz,label FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
       // #107: a missed alarm is said once, in her own words, with its time and what it was for.
       const missedNote = missedAlarms.length ? '\n\n[missed alarm] Say each missed alarm once, early in your opening, in your own words, with its time and what it was for, like "You missed your 10:30 reminder: sport." Missed: '
@@ -1719,8 +1814,8 @@ export class LiveSessionOwner {
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text + missedNote + missingToolsFact + (input.alarm ? '\n\n' + alarmSessionInstructions(input.alarm) : ''), dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
-      tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
-        [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
+      tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, observed_at, time_zone) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?,?,?)',
+        [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now, clock.observedAt, clock.timeZone]);
       tx.run("UPDATE live_sessions SET diagnostic_metadata_state='in_progress',diagnostic_content_state='in_progress',native_receipt_state='unknown',diagnostic_failures=0,diagnostic_unattributed_transcripts=0,diagnostic_clock_domain=? WHERE live_session_id=?", [hostClockDomain,liveSessionId]);
       tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds, summaryCoverage: summarySelection.coverage, openerSessionIds: injectedOpeners.map(row => row.sessionId) }), liveSessionId]);
       tx.run('INSERT OR IGNORE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [liveSessionId, this.#conversationInTx(tx, assistantId)]);
@@ -1736,6 +1831,9 @@ export class LiveSessionOwner {
     if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() }]]));
     // #107: the alarm block is in this new session's accepted prompt, so the announcement is made.
     if (input.alarm?.alarmId) hostLogEvent({ event: 'alarm_announced', alarmId: input.alarm.alarmId, mode: 'new_session' });
+    // The clock this session carries, and where its zone came from, logged once for this session.
+    hostLogEvent({ event: 'live_session_clock', liveSessionId: snapshot.liveSessionId, observedAt: clock.observedAt,
+      timeZone: clock.timeZone, clockSource: clock.source });
     this.#armExpiry();
     return snapshot;
   }
@@ -2013,7 +2111,7 @@ export class LiveSessionOwner {
     const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
     // C-RECOVERY (a): an open is bounded exactly like a rebuild, so a long conversation cannot seed an
     // over-ceiling request here either. The dropped-line opener keeps the one slot SEED_MESSAGE_LIMIT reserves.
-    const history = fitSeedTurns(seed.turns, this.#jobHistory(liveSessionId, inputClass) ?? []).turns;
+    const history = condenseSeed(seed.turns, this.#jobHistory(liveSessionId, inputClass) ?? []).turns;
     // Only owner-facing tools are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
     const modelFacing = registry;
@@ -3104,10 +3202,13 @@ export class LiveSessionOwner {
    */
   #rebuildSeed(liveSessionId: string, inputClass: DataClass, deadLine = false, transcript = true): {
     turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number;
-    transcriptChars: number; ledgerChars: number; condensed: boolean } {
+    transcriptChars: number; ledgerChars: number; condensed: boolean; digestChars: number } {
     const seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } = transcript
       ? this.#seedHistory(liveSessionId, inputClass, deadLine) : { turns: [], chars: 0 };
-    return { turns: seed.turns, chars: seed.chars, transcriptChars: seed.chars, ledgerChars: 0, condensed: false };
+    // C-RECOVERY (a): the rebuilt seed is bounded like every other seeded open, and the dropped asks ride in one
+    // host-compiled line, so a rebuild of a long call opens inside the adapter's limits instead of over them.
+    const bound = condenseSeed(seed.turns);
+    return { turns: bound.turns, chars: bound.chars, transcriptChars: seed.chars, ledgerChars: 0, condensed: bound.condensed, digestChars: bound.digestChars };
   }
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
@@ -3242,10 +3343,12 @@ export class LiveSessionOwner {
     // base that carries no line of its own.
     const base = structuredClone(handle.request);
     delete base.openingText;
+    // C-RECOVERY (a): the bound is applied here, where the provider history is built, so no caller can skip it.
+    const history = condenseSeed(seed.turns).turns;
     const request = path === 'fresh_seeded'
-      ? { ...base, history: seed.turns, ...(handle.quietRebuild ? { opening: 'user_first' as const }
+      ? { ...base, history, ...(handle.quietRebuild ? { opening: 'user_first' as const }
           : { openingText: midAnswer ? commentaryEnvelope({ kind: 'recovery', cause: muteRebuild ? 'provider_silent' : 'connection_dropped', mid_answer: true }) : muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
-      : { ...base, history: seed.turns, resumptionHandle: savedHandle as string };
+      : { ...base, history, resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
     if (handle.quietRebuild) delete request.openingText;
@@ -3308,11 +3411,13 @@ export class LiveSessionOwner {
   }
 
   /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
-  #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
+  #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: readonly unknown[]; chars: number; condensed?: boolean; digestChars?: number }): void {
     // C-CONTINUITY R-09: the socket close code and its sanitized reason ride on the recovery line, so the next
     // reader knows how the previous session really ended instead of inferring it from the outcome code alone.
     const closeReason = handle.adapterOutcome?.upstream?.closeReason ?? '';
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, cause: this.#upstreamCause(handle, reason), closeCode, closeReason, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
+      // C-RECOVERY (a): whether the bound dropped exchanges, and how much of that the digest line carries.
+      condensed: seed.condensed === true, digestChars: seed.digestChars ?? 0,
       // C-PICKUP: which pickup the rebuilt session was opened with, read off the request that was sent, so a mute
       // is never logged as a drop and a pickup that was never sent is never logged as mute.
       pickup: handle.recoveryPickup ?? 'none',
@@ -4236,6 +4341,33 @@ export class LiveSessionOwner {
   }
 
   /**
+   * FR1: the host's own local read on a cued final. No model call and no network; it appends what her own
+   * store and her cached calendar already hold, and every outcome is one host event with counts, never text.
+   */
+  #fastEvidence(handle: ActiveSession, words: string, generation: number): void {
+    if (handle.muted || handle.terminal || generation !== handle.generation) return;
+    const cues = classifyCue(words);
+    if (!cues.length) return;
+    const ownerId = this.#store.assistantId;
+    const result = buildFastEvidence({
+      text: words, cues, calendar: this.#calendarState === 'stale' ? undefined : this.#calendar, now: () => this.#now(),
+      history: query => this.#store.transaction(tx => searchRecent(tx, ownerId, query, { excludeSessionId: handle.liveSessionId, classes: this.#profile.route.dataClasses })),
+    });
+    const sent = result.commentary !== null && this.#appendLocallyFound(handle, result.commentary);
+    hostLogEvent({ event: 'fast_evidence', cue: cues.join('+'), outcome: result.outcome, hits: result.hits, elapsed_ms: result.elapsedMs, sent });
+  }
+
+  /** The session-context commentary channel: a null delegation id, one item after another, never a task identity. */
+  #appendLocallyFound(handle: ActiveSession, commentary: Commentary): boolean {
+    let sent = false;
+    for (const item of commentaryItems(commentary)) {
+      if (handle.session.sendSessionCommentary?.({ text: item }) === undefined) return sent;
+      sent = true;
+    }
+    return sent;
+  }
+
+  /**
    * #589: the owner's own finalized sentence, with her name at an edge, ends the call. The gate is the
    * host's, so no model turn, tool or generation stands in the stop path; settling closes the provider
    * session (cancelling any answer in flight), drops every later mic frame and sends the one end frame
@@ -4243,14 +4375,18 @@ export class LiveSessionOwner {
    */
   #finalizeOwnerInput(handle: ActiveSession, generation: number, finalOrigin?: string): void {
     if (handle.terminal || generation !== handle.generation) return;
+    let ownerWords: string | undefined;
     if (handle.taskWords?.trim()) {
       const words = handle.taskWords; handle.taskWords = '';
+      ownerWords = words;
       handle.taskOwnerTurn = (handle.taskOwnerTurn ?? 0) + 1;
       handle.tasks?.finalized(words, handle.taskOwnerTurn, this.#now() - (handle.taskLastWordsAt ?? this.#now()));
     }
     // A correction must become current before releasing a queued answer from the speech hold.
     handle.taskOwnerOpen = false;
     handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: false });
+    // FR1: strictly after the helper started, and never awaited on its path, so the helper start does not move.
+    if (ownerWords !== undefined) this.#fastEvidence(handle, ownerWords, generation);
     if (handle.stopFinalJournalId === handle.inputJournalId) return;
     handle.stopFinalJournalId = handle.inputJournalId;
     if (handle.stopInputAt === undefined || this.#now() - handle.stopInputAt >= 3_000) return;

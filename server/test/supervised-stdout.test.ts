@@ -13,7 +13,7 @@ import { captureHostDiagnostics, HostLog } from '../host/log.js';
 const root = resolve(process.env.DIDI_TEST_SOURCE_ROOT ?? 'server/test', '../..');
 const serverRoot = join(root, 'server');
 // Entry-point programs own the terminal's stdout: it is their output, never the supervised host's.
-const stdoutOwners = new Set(['host/index.ts', 'index.ts', 'memory/cli.ts', 'config/cli.ts', 'config/mcp-cli.ts', 'trace/postcall.ts']);
+const stdoutOwners = new Set(['host/index.ts', 'index.ts', 'memory/cli.ts', 'memory/eval-runner.ts', 'config/cli.ts', 'config/mcp-cli.ts', 'trace/postcall.ts']);
 // The eval harness programs are run by scripts/, not by the host.
 const stdoutOwnerDirs = ['eval/'];
 const forbidden = /\bconsole\.log\(|\bconsole\.info\(|process\.stdout\.write\(/;

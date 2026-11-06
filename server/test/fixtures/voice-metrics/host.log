@@ -1,0 +1,7 @@
+{"timestamp":"2026-01-01T00:00:01.000Z","monoMs":1000,"pid":1,"seq":1,"level":"info","liveSessionId":"synthetic-call-a","event":"owner_final","ownerFinalAt":1000}
+{"timestamp":"2026-01-01T00:00:03.600Z","monoMs":3600,"pid":1,"seq":2,"level":"info","liveSessionId":"synthetic-call-a","event":"fast_evidence","outcome":"hit","elapsedMs":120}
+{"timestamp":"2026-01-01T00:00:04.000Z","monoMs":4000,"pid":1,"seq":3,"level":"info","liveSessionId":"synthetic-call-a","event":"fast_evidence","outcome":"hit","elapsedMs":200}
+{"timestamp":"2026-01-01T00:00:05.000Z","monoMs":5000,"pid":1,"seq":4,"level":"info","liveSessionId":"synthetic-call-a","event":"fast_evidence","outcome":"miss","elapsedMs":400}
+{"timestamp":"2026-01-01T00:00:08.100Z","monoMs":8100,"pid":1,"seq":5,"level":"info","liveSessionId":"synthetic-call-a","taskId":"a-task-1","event":"task_delivery","revision":1,"state":"delivered"}
+{"timestamp":"2026-01-01T00:00:01.080Z","monoMs":1080,"pid":1,"seq":6,"level":"info","liveSessionId":"synthetic-call-b","event":"commentary_sent","delegationKey":"synthetic-delegation-b","reason":"lookup"}
+{"timestamp":"2026-01-01T00:00:07.000Z","monoMs":7000,"pid":1,"seq":7,"level":"info","liveSessionId":"synthetic-call-b","taskId":"b-task-1","event":"task_lifecycle","phase":"revision","generation":1,"revision":2,"count":1,"ms":1}

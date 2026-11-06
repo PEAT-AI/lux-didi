@@ -33,6 +33,8 @@ The join is the envelope, not a timestamp guess: `trace_call.call_key` is the sa
 | `trace_turn`, `trace_response`, `trace_call`, `trace_event`, `trace_playback` | Correlation, receipt stages and native playback evidence | `server/trace/schema.ts` |
 | `history_sessions`, `history_dependencies`, `history_exclusions` | Current history eligibility and derived dependencies | `server/domain/schema.ts` |
 
+A recovered or window-switched call logs one `live_recovery` line whose `seedTurns` and `seedChars` are the bounded size of the history the new provider session was opened with, and whose `condensed` and `digestChars` say whether the seed bound dropped exchanges and how long the host-compiled line naming the owner's earlier asks is. That seed is bounded in the request builder, so the logged size is the size the provider actually received.
+
 Use the owning migrations for exact columns. A canonical model-facing result is not necessarily the full source response; a stored response is not proof that the remote corpus was complete. Reuse edges are not new wire calls, and an absent playback receipt is not proof that a speaker was audible.
 
 ## Direct SQL is privileged forensics
@@ -85,3 +87,52 @@ metadata survives the 30-day content pruning window and expires with task metada
 Provider detail is not retained in this column. `final_answer` keeps its existing
 text-only representation. This supports timeline inspection without retaining
 provider bodies on task rows.
+
+## Typed memory (memory night 1, issue 913)
+
+Domain migration 10 adds the typed memory the dreaming pass writes and the start block reads. Read it
+read-only, from the same private snapshot as the rest of the store; every query in
+[diagnostic-queries.sql](diagnostic-queries.sql) selects metadata unless it names the text column.
+
+- `memory_items` holds one self-contained sentence per fact: `kind` (durable fact, preference, person
+  role, transient state, plan, promise, open question, correction, decision), `subject` for grouping,
+  the `valid_from`/`valid_until` window, the plan's `event_at` with `event_tz` and his original
+  `event_text`, `place`, `authority` (`explicit_owner` when he said it, `derived` when inferred),
+  `status` (`active`, `superseded`, `invalid`, `expired`), `superseded_by`, `salience` (0 to 3: how much
+  it matters to him), `created_at`, `created_by` (`remember_note`, `dreaming:<version>`,
+  `backfill:<version>`, `import:<manifest>`) and the `generation` it was written under. A superseded row
+  keeps its words and gains `valid_until` plus `superseded_by`, so the history survives and only
+  `status='active'` is ever served.
+- `memory_sources` is provenance by turn id: `session_id`, `turn_start_id`, `turn_end_id`, foreign keys
+  into `history_turns`. There is no stored quote column; the words are joined at read time, so a
+  forgotten session takes its quote with it.
+- `memory_jobs` is the dreaming pass's work queue, unique per (`session_id`, `extractor_version`), with
+  `watermark` (the last turn id seen), `state`, `attempts`, timestamps, `error` and the `generation` the
+  job started under.
+- `memory_generation` is one row per store: the `generation`, when a forget last `bumped_at` it, and the
+  `reason`. A forget deletes the items and sources in scope and bumps the generation, so a job that
+  started before it is refused at commit. The forget path also rebuilds the FTS index.
+- `memory_items_fts` is the FTS5 index over (`text`, `subject`), kept in sync by triggers.
+
+The owner forget paths (the entry delete and the history session forget) both reach that fence through
+`forgetHistorySessions`. `entries` is not copied into `memory_items`: the start block reads both until a
+later unit renders from `memory_items` plus the explicit entries.
+
+## Dreaming pass logs (10.18)
+
+`dreaming_done` names one finished owner call's memory job: the session id, the job id, the
+operations it committed as counts (`ops`), how many operations the validator refused (`rejected`),
+the `coverage_gap` of journal finals missing from `history_turns`, and the elapsed time. It carries
+no turn text, subject or memory sentence, so the line proves the pass ran without holding owner
+content; `dreaming_op_rejected` names the refused operation and one closed reason.
+
+`dreaming_backlog` is the host-start batch: sessions processed, sessions remaining, operations by
+type and elapsed time. The host lives for one call, so this bounded batch, not a nightly timer, is
+what turns her older calls into typed memory.
+
+`memory_excluded` is emitted once at Live session creation with class, yield, legacy, source and budget exclusion counts; budget includes the bounded recall window, and no memory text is logged. Its `yielded` sizes name owner-lore clipping, then opening-options and previous-openers removal, while persona, tools, runtime context and the reserved memory sections never yield.
+
+`memory_excluded` is emitted once at Live session creation with class, yield, legacy, source and budget exclusion counts; budget includes the bounded recall window, and no memory text is logged. Its `yielded` sizes name owner-lore clipping, then opening-options and previous-openers removal, while persona, tools, runtime context and the reserved memory sections never yield.
+
+
+The `live_instruction_sizes` event records complete rendered section character counts, the total estimated tokens (3.2 characters per estimated token), stable-prefix characters and estimated tokens, and measured fixed-section characters and estimated tokens. A target overrun preserves fixed text and per-call floors below hard admission, while closed `live_context_target_overrun` and `live_context_item_omitted` diagnostics carry only sizes or stable ids and enumerated reasons, never content.

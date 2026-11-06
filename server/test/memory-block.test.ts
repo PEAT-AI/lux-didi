@@ -97,3 +97,33 @@ test('only an identical rendered loop suppresses summary work, not another fact 
   assert.ok(both.text.includes(summary.openLoop));
   assert.ok(both.text.includes(distinct.openLoop), 'a subject is not an identity for every unresolved fact about it');
 });
+
+test('a duplicate summary body does not erase its distinct unresolved work', () => {
+  const text = 'Synthetic already-known fact';
+  const loop = 'Synthetic distinct unresolved question';
+  const result = compileMemoryBlock({ ...input, entries: [{ id: 'known', text }], items: [],
+    summaries: [{ id: 'summary', sessionId: 'session', startedAt: input.now - 1, text, openLoop: loop }] });
+  assert.equal(result.text.split(text).length - 1, 1);
+  assert.ok(result.text.includes(loop));
+});
+
+test('an oversized duplicate in one part cannot mask the same fact that fits another part', () => {
+  const text = 'F'.repeat(1_100);
+  const result = compileMemoryBlock({ ...input, floors: true, entries: [], items: [
+    item('large-loop', { kind: 'promise', authority: 'explicit_owner', text }),
+    item('fitting-identity', { kind: 'durable_fact', authority: 'derived', text }),
+  ] });
+  assert.ok(result.selectedIds.includes('fitting-identity'));
+  assert.ok(result.omitted.some(value => value.id === 'large-loop' && value.reason === 'budget'));
+  assert.equal(result.text.split(text).length - 1, 1);
+});
+
+test('an omitted summary cannot suppress work from an older summary that fits', () => {
+  const loop = 'Synthetic still-unresolved follow-up';
+  const result = compileMemoryBlock({ ...input, entries: [], items: [], summaries: [
+    { id: 'oversized', sessionId: 'large-session', startedAt: input.now - 1, text: 'B'.repeat(4_000), openLoop: loop },
+    { id: 'fitting', sessionId: 'small-session', startedAt: input.now - 2, text: 'Synthetic short discussion', openLoop: loop },
+  ] });
+  assert.deepEqual(result.summaryIds, ['fitting']);
+  assert.ok(result.text.includes(loop));
+});

@@ -1,0 +1,336 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../dist/runtime/store.js';
+import { domainMigrations } from '../dist/domain/schema.js';
+import { liveMigrations } from '../dist/live/schema.js';
+import { recordHistorySession } from '../dist/domain/history-lifecycle.js';
+import * as memory from '../dist/domain/memory-items.js';
+import { afterListenerServing } from '../dist/host/runtime.js';
+import {
+  buildDreamingInput, createDreaming, DREAMING_EXTRACTOR_VERSION, ownerCorrectionTurnIds, parseExtraction,
+  readDreamingSession, validateOperations, type Dreaming, type DreamingOptions,
+} from '../dist/services/dreaming.js';
+import type { ModelControl, ModelPort, ModelRequest, ModelResult } from '../dist/adapters/model/types.js';
+
+/**
+ * The dreaming pass (#914). Every fixture here is synthetic: no owner content, no real store.
+ * The pass reads the real compiled services, the real Store and the real memory tables.
+ */
+
+const NOW = Date.parse('2026-11-06T09:00:00Z');
+
+function open() {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-dreaming-'));
+  const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
+  return { store, dir, cleanup: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+function seedSession(store: Store, id: string, options: { key?: string; endedAt?: number } = {}): void {
+  store.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+        client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes,
+        journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, memory_provenance)
+      VALUES (?,?,?,?,?,?,?,?,?,'terminal',0,0,0,0,1,'ended',?,?,?,?,NULL)`,
+      [id, store.assistantId, store.authorityEpoch, options.key ?? `key-${id}`, `fp-${id}`, 'client', 'audit',
+        'profile', 'prompt', JSON.stringify({ state: 'closed', code: 'normal' }), options.endedAt ?? NOW, options.endedAt ?? NOW, options.endedAt ?? NOW]);
+    recordHistorySession(tx, id, 'owner', ['ordinary'], [], options.endedAt ?? NOW);
+  });
+}
+
+let turnClock = 0;
+function seedTurns(store: Store, id: string, turns: readonly (readonly ['owner' | 'assistant', string])[]): number[] {
+  const ids: number[] = [];
+  store.transaction(tx => {
+    for (const [role, text] of turns) {
+      turnClock += 1;
+      ids.push(tx.run('INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES (?,?,?,?,?,?)',
+        [id, turnClock, turnClock, role, text, NOW + turnClock * 1_000]));
+    }
+  });
+  return ids;
+}
+
+function reply(text: string, status: ModelResult['status'] = 'complete'): ModelResult {
+  return { status, text, providerContent: { role: 'model', parts: [{ text }] }, reason: status === 'complete' ? '' : 'synthetic',
+    prompt: { version: 'fixture', hash: 'fixture', omittedContextIds: [] },
+    timings: { kind: 'synthetic', totalMs: 1, firstTextMs: 1 } };
+}
+
+class FakeModel implements ModelPort {
+  readonly requests: ModelRequest[] = [];
+  private readonly answer: (request: ModelRequest) => ModelResult;
+  constructor(answer: (request: ModelRequest) => ModelResult) { this.answer = answer; }
+  generate(request: ModelRequest, _control: ModelControl): Promise<ModelResult> {
+    this.requests.push(request);
+    return Promise.resolve(this.answer(request));
+  }
+}
+
+function operations(...ops: readonly Record<string, unknown>[]): ModelResult {
+  return reply(JSON.stringify({ operations: ops }));
+}
+
+function dreaming(store: Store, model: ModelPort | null, extra: Partial<DreamingOptions> = {}): Dreaming {
+  return createDreaming({ store, model, modelId: 'synthetic-text-model', modelAllowedClasses: ['ordinary'],
+    assistantName: 'Naya', timeZone: 'UTC', now: () => NOW, log: () => {}, ...extra });
+}
+
+const PLAN_OP = {
+  op: 'add', kind: 'plan', text: 'He plans to fly to Phuket next Friday.', subject: 'trip:phuket', salience: 3,
+  event_text: 'next Friday', event_at: '2026-11-13', place: 'Phuket', turn_start_id: 1, turn_end_id: 1,
+};
+
+test('a plan keeps his relative phrase and resolves it to the date the call named', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-plan');
+    const ids = seedTurns(h.store, 's-plan', [['owner', 'I am flying to Phuket next Friday with my daughter'],
+      ['assistant', 'Next Friday it is: I will keep the morning free.']]);
+    const model = new FakeModel(() => operations({
+      op: 'add', kind: 'plan', text: 'He plans to fly to Phuket next Friday.', subject: 'trip:phuket', salience: 3,
+      event_text: 'next Friday', event_at: '2026-11-13', place: 'Phuket', turn_start_id: ids[0], turn_end_id: ids[0],
+    }));
+    const outcome = await dreaming(h.store, model).runSession('s-plan');
+    assert.equal(outcome.status, 'done');
+    assert.deepEqual(outcome.ops, { add: 1 });
+    const items = h.store.transaction(tx => memory.itemsForSubject(tx, 'trip:phuket'));
+    assert.equal(items.length, 1);
+    assert.equal(items[0]!.eventText, 'next Friday');
+    assert.equal(items[0]!.eventAt, Date.parse('2026-11-13'));
+    assert.equal(items[0]!.salience, 3);
+    assert.equal(items[0]!.createdBy, `dreaming:${DREAMING_EXTRACTOR_VERSION}`);
+    assert.equal(items[0]!.authority, 'derived');
+    // Provenance is the turn itself, so the read path can join the words back in.
+    const sources = h.store.transaction(tx => memory.sources(tx, items[0]!.id));
+    assert.equal(sources.length, 1);
+    assert.equal(sources[0]!.text, 'I am flying to Phuket next Friday with my daughter');
+    // The request carried the call's clock, so the model could resolve the phrase at all.
+    assert.match(model.requests[0]!.contents[0]!.parts[0]!.text!, /\d{2} \w{3} 2026/);
+  } finally { h.cleanup(); }
+});
+
+test('a correction turn supersedes a derived item and keeps the old row', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-correct');
+    const ids = seedTurns(h.store, 's-correct', [['owner', 'Actually, the Phuket trip is in December now, not next Friday'],
+      ['assistant', 'December, then.']]);
+    const old = h.store.transaction(tx => memory.insertItem(tx, { kind: 'plan', text: 'He plans to fly to Phuket next Friday.',
+      subject: 'trip:phuket', validFrom: NOW - 86_400_000, createdAt: NOW - 86_400_000, createdBy: 'dreaming:dreaming-v1' }));
+    const model = new FakeModel(() => operations({
+      op: 'supersede', old_id: old.id, kind: 'plan', text: 'He plans to fly to Phuket in December.', subject: 'trip:phuket',
+      salience: 3, event_text: 'in December', turn_start_id: ids[0], turn_end_id: ids[0],
+    }));
+    const outcome = await dreaming(h.store, model).runSession('s-correct');
+    assert.equal(outcome.status, 'done');
+    assert.deepEqual(outcome.ops, { supersede: 1 });
+    const items = h.store.transaction(tx => memory.itemsForSubject(tx, 'trip:phuket'));
+    assert.equal(items.length, 2, 'the old row survives: nothing is deleted but through forgetScope');
+    const superseded = items.find(item => item.id === old.id)!;
+    assert.equal(superseded.status, 'superseded');
+    const replacement = items.find(item => item.id !== old.id)!;
+    assert.equal(superseded.supersededBy, replacement.id);
+    assert.equal(replacement.status, 'active');
+  } finally { h.cleanup(); }
+});
+
+test('an explicit_owner item is protected unless the op cites the owner correction turn', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-protect');
+    const ids = seedTurns(h.store, 's-protect', [['owner', 'What is on my calendar tomorrow in Zurich'],
+      ['assistant', 'Two calls before noon.']]);
+    const explicit = h.store.transaction(tx => memory.insertItem(tx, { kind: 'durable_fact', text: 'He lives in Zurich.',
+      subject: 'home', validFrom: NOW, createdAt: NOW, createdBy: 'remember_note', authority: 'explicit_owner' }));
+    const logged: { event: string }[] = [];
+    const model = new FakeModel(() => operations({ op: 'invalidate', id: explicit.id, reason: 'he moved',
+      turn_start_id: ids[0], turn_end_id: ids[0] }));
+    const outcome = await dreaming(h.store, model, { log: event => logged.push(event) }).runSession('s-protect');
+    assert.equal(outcome.status, 'done');
+    assert.equal(outcome.rejected, 1);
+    assert.ok(logged.some(event => event.event === 'dreaming_op_rejected'), 'the rejection is logged');
+    assert.equal(h.store.transaction(tx => memory.itemsForSubject(tx, 'home'))[0]!.status, 'active',
+      'an explicit item is never invalidated without a cited correction turn');
+
+    // The same op with a correction turn cited is admitted.
+    seedSession(h.store, 's-protect-2');
+    const corrected = seedTurns(h.store, 's-protect-2', [['owner', 'No, I said I moved from Zurich to Basel last month']]);
+    const accepting = new FakeModel(() => operations({ op: 'invalidate', id: explicit.id, reason: 'he moved',
+      turn_start_id: corrected[0], turn_end_id: corrected[0] }));
+    const second = await dreaming(h.store, accepting).runSession('s-protect-2');
+    assert.equal(second.status, 'done');
+    assert.equal(second.rejected, 0);
+    assert.equal(h.store.transaction(tx => memory.itemsForSubject(tx, 'home'))[0]!.status, 'invalid');
+  } finally { h.cleanup(); }
+});
+
+test('an operation citing a turn outside the session is rejected, nothing is written', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-outside');
+    seedTurns(h.store, 's-outside', [['owner', 'Short call about the holidays']]);
+    seedSession(h.store, 's-other');
+    const foreign = seedTurns(h.store, 's-other', [['owner', 'A turn of another call entirely']]);
+    const model = new FakeModel(() => operations({ ...PLAN_OP, turn_start_id: foreign[0], turn_end_id: foreign[0] }));
+    const outcome = await dreaming(h.store, model).runSession('s-outside');
+    assert.equal(outcome.status, 'done');
+    assert.equal(outcome.rejected, 1);
+    assert.deepEqual(outcome.ops, {});
+    assert.equal(h.store.transaction(tx => memory.activeItems(tx, {})).length, 0);
+  } finally { h.cleanup(); }
+});
+
+test('a second run of the same session and version is already done and writes nothing', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-repeat');
+    const ids = seedTurns(h.store, 's-repeat', [['owner', 'Book the dentist for Tuesday morning please']]);
+    const model = new FakeModel(() => operations({ ...PLAN_OP, text: 'He asked for a dentist appointment on Tuesday.',
+      subject: 'health:dentist', event_text: 'Tuesday', turn_start_id: ids[0], turn_end_id: ids[0] }));
+    const pass = dreaming(h.store, model);
+    assert.equal((await pass.runSession('s-repeat')).status, 'done');
+    const again = await pass.runSession('s-repeat');
+    assert.equal(again.status, 'already_done');
+    assert.equal(model.requests.length, 1, 'the second run spends no model request');
+    assert.equal(h.store.transaction(tx => memory.activeItems(tx, {})).length, 1);
+  } finally { h.cleanup(); }
+});
+
+test('a canary session produces no job and is never a backlog candidate', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-canary', { key: 'canary:boot' });
+    seedTurns(h.store, 's-canary', [['owner', 'Ring the canary bell and report the tone']]);
+    const model = new FakeModel(() => operations({ ...PLAN_OP }));
+    const pass = dreaming(h.store, model);
+    const outcome = await pass.runSession('s-canary');
+    assert.equal(outcome.status, 'skipped');
+    assert.equal(outcome.reason, 'not_owner_session');
+    const batch = await pass.backlogBatch(12);
+    assert.equal(batch.processed, 0);
+    assert.equal(model.requests.length, 0);
+    assert.equal(h.store.transaction(tx => memory.job(tx, 's-canary', DREAMING_EXTRACTOR_VERSION)), null);
+  } finally { h.cleanup(); }
+});
+
+test('a job under a stale generation fails at commit and writes no item', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-stale');
+    const ids = seedTurns(h.store, 's-stale', [['owner', 'Remember that I prefer morning calls']]);
+    const model = new FakeModel(() => {
+      // The store forgets while the model runs: every write of this job is refused.
+      h.store.transaction(tx => { tx.run('UPDATE memory_generation SET generation = generation + 1 WHERE id = 1'); });
+      return operations({ op: 'add', kind: 'preference', text: 'He prefers morning calls.', subject: 'preference:calls',
+        salience: 2, turn_start_id: ids[0], turn_end_id: ids[0] });
+    });
+    const outcome = await dreaming(h.store, model).runSession('s-stale');
+    assert.equal(outcome.status, 'failed');
+    assert.equal(outcome.reason, 'generation_stale');
+    assert.equal(h.store.transaction(tx => memory.activeItems(tx, {})).length, 0);
+    assert.equal(h.store.transaction(tx => memory.job(tx, 's-stale', DREAMING_EXTRACTOR_VERSION))!.state, 'failed');
+  } finally { h.cleanup(); }
+});
+
+test('a failed job is retried once and then left alone', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-retry');
+    seedTurns(h.store, 's-retry', [['owner', 'Tell me the weather for the weekend please']]);
+    const model = new FakeModel(() => reply('', 'error'));
+    const pass = dreaming(h.store, model);
+    assert.equal((await pass.runSession('s-retry')).status, 'failed');
+    assert.equal((await pass.runSession('s-retry')).status, 'failed');
+    const third = await pass.runSession('s-retry');
+    assert.equal(third.status, 'skipped');
+    assert.equal(third.reason, 'attempts_exhausted');
+    assert.equal(model.requests.length, 2, 'one retry, never an endless loop');
+  } finally { h.cleanup(); }
+});
+
+test('the backlog batch takes the oldest unprocessed owner calls up to the limit', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-oldest', { endedAt: NOW - 3_000 });
+    seedSession(h.store, 's-middle', { endedAt: NOW - 2_000 });
+    seedSession(h.store, 's-newest', { endedAt: NOW - 1_000 });
+    seedSession(h.store, 's-eval', { key: 'eval:night', endedAt: NOW - 4_000 });
+    seedSession(h.store, 's-canary', { key: 'canary:boot', endedAt: NOW - 5_000 });
+    for (const id of ['s-oldest', 's-middle', 's-newest', 's-eval', 's-canary']) {
+      seedTurns(h.store, id, [['owner', `A substantive owner turn about the number ${id.length} plan`]]);
+    }
+    const model = new FakeModel(() => operations({ ...PLAN_OP, turn_start_id: 0, turn_end_id: 0 }));
+    const logged: Record<string, unknown>[] = [];
+    const pass = dreaming(h.store, model, { log: event => logged.push(event) });
+    const first = await pass.backlogBatch(2);
+    assert.equal(first.processed, 2);
+    assert.equal(first.remaining, 1);
+    const called = h.store.transaction(tx => tx.all('SELECT session_id FROM memory_jobs ORDER BY started_at'))
+      .map(row => String(row['session_id']));
+    assert.deepEqual(called.sort(), ['s-middle', 's-oldest'], 'oldest first, up to the limit, never a canary or eval call');
+    const second = await pass.backlogBatch(2);
+    assert.equal(second.processed, 1);
+    assert.equal(second.remaining, 0);
+    const backlog = logged.find(event => event.event === 'dreaming_backlog')!;
+    assert.equal(backlog['sessionsProcessed'], 2);
+    assert.equal(backlog['sessionsRemaining'], 1);
+    assert.ok(typeof backlog['elapsedMs'] === 'number');
+  } finally { h.cleanup(); }
+});
+
+test('the backlog never starts before the listener serves', async () => {
+  const order: string[] = [];
+  const failing = afterListenerServing(Promise.reject(new Error('port taken')), () => order.push('backlog'));
+  await assert.rejects(failing);
+  assert.deepEqual(order, [], 'a host that could not listen spends no model request');
+  const served = await afterListenerServing(Promise.resolve('serving'), () => order.push('backlog'));
+  assert.equal(served, 'serving');
+  assert.deepEqual(order, ['backlog']);
+});
+
+test('the validator names each refusal and turns a duplicate into a noop', () => {
+  const items: memory.MemoryItem[] = [];
+  const context = { turnIds: new Set([1, 2]), correctionTurnIds: new Set<number>(), items, now: NOW };
+  const [first, second] = parseExtraction(JSON.stringify({ operations: [PLAN_OP, { ...PLAN_OP }] })).operations;
+  const validated = validateOperations([first!, second!], context);
+  assert.equal(validated.rejected.length, 0);
+  assert.equal(validated.accepted.length, 2);
+  assert.equal(validated.accepted[1]!.op, 'noop', 'the same subject and text twice is one item');
+
+  const bad = parseExtraction(JSON.stringify({ operations: [{ ...PLAN_OP, salience: 7 }, { ...PLAN_OP, kind: 'vibe' }] }));
+  assert.deepEqual(bad.rejected.map(entry => entry.reason), ['invalid_salience', 'unknown_kind']);
+});
+
+test('a transient state gets a validity date, a dossier subject never reaches the store', () => {
+  const validated = validateOperations(parseExtraction(JSON.stringify({ operations: [
+    { op: 'add', kind: 'transient_state', text: 'He is travelling this week.', subject: 'state:travel', salience: 1, turn_start_id: 1, turn_end_id: 1 },
+    { op: 'add', kind: 'durable_fact', text: 'He owns a boat.', subject: 'BAD SUBJECT!', salience: 1, turn_start_id: 1, turn_end_id: 1 },
+  ] })).operations, { turnIds: new Set([1]), correctionTurnIds: new Set<number>(), items: [], now: NOW });
+  const added = validated.accepted[0]!;
+  assert.equal(added.op, 'add');
+  assert.equal(added.op === 'add' ? added.item.validUntil : null, NOW + 30 * 86_400_000);
+  assert.deepEqual(validated.rejected.map(entry => entry.reason), ['unknown_subject']);
+});
+
+test('only an owner turn that reads as a correction licenses touching his explicit memory', () => {
+  const correction = ownerCorrectionTurnIds([
+    { id: 1, role: 'owner', text: 'What is on my calendar' },
+    { id: 2, role: 'owner', text: 'Actually, I moved to Basel last month' },
+    { id: 3, role: 'assistant', text: 'Actually, I moved to Basel last month' },
+  ]);
+  assert.deepEqual([...correction], [2]);
+
+  const h = open();
+  try {
+    seedSession(h.store, 's-input');
+    const ids = seedTurns(h.store, 's-input', [['owner', 'I am flying to Phuket next Friday with my daughter']]);
+    const session = readDreamingSession(h.store, 's-input', 'Asia/Tokyo');
+    const input = buildDreamingInput({ assistantName: 'Naya', session, items: [] });
+    assert.match(input, new RegExp(`#${ids[0]} Owner`));
+    assert.match(input, /turns are the only evidence/);
+    assert.match(input, /next Friday/);
+  } finally { h.cleanup(); }
+});

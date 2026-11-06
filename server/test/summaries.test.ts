@@ -192,7 +192,7 @@ test('a model skip writes status skipped and no summary text', async () => {
   } finally { h.cleanup(); }
 });
 
-test('sessions with fewer than two finished owner turns are skipped without calling the model', async () => {
+test('a call with no substantive owner turn is skipped without calling the model', async () => {
   const h = open();
   try {
     seedSession(h.store, 's-thin');
@@ -202,6 +202,56 @@ test('sessions with fewer than two finished owner turns are skipped without call
     const row = h.store.transaction(tx => summaries.getBySession(tx, 's-thin'))!;
     assert.equal(row.status, 'skipped');
     assert.equal(model.calls, 0);
+  } finally { h.cleanup(); }
+});
+
+// M9 #914: the floor was two owner turns and lost 95 of 227 calls their summary. One substantive turn
+// is enough; a call of greetings only is still skipped, so small talk never becomes a summary.
+test('one substantive owner turn earns a summary', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-one-turn');
+    seedTurn(h.store, 's-one-turn', 'inputTranscription', 'I am flying to Phuket next Friday with my daughter');
+    seedTurn(h.store, 's-one-turn', 'outputTranscription', 'Next Friday, then: I will keep the morning free.');
+    const model = new FakeModel([reply('{"skip": false, "summary": "He plans to fly to Phuket next Friday with his daughter."}')]);
+    await summarizer(h.store, model).distill('s-one-turn');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-one-turn'))!;
+    assert.equal(row.status, 'complete');
+    assert.equal(model.calls, 1);
+  } finally { h.cleanup(); }
+});
+
+test('a greeting-only call is skipped however many turns it has', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-small-talk');
+    seedTurn(h.store, 's-small-talk', 'inputTranscription', 'hello');
+    seedTurn(h.store, 's-small-talk', 'outputTranscription', 'Hello, how are you?');
+    seedTurn(h.store, 's-small-talk', 'inputTranscription', 'good thanks, and you');
+    seedTurn(h.store, 's-small-talk', 'outputTranscription', 'Ready when you are.');
+    seedTurn(h.store, 's-small-talk', 'inputTranscription', 'great, bye');
+    const model = new FakeModel([reply('{"skip": false, "summary": "should not be used"}')]);
+    await summarizer(h.store, model).distill('s-small-talk');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-small-talk'))!;
+    assert.equal(row.status, 'skipped');
+    assert.equal(row.skipReason, 'too_few_turns');
+    assert.equal(model.calls, 0);
+  } finally { h.cleanup(); }
+});
+
+test('a canary session schedules no summary at all, so it can never become memory', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-canary-schedule');
+    seedTurn(h.store, 's-canary-schedule', 'inputTranscription', 'Ring the household bell and report the tone');
+    h.store.transaction(tx => tx.run('UPDATE live_sessions SET idempotency_key=? WHERE live_session_id=?',
+      ['canary:boot', 's-canary-schedule']));
+    const model = new FakeModel([reply('{"skip": false, "summary": "should not be used"}')]);
+    const pass = summarizer(h.store, model);
+    pass.schedule('s-canary-schedule');
+    await pass.settleOnExit(2_000);
+    assert.equal(model.calls, 0);
+    assert.equal(h.store.transaction(tx => summaries.getBySession(tx, 's-canary-schedule')), null);
   } finally { h.cleanup(); }
 });
 

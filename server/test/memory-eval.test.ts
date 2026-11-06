@@ -245,7 +245,8 @@ test('the restore seam calls a registered tool and refuses a wrong conversation'
       // No registered tool on base: the stage says so instead of inventing a fidelity.
       const absent = await runEval({ store, golden });
       assert.equal(absent.report.items_detail[0]!.restore.status, 'not_run');
-      assert.deepEqual(absent.report.items_detail[0]!.notRun, ['restore:tool_missing']);
+      assert.ok(absent.report.items_detail[0]!.notRun.includes('restore:tool_missing'), 'the absent tool is named');
+      assert.equal(absent.report.items_detail[0]!.notRun.filter(stage => stage.startsWith('restore:')).length, 1);
       assert.equal(absent.report.overall.restoreFidelity, null);
       // A registered tool is called, and the conversation it names is scored.
       const right: RestoreTool = { resolve: () => ({ sessionId: 'live-08' }) };

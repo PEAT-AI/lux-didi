@@ -87,7 +87,7 @@ export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Imported standing notes get their own budget, so ad hoc voice notes keep theirs. */
 export const STANDING_MEMORY_CHAR_LIMIT = 3_000;
 /** Owner lore is dense; it is clipped to this many characters (PV2: 14k, a much deeper owner profile)
- *  and never yielded. */
+ *  and gives up room before the reserved session memory. */
 export const OWNER_LORE_CHAR_LIMIT = 14_000;
 /**
  * The opening input for a fresh seeded recovery (release 3g-c): the connection dropped and returned, so
@@ -698,7 +698,7 @@ export function composeLiveSessionInstruction(input: {
   readonly alarms?: string;
   readonly earlierConversations?: string;
   /** #108: the room held free for the earlier-conversations section, so the sections that yield (the
-   *  notes, which she can read on demand) make it instead of the summary section taking the leftovers. */
+   *  owner lore and opener hints) make it instead of the summary section taking the leftovers. */
   readonly earlierReserve?: number;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;

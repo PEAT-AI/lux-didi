@@ -44,6 +44,7 @@ test('production runtime emits one sourced partial before final and rejects a du
     }
     if (step === 3) {
       assert.match(JSON.stringify(request.outputs), /delivered/);
+      assert.equal(f.store.transaction(tx => tx.get("SELECT state FROM task_deliveries WHERE attempt_id LIKE 'progress:%'"))?.state, 'pending');
       for (let i = 0; i < f.sent.length; i++) { assert.ok(i < 20); f.call.delivery.accepted(`c${i + 1}`); }
       assert.match(f.sent.map(item => item.text).join(' '), /Provisional, still checking the attendee replies:/);
       return { text: '', calls: [{ ...progress, id: 'p2' }] };
@@ -60,7 +61,10 @@ test('production runtime emits one sourced partial before final and rejects a du
   const before = f.sent.map(item => item.text).join(' ');
   assert.equal((before.match(/Provisional, still checking/g) ?? []).length, 1);
   assert.match(before, /partial/);
-  assert.equal(f.store.transaction(tx => tx.get("SELECT count(*) AS n FROM task_deliveries WHERE state='progress'"))?.n, 1);
+  const progressRows = f.store.transaction(tx => tx.all("SELECT attempt_id,state FROM task_deliveries WHERE attempt_id LIKE 'progress:%'"));
+  assert.equal(progressRows.length, 1);
+  assert.match(String(progressRows[0]?.attempt_id), /^progress:/);
+  assert.equal(progressRows[0]?.state, 'delivered', 'accepted progress uses the existing CHECK-compatible state machine');
   final.resolve({ text: 'Confirmed; synthetic replies are complete.', calls: [] });
   await pending;
   assert.match(f.sent.slice(before ? 1 : 0).map(item => item.text).join(' '), /result/);

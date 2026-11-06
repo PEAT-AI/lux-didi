@@ -1,3 +1,4 @@
+import { commentaryItems, resultCommentary } from './delivery.js';
 import { hostLogEvent } from '../tools/host-events.js';
 import type { Identity as OperationIdentity } from './authority.js';
 import { failed, redactTaskResult } from './results.js';
@@ -50,7 +51,14 @@ export class TaskRuntime {
   }
   hostStatus: () => { rebuilt: boolean; rebuild_cause: 'host' | 'network' | 'provider' | null } = () => ({ rebuilt: false, rebuild_cause: null });
   #failures: readonly FailureRecord[] = [];
+  #progressDelivery: { identity: RevisionIdentity; attemptId: string; lastChunk: number } | undefined;
   deliveryState(identity: RevisionIdentity, state: 'sent' | 'accepted' | 'retry' | 'undelivered', chunk: number): void {
+    const progress = this.#progressDelivery;
+    if (progress && progress.identity.task_id === identity.task_id && progress.identity.task_revision === identity.task_revision && progress.identity.connection_generation === identity.connection_generation) {
+      const complete = state === 'accepted' && chunk === progress.lastChunk;
+      this.options.store.saveTaskDelivery(identity, progress.attemptId, complete ? 'delivered' : state === 'undelivered' ? 'failed' : 'pending');
+      if (complete) this.#progressDelivery = undefined;
+    }
     this.options.store.saveTaskDelivery(identity, `${identity.task_id}:${identity.task_revision}:chunk:${chunk}`,
       state === 'accepted' ? 'delivered' : state === 'undelivered' ? 'failed' : 'pending');
   }
@@ -138,8 +146,10 @@ export class TaskRuntime {
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       reportProgress: answer => {
         if (!this.controller.isCurrent(identity)) return;
+        const attemptId = `progress:${randomUUID()}`;
+        this.#progressDelivery = { identity, attemptId, lastChunk: commentaryItems(resultCommentary(answer)).length - 1 };
+        this.options.store.saveTaskDelivery(identity, attemptId, 'pending');
         this.options.delivery.deliver(identity, answer);
-        this.options.store.saveTaskDelivery(identity, randomUUID(), 'progress');
       },
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
     }).then(answer => this.settle(identity, answer), () => {

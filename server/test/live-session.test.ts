@@ -1,3 +1,4 @@
+import { validateOwnerProfile } from '../prompt/index.js';
 import { toolGroupNames } from '../prompt/index.js';
 import { CONTEXT_BUDGET } from '../prompt/context-budget.js';
 import { WORKER_INSTRUCTIONS } from '../tasks/instructions.js';
@@ -2028,9 +2029,9 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
   assert.equal(row.dispatch_intent, 0);
-  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, system: expectedSessionInstruction({ text: 'SYNTHETIC exact accepted A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text, memory: { status: 'empty', selectedIds: [], omitted: [] } });
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, system: expectedSessionInstruction({ text: 'SYNTHETIC exact accepted A', ownerProfile: validateOwnerProfile(ownerProfile, h.store.assistantId), tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text, memory: { status: 'empty', selectedIds: [], omitted: [] } });
   acceptedPrompt.system = 'SYNTHETIC B';
-  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, expectedSessionInstruction({ text: 'SYNTHETIC exact accepted A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
+  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, expectedSessionInstruction({ text: 'SYNTHETIC exact accepted A', ownerProfile: validateOwnerProfile(ownerProfile, h.store.assistantId), tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
   h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
   assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
   assert.equal(calls, 0);

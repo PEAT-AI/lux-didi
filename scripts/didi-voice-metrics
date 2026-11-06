@@ -3,19 +3,22 @@
 // measured before and after. Read-only: the store is read from a private snapshot of state.sqlite, and the
 // app directory is never opened for writing. See docs/evals.md, "Voice metrics on real calls".
 //
-// Five measures, each with P50, P90 and n, per call and in total. All durations are milliseconds between the
+// Five measures, each with P50, P90 and n, per call and in total. Every duration is milliseconds between the
 // owner's last finalized word of a turn and the moment the owner heard or learned something:
 //   latency       owner final -> first assistant audio (trace_turn.first_audible_at of the reply turn,
-//                 else the earliest playback segment that became audible)
-//   silence       while a helper task is open (tasks.created_at..tasks.updated_at): the total and the longest
-//                 stretch with no assistant playback audible
-//   groundedFact  owner final -> the first fact-bearing moment: a progress commentary (trace_event kind
-//                 progress.commentary, the local-recall and lookup line), or a helper answer the store
-//                 records as delivered to the owner's session
+//                 else the earliest playback segment of that turn that became audible)
+//   silence       while a helper task is open: the total and the longest stretch with no assistant playback
+//                 audible. A task with a terminal status is open from created_at to its last write; a task
+//                 still running is open until the call's own end, because it never writes again
+//   groundedFact  owner final -> the first helper answer the store records as delivered to the owner's session.
+//                 The progress/recall commentary carrier is NOT a fact source here: no release writes it yet,
+//                 so `carriers.factCommentary` says whether these logs hold one at all
 //   fastEvidence  host.log fast_evidence events by outcome, with their elapsed P50 and P90 (none before FR1)
 //   progress      progress deliveries and corrections per helper task, from the store's delivery state and
 //                 the host log's own commentary_sent and task_lifecycle(revision) events (none before FR2)
-// A turn whose timestamps the record cannot supply is counted `unmeasured` for that measure, never dropped.
+// An anchor or a timestamp the record cannot supply is counted `unmeasured` for that measure, never inferred
+// from a neighbouring row and never read as zero. Log lines of those families that name no call the store
+// holds are counted in `unjoined`, so a zero that means "not written" stays apart from "written, unjoined".
 const { DatabaseSync } = require('node:sqlite');
 const { existsSync, mkdtempSync, copyFileSync, readdirSync, readFileSync, rmSync, statSync } = require('node:fs');
 const { tmpdir } = require('node:os');
@@ -32,6 +35,8 @@ Reads state.sqlite from a private snapshot and host.log (and its rotations) unde
 Never writes to <dir>. Missing timestamps count as unmeasured, never as zero.`;
 
 const LOG_STREAMS = [/^host-\d{4}-\d{2}-\d{2}\.log(\.\d+)?$/, /^host\.log(\.\d+)?$/];
+// server/tasks/worker.ts: the statuses a finished helper task carries. Anything else is still running.
+const TERMINAL_TASK_STATUSES = ['cancelled', 'complete', 'incomplete', 'no_action'];
 
 function fail(message) {
   process.stderr.write(`didi-voice-metrics: ${message}\n\n${usage}\n`);
@@ -143,10 +148,10 @@ function silentStretches(from, to, audio) {
   return stretches;
 }
 
-/** The owner's last finalized word of a turn; a turn with no utterance falls back to its own close. */
+/** The owner's last finalized word of a turn, or null: a turn-close time is not the owner's last word. */
 function ownerFinalAt(read, turn) {
   const row = read.get('SELECT MAX(at) AS at FROM trace_utterance WHERE turn_id=? AND role=? AND final=1', [turn.turn_id, 'owner']);
-  return number(row?.at) ?? number(turn.closed_at);
+  return number(row?.at);
 }
 
 function firstAssistantAudio(reply, segments) {
@@ -156,14 +161,18 @@ function firstAssistantAudio(reply, segments) {
   return starts.length === 0 ? null : Math.min(...starts);
 }
 
+/** The instant the call itself ended: its last turn closed, or opened when the close was never written. */
+function callEndOf(turns) {
+  const ends = turns.map(turn => number(turn.closed_at) ?? number(turn.opened_at)).filter(at => at !== null);
+  return ends.length === 0 ? null : Math.max(...ends);
+}
+
 function callMetrics(read, session, lines) {
   const turns = read.all('SELECT turn_id,turn_index,origin,opened_at,closed_at,first_audible_at FROM trace_turn WHERE live_session_id=? ORDER BY opened_at,turn_index', [session]);
   const playback = read.all('SELECT turn_id,audible_at,started_at,drained_at,interrupted_at FROM trace_playback WHERE live_session_id=?', [session]);
   const audio = playback.map(segment).filter(interval => interval !== null);
   const audioOf = turnId => playback.filter(row => row.turn_id === turnId).map(segment).filter(interval => interval !== null);
-  const commentaryAt = read.all("SELECT at FROM trace_event WHERE live_session_id=? AND kind='progress.commentary' AND at IS NOT NULL", [session])
-    .map(row => number(row.at)).filter(at => at !== null);
-  const tasks = read.all('SELECT task_id,created_at,updated_at FROM tasks WHERE live_session_id=? ORDER BY task_id', [session]);
+  const tasks = read.all('SELECT task_id,created_at,updated_at,status FROM tasks WHERE live_session_id=? ORDER BY task_id', [session]);
   const deliveries = tasks.length === 0 ? [] : read.all(
     'SELECT d.task_id,d.state,d.updated_at FROM task_deliveries d JOIN tasks t ON t.task_id=d.task_id WHERE t.live_session_id=?', [session]);
   const deliveredAt = deliveries.filter(row => row.state === 'delivered').map(row => number(row.updated_at)).filter(at => at !== null);
@@ -177,14 +186,23 @@ function callMetrics(read, session, lines) {
     const audible = reply === undefined ? null : firstAssistantAudio(reply, audioOf(reply.turn_id));
     if (anchor === null || audible === null || audible < anchor) latencyUnmeasured += 1;
     else latency.push(audible - anchor);
-    const factCandidates = [...commentaryAt, ...deliveredAt].filter(at => anchor !== null && at >= anchor);
-    if (factCandidates.length === 0) groundedUnmeasured += 1;
-    else grounded.push(Math.min(...factCandidates) - anchor);
+    const facts = anchor === null ? [] : deliveredAt.filter(at => at >= anchor);
+    if (facts.length === 0) groundedUnmeasured += 1;
+    else grounded.push(Math.min(...facts) - anchor);
   }
 
-  const windows = mergeIntervals(tasks.map(task => [Number(task.created_at), Number(task.updated_at)]).filter(([from, to]) => to > from));
+  const callEnd = callEndOf(turns);
   let silenceN = 0; let silenceUnmeasured = 0; let silenceTotal = 0; let silenceLongest = 0;
-  for (const [from, to] of windows) {
+  const windows = [];
+  for (const task of tasks) {
+    const from = Number(task.created_at);
+    const closed = TERMINAL_TASK_STATUSES.includes(task.status);
+    const to = closed ? Number(task.updated_at) : callEnd;
+    // A running task with no call end cannot say how long the owner waited, so the window is unmeasured.
+    if (to === null || !(to > from)) { silenceUnmeasured += 1; continue; }
+    windows.push([from, to]);
+  }
+  for (const [from, to] of mergeIntervals(windows)) {
     // Without one audible segment the store cannot say the owner heard anything, so the window is unmeasured.
     if (audio.length === 0) { silenceUnmeasured += 1; continue; }
     silenceN += 1;
@@ -228,6 +246,25 @@ function callMetrics(read, session, lines) {
   };
 }
 
+/** Log lines of a measured family that name no call the store holds: written, but not attributable. */
+function unjoinedOf(lines, sessions) {
+  const known = new Set(sessions);
+  const isUnjoined = line => typeof line.liveSessionId !== 'string' || !known.has(line.liveSessionId);
+  return {
+    fastEvidence: lines.filter(line => line.event === 'fast_evidence' && isUnjoined(line)).length,
+    reports: lines.filter(line => line.event === 'commentary_sent' && isUnjoined(line)).length,
+    corrections: lines.filter(line => line.event === 'task_lifecycle' && line.phase === 'revision' && isUnjoined(line)).length,
+  };
+}
+
+/** Whether these logs hold the carrier at all, so a measured zero is never read as "the event fired and I missed it". */
+function carriersOf(lines) {
+  return {
+    factCommentary: lines.some(line => line.event === 'commentary_sent') ? 'recorded' : 'not_recorded',
+    fastEvidence: lines.some(line => line.event === 'fast_evidence') ? 'recorded' : 'not_recorded',
+  };
+}
+
 function sortKeys(map) {
   return Object.fromEntries(Object.entries(map).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) =>
     [key, typeof value === 'number' ? value : sortKeys(value)]));
@@ -240,8 +277,7 @@ function totalMetrics(calls) {
   const mergeCounts = pick => {
     const merged = {};
     for (const raw of raws) for (const [key, value] of Object.entries(raw[pick])) {
-      if (typeof value === 'number') merged[key] = (merged[key] ?? 0) + value;
-      else merged[key] = { ...(merged[key] ?? {}) , ...Object.fromEntries(Object.entries(value)) };
+      merged[key] = (merged[key] ?? 0) + value;
     }
     return sortKeys(merged);
   };
@@ -283,7 +319,7 @@ function counts(map) {
   return entries.length === 0 ? 'none' : entries.map(([key, value]) => (typeof value === 'number' ? `${key}=${value}` : `${key}{${counts(value)}}`)).join(' ');
 }
 
-function render(calls, total) {
+function render(calls, total, unjoined, carriers) {
   const rows = [];
   for (const call of calls) {
     rows.push(`call ${call.liveSessionId}`);
@@ -299,6 +335,7 @@ function render(calls, total) {
   rows.push(stats('firstFact', total.groundedFact));
   rows.push(`  ${'fastEvidence'.padEnd(13)} n=${total.fastEvidence.n} p50=${duration(total.fastEvidence.p50)} p90=${duration(total.fastEvidence.p90)} ${counts(total.fastEvidence.outcomes)}`);
   rows.push(`  ${'progress'.padEnd(13)} deliveries=${counts(total.progress.deliveries)} reports=${counts(total.progress.reports)} corrections=${counts(total.progress.corrections)}`);
+  rows.push(`unjoined fastEvidence=${unjoined.fastEvidence} reports=${unjoined.reports} corrections=${unjoined.corrections}; carriers factCommentary=${carriers.factCommentary} fastEvidence=${carriers.fastEvidence}`);
   return `${rows.join('\n')}\n`;
 }
 
@@ -317,8 +354,11 @@ function main() {
       .filter(entry => since === null || entry.turns.some(turn => Number(turn.opened_at) >= since))
       .map(entry => callMetrics(read, entry.id, lines));
     const total = totalMetrics(calls);
-    if (options.json) process.stdout.write(`${JSON.stringify({ calls: calls.map(({ raw, ...rest }) => rest), total }, null, 2)}\n`);
-    else process.stdout.write(render(calls.map(({ raw, ...rest }) => rest), total));
+    // Attribution is measured against every call the store holds, so --session never turns a sibling into unjoined.
+    const unjoined = unjoinedOf(lines, stored);
+    const carriers = carriersOf(lines);
+    if (options.json) process.stdout.write(`${JSON.stringify({ calls: calls.map(({ raw, ...rest }) => rest), unjoined, carriers, total }, null, 2)}\n`);
+    else process.stdout.write(render(calls.map(({ raw, ...rest }) => rest), total, unjoined, carriers));
   } finally { read.close(); }
 }
 

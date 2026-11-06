@@ -1,5 +1,8 @@
 // scripts/didi-voice-metrics: the numbers it prints on a real call.
 // Fixture: server/test/fixtures/voice-metrics/{store.json,host.log}. Every id, time and word is invented.
+//
+// The fixture path resolves from the compiled file, `<repo>/server/dist/test/`, which is where the registered
+// check step runs it; run the `.ts` directly and `../../test/fixtures` would mean `<repo>/test/fixtures`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -38,7 +41,7 @@ const fixture = JSON.parse(readFileSync(new URL('store.json', FIXTURE), 'utf8'))
 const hostLog = readFileSync(new URL('host.log', FIXTURE), 'utf8');
 
 /** A data directory the script may read: one store built from the fixture rows, and the day's host log. */
-function dataDirectory(body: (directory: string) => void): void {
+function dataDirectory(body: (directory: string) => void, log: string = hostLog): void {
   const directory = mkdtempSync(join(tmpdir(), 'didi-voice-metrics-'));
   try {
     const store = new Store(directory);
@@ -61,16 +64,16 @@ function dataDirectory(body: (directory: string) => void): void {
       });
     } finally { store.close(); }
     mkdirSync(join(directory, 'logs'), { recursive: true });
-    writeFileSync(join(directory, 'logs', 'host.log'), hostLog);
+    writeFileSync(join(directory, 'logs', 'host.log'), log);
     body(directory);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
-function metrics(directory: string, ...extra: readonly string[]): { status: number | null; stdout: string; parsed: Record<string, unknown> } {
+function metrics(directory: string, ...extra: readonly string[]): { stdout: string; parsed: Record<string, unknown> } {
   const run = spawnSync(process.execPath, [CLI, '--data-dir', directory, '--json', ...extra], { encoding: 'utf8' });
   assert.equal(run.error, undefined, `the script must run: ${String(run.error)}`);
   assert.equal(run.status, 0, `the script must exit 0: ${run.stderr}`);
-  return { status: run.status, stdout: run.stdout, parsed: JSON.parse(run.stdout) as Record<string, unknown> };
+  return { stdout: run.stdout, parsed: JSON.parse(run.stdout) as Record<string, unknown> };
 }
 
 test('the script exists and refuses to guess a data directory', () => {
@@ -95,17 +98,19 @@ test('VOICE-METRICS: one call scores latency, delegation silence, first fact, fa
         },
         {
           liveSessionId: 'synthetic-call-b',
-          latency: { n: 1, unmeasured: 1, p50: 300, p90: 300 },
-          silence: { n: 1, unmeasured: 0, totalMs: 4800, longestMs: 3500 },
-          groundedFact: { n: 1, unmeasured: 1, p50: 80, p90: 80 },
+          latency: { n: 1, unmeasured: 2, p50: 300, p90: 300 },
+          silence: { n: 1, unmeasured: 0, totalMs: 7400, longestMs: 6100 },
+          groundedFact: { n: 1, unmeasured: 2, p50: 80, p90: 80 },
           fastEvidence: { n: 0, outcomes: {}, p50: null, p90: null },
           progress: { deliveries: { 'b-task-1': { delivered: 1, closed: 1 } }, reports: { lookup: 1 }, corrections: { 'b-task-1': 1 } },
         },
       ],
+      unjoined: { fastEvidence: 0, reports: 0, corrections: 0 },
+      carriers: { factCommentary: 'recorded', fastEvidence: 'recorded' },
       total: {
-        latency: { n: 2, unmeasured: 1, p50: 300, p90: 2500 },
-        silence: { n: 2, unmeasured: 0, totalMs: 14300, p50: 4800, p90: 9500, longestMs: 6000, longestP50: 3500, longestP90: 6000 },
-        groundedFact: { n: 2, unmeasured: 1, p50: 80, p90: 7000 },
+        latency: { n: 2, unmeasured: 2, p50: 300, p90: 2500 },
+        silence: { n: 2, unmeasured: 0, totalMs: 16900, p50: 7400, p90: 9500, longestMs: 6100, longestP50: 6000, longestP90: 6100 },
+        groundedFact: { n: 2, unmeasured: 2, p50: 80, p90: 7000 },
         fastEvidence: { n: 3, outcomes: { hit: 2, miss: 1 }, p50: 200, p90: 400 },
         progress: {
           deliveries: { 'a-task-1': { delivered: 1 }, 'b-task-1': { delivered: 1, closed: 1 } },
@@ -117,15 +122,26 @@ test('VOICE-METRICS: one call scores latency, delegation silence, first fact, fa
   });
 });
 
-test('VOICE-METRICS: a turn the record cannot time is counted unmeasured, never dropped', () => {
+test('VOICE-METRICS: a turn the record cannot time is unmeasured, never anchored to a turn close', () => {
   dataDirectory(directory => {
     const { parsed } = metrics(directory, '--session', 'synthetic-call-b');
     const calls = parsed.calls as readonly Record<string, Record<string, number | null>>[];
     assert.equal(calls.length, 1, 'one call is selected');
-    assert.deepEqual(calls[0]!.latency, { n: 1, unmeasured: 1, p50: 300, p90: 300 },
-      'the second owner turn has no assistant audio, so it is unmeasured and still counted');
-    assert.deepEqual(calls[0]!.groundedFact, { n: 1, unmeasured: 1, p50: 80, p90: 80 },
-      'no fact reached the owner after the second owner final, so that turn is unmeasured too');
+    assert.deepEqual(calls[0]!.latency, { n: 1, unmeasured: 2, p50: 300, p90: 300 },
+      'two owner turns are unmeasured: one has no assistant audio, and b-t5 has a reply but no owner final utterance, so its own close (9000) is not used as the anchor');
+    assert.deepEqual(calls[0]!.groundedFact, { n: 1, unmeasured: 2, p50: 80, p90: 80 },
+      'no helper answer reached the owner after the second or the unanchored final, so both turns are unmeasured');
+  });
+});
+
+test('VOICE-METRICS: a running helper task is open until the call ends, not until its last write', () => {
+  dataDirectory(directory => {
+    const { parsed } = metrics(directory, '--session', 'synthetic-call-b');
+    const calls = parsed.calls as readonly Record<string, Record<string, number | null>>[];
+    // b-task-1 closed at 7000; b-task-2 is still running at its last write 6200 and the call ends at 9600, so the
+    // window is [1000,9600]: 300 + 1000 ms of gaps before the audio, then 6100 ms of silence to the call's end.
+    assert.deepEqual(calls[0]!.silence, { n: 1, unmeasured: 0, totalMs: 7400, longestMs: 6100 },
+      'truncating at the last write would have reported 4800 / 3500');
   });
 });
 
@@ -141,4 +157,34 @@ test('VOICE-METRICS: --since selects calls by their own turn times, and the read
     assert.deepEqual({ digest: digest(), files: readdirSync(directory).sort() }, before,
       'the source store is byte-for-byte unchanged and no file was added');
   });
+});
+
+test('VOICE-METRICS: a carrier this release does not write is named, never read as a zero', () => {
+  // Before FR1 and FR2 ship, her logs hold no fast_evidence and no commentary_sent line at all. The fact measure
+  // must not depend on them, and the output must say the carriers are absent rather than print a silent zero.
+  dataDirectory(directory => {
+    const { parsed } = metrics(directory);
+    assert.deepEqual(parsed.carriers, { factCommentary: 'not_recorded', fastEvidence: 'not_recorded' });
+    const calls = parsed.calls as readonly Record<string, Record<string, unknown>>[];
+    assert.deepEqual(calls[0]!.groundedFact, { n: 1, unmeasured: 0, p50: 7000, p90: 7000 },
+      'the delivered helper answer still measures the first fact with no commentary line in the log');
+    assert.deepEqual(calls[1]!.groundedFact, { n: 1, unmeasured: 2, p50: 80, p90: 80 });
+    assert.deepEqual(calls[1]!.fastEvidence, { n: 0, outcomes: {}, p50: null, p90: null });
+    assert.deepEqual(calls[1]!.progress, { deliveries: { 'b-task-1': { delivered: 1, closed: 1 } }, reports: {}, corrections: {} });
+  }, '');
+});
+
+test('VOICE-METRICS: a log line that names no call the store holds is counted unjoined, not dropped', () => {
+  const orphans = [
+    JSON.stringify({ timestamp: '2026-01-01T00:00:01.000Z', event: 'fast_evidence', outcome: 'hit', elapsedMs: 99 }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:02.000Z', liveSessionId: 'synthetic-call-gone', event: 'commentary_sent', delegationKey: 'synthetic-delegation-gone', reason: 'lookup' }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:03.000Z', liveSessionId: 'synthetic-call-gone', taskId: 'synthetic-task-gone', event: 'task_lifecycle', phase: 'revision', generation: 1, revision: 2, count: 1, ms: 1 }),
+  ].join('\n');
+  dataDirectory(directory => {
+    const { parsed } = metrics(directory);
+    assert.deepEqual(parsed.unjoined, { fastEvidence: 1, reports: 1, corrections: 1 },
+      'three lines that name no stored call are counted, so an unattributable zero is never read as "not written"');
+    const calls = parsed.calls as readonly Record<string, Record<string, unknown>>[];
+    assert.deepEqual(calls[1]!.fastEvidence, { n: 0, outcomes: {}, p50: null, p90: null }, 'an orphan line is never given to a call');
+  }, `${hostLog}${orphans}\n`);
 });

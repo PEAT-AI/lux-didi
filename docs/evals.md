@@ -441,10 +441,17 @@ Each metric prints per call and in total with P50, P90 and `n`. A turn the recor
 | Metric | Definition |
 | --- | --- |
 | response latency | the owner's last finalized word of a turn to the first assistant audio: `trace_turn.first_audible_at` of the reply turn, else the earliest playback segment of that turn that became audible |
-| silence during delegation | while a helper task is open (`tasks.created_at` to `tasks.updated_at`): the total and the longest stretch with no assistant playback audible |
-| time to first grounded fact | the owner's last finalized word to the first fact-bearing moment: a progress commentary (`trace_event` kind `progress.commentary`, the local-recall and lookup line) or a helper answer the store records as delivered to the owner's session |
+| silence during delegation | while a helper task is open: the total and the longest stretch with no assistant playback audible. A task with a terminal status (`complete`, `no_action`, `incomplete`, `cancelled`) is open from `tasks.created_at` to its last write; a task still `running` is open until the call's own end, because it never writes again |
+| time to first grounded fact | the owner's last finalized word to the first helper answer the store records as delivered to the owner's session. The progress and local-recall commentary is **not** a fact source here: no release writes that line yet (`progress.commentary` exists in the trace kind spine with no emitter), so reading it would score a signal that cannot occur. `carriers.factCommentary` reports whether the logs hold one at all |
 | fast evidence | `fast_evidence` host events counted by outcome, with their elapsed P50 and P90; zero before FR1 ships, which is correct |
 | progress reports and corrections | per helper task: progress deliveries from the store's `task_deliveries` state, `commentary_sent` progress reports and `task_lifecycle` revisions from the host log; zero before FR2 ships, which is correct |
+
+The owner's anchor is the turn's own last `final=1` owner utterance, never the turn's close time: a measurement
+the store does not have prints as missing, and is never inferred from a neighbouring row.
+
+`unjoined` counts log lines of those families that name no call the store holds, so a zero that means "this
+release does not write the line" stays apart from a zero that means "written, and I could not attribute it".
+`carriers` names whether the log holds each forward-looking line at all.
 
 P50 and P90 are nearest-rank over the measured values. The definitions are code: `scripts/didi-voice-metrics`,
 graded by `server/test/voice-metrics.test.ts` on a synthetic store and log that carry no owner content.

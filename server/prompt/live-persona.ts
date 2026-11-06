@@ -434,23 +434,9 @@ export function withToolsSection(text: string, _tools: readonly string[]): strin
 const EARLIER_CONVERSATIONS_TITLE = '# Earlier conversations';
 export const EARLIER_CONVERSATIONS_HEADER =
   'Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner\'s words now win.';
-export const EARLIER_CONVERSATIONS_MAX_CHARS = LIVE_INSTRUCTION_TARGET_CHARS;
+// Text-chat policy remains unchanged; startup selection uses the compiled memory budget.
+const EARLIER_CONVERSATIONS_MAX_CHARS = 44_000;
 export const EARLIER_CONVERSATIONS_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-/** #108: the earlier-conversations reserve. Release 10.7.3 carried 1,162 to 1,639 characters of these
- *  summaries before the owner style grew; the sections that may yield hold this much of the hard
- *  ceiling free for them. */
-export const EARLIER_CONVERSATIONS_RESERVE_CHARS = 1_800;
-/** The space the earlier-conversations section may use: its own reserve under the hard ceiling, so the
- *  leftovers of a target the other sections already blew past cannot starve it (#108). A roomy
- *  instruction still gives the section what the target leaves; a full one gives it the reserve, bounded
- *  by the room that actually exists, so a section can shrink but never break the ceiling. */
-export function earlierConversationsBudget(otherSectionsChars: number): number {
-  const room = LIVE_INSTRUCTION_HARD_LIMIT - otherSectionsChars - separator.length;
-  if (room <= 0) return 0;
-  const underTarget = LIVE_INSTRUCTION_TARGET_CHARS - otherSectionsChars - separator.length;
-  return Math.min(room, Math.max(EARLIER_CONVERSATIONS_RESERVE_CHARS, underTarget));
-}
-
 export const CONVERSATION_RECALL_COVERAGE_NOTE = 'Conversation recall is incomplete. Some retained history could not be included because its eligibility is unverified or the selected route cannot read it. Missing context does not mean a conversation never happened. Use the authorized history tools when an answer depends on earlier discussion, and mention a gap only when it affects the answer.';
 
 export interface EarlierConversationCandidate { readonly id: string; readonly liveSessionId?: string; readonly endedAt: number; readonly summary: string }
@@ -673,8 +659,8 @@ export function composeLiveSessionInstruction(input: {
     fixed[fixed.length - 1] = { ...last, text: `${last.text}${separator}${accent.tail}` };
   }
   // Authored paragraph order is priority. Hash ids never expose paragraph content in diagnostics.
-  const loreText = [...bodySections.filter(section => section.id === 'owner-lore'),
-    ...owner.filter(section => section.id === 'owner-lore' && !held(section.text))].map(section => section.text).join(separator);
+  const loreText = owner.find(section => section.id === 'owner-lore')?.text
+    ?? bodySections.filter(section => section.id === 'owner-lore').map(section => section.text).join(separator);
   const loreBody = loreText.replace(OWNER_LORE_MARKER, '').replace(OWNER_LORE_LEADER, '').replace(OWNER_LORE_CLOSER, '');
   const loreItems = loreBody.split(/\n\s*\n/u).filter(text => text.trim().length)
     .map(text => ({ id: `lore:${digest(text)}`, text }));

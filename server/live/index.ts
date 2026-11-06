@@ -1699,7 +1699,7 @@ export class LiveSessionOwner {
         commitments: loops.map(loop => `${new Date(loop.lastSeenAt).toISOString()} ${loop.text}`),
         savedForHim: admittedRecords
           .map(record => `As of ${date}: ${record.text}`), excludeTopics });
-      const composeSession = (calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
+      const composeSession = (calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, ownerProfile: configuredPrompt.ownerProfile, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
@@ -1757,7 +1757,7 @@ export class LiveSessionOwner {
       const injectedOpeners = composed.sections.some(section => section.id === 'previous-openers') ? earlierOpeners : [];
       const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
       const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...admittedRecords.flatMap(record => composed.selectedIds.includes(record.id) && record.dataClass !== 'unknown' ? [record.dataClass] : [])]);
-      if (injectedSummaryIds.length || summaryOmissions.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: summaryOmissions.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
+      if (injectedSummaryIds.length || summaryOmissions.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: summaryOmissions.length, chars: composed.conversationChars });
       const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz,label FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
       // #107: a missed alarm is said once, in her own words, with its time and what it was for.
       const missedNote = missedAlarms.length ? '\n\n[missed alarm] Say each missed alarm once, early in your opening, in your own words, with its time and what it was for, like "You missed your 10:30 reminder: sport." Missed: '

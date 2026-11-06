@@ -1029,7 +1029,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
-    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'cause', 'closeCode', 'closeReason', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'pickup', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'cause', 'closeCode', 'closeReason', 'reason', 'seedTurns', 'seedChars', 'condensed', 'digestChars', 'msSinceDrop', 'pickup', 'liveSessionId', 'generation'].sort().join(',')) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation)) return;
     if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
@@ -1042,9 +1042,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!(value.reason === null || isSafeToken(value.reason))) return;
     if (!isSafeCloseReason(value.closeReason)) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
+    // C-RECOVERY (a): whether the seed bound dropped exchanges, and the size of the host-compiled digest line.
+    if (typeof value.condensed !== 'boolean' || !isSafeCount(value.digestChars)) return;
     // C-PICKUP: which pickup the rebuilt session was opened with; a closed set, so no spoken text rides here.
     if (!isSafeMember(value.pickup, ['mute', 'connection', 'quiet', 'none'])) return;
-    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, pickup: value.pickup, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, condensed: value.condensed, digestChars: value.digestChars, msSinceDrop: value.msSinceDrop, pickup: value.pickup, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_terminal') {
     if (!closedKeys(value, ['event', 'liveSessionId', 'code'])) return;

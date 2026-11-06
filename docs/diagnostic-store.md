@@ -33,6 +33,8 @@ The join is the envelope, not a timestamp guess: `trace_call.call_key` is the sa
 | `trace_turn`, `trace_response`, `trace_call`, `trace_event`, `trace_playback` | Correlation, receipt stages and native playback evidence | `server/trace/schema.ts` |
 | `history_sessions`, `history_dependencies`, `history_exclusions` | Current history eligibility and derived dependencies | `server/domain/schema.ts` |
 
+A recovered or window-switched call logs one `live_recovery` line whose `seedTurns` and `seedChars` are the bounded size of the history the new provider session was opened with, and whose `condensed` and `digestChars` say whether the seed bound dropped exchanges and how long the host-compiled line naming the owner's earlier asks is. That seed is bounded in the request builder, so the logged size is the size the provider actually received.
+
 Use the owning migrations for exact columns. A canonical model-facing result is not necessarily the full source response; a stored response is not proof that the remote corpus was complete. Reuse edges are not new wire calls, and an absent playback receipt is not proof that a speaker was audible.
 
 ## Direct SQL is privileged forensics

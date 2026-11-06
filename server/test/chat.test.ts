@@ -610,10 +610,11 @@ test('text chat and voice receive the same summary for the same past session', a
     const section = buildEarlierConversationsSection(candidates, { now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
     const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
     const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [],
-      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
+      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, memoryBlockInput: { now: NOW, timeZone: 'UTC', clock: new Date(NOW).toISOString(), entries: [], items: [], summaries: candidates.map(candidate => ({ id: candidate.id, sessionId: candidate.liveSessionId, startedAt: candidate.endedAt, text: candidate.summary })) } });
     assert.equal(voice.earlierConversationsIncluded, true);
     assert.ok(voice.text.includes('moved to Lisbon'), 'voice instruction carries the same session summary');
-    assert.ok(request.system.includes(section.section.replace('# Earlier conversations\n', '')), 'both prompts render the identical summary text');
+    assert.ok(request.system.includes(section.section), 'text chat keeps its own shared summary section');
+    for (const candidate of candidates) assert.ok(voice.text.includes(candidate.summary) && request.system.includes(candidate.summary), 'both surfaces retain the exact source summary');
   } finally { f.close(); }
 });
 

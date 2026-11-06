@@ -582,7 +582,7 @@ test('every composed section id is on the LIVE_INSTRUCTION_SECTION_IDS allowlist
     tools: ['search_knowledge'], memory: 'Fixture note', runtimeContext: 'Fixture runtime' });
   for (const section of instruction.sections) assert.ok(allowed.has(section.id), `${section.id} is listed`);
   const session = composeLiveSessionInstruction({ text: instruction.text, tools: ['search_knowledge'], ownerProfile: FIXTURE_OWNER,
-    records: [{ id: 'a', text: 'Fixture note' }], pickupNote: 'Fixture pickup', earlierConversations: '# Earlier conversations\nFixture header\nline',
+    records: [{ id: 'a', text: 'Fixture note' }], pickupNote: 'Fixture pickup', memoryBlockInput: m11Context({ summaries: [{ id: 'fixture-summary', sessionId: 'fixture-session', startedAt: M11_NOW, text: 'Fixture summary' }] }),
     trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   for (const section of session.sections) assert.ok(allowed.has(section.id), `${section.id} is listed`);
   assert.ok(allowed.has('earlier-conversations'), 'the summary section is a known id');
@@ -705,7 +705,7 @@ test('Q5-R4: the start instruction carries the previous-openers context once, an
   const note = 'Open on a different subject and different words than these earlier openers: "Morning."';
   const withNote = composeLiveSessionInstruction({ text: instruction.text, tools: ['research'], ownerProfile: FIXTURE_OWNER, records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openersNote: note });
   assert.equal(withNote.text.split(note).length - 1, 1, 'the opener context appears exactly once');
-  assert.ok(withNote.sections.some(section => section.id === 'previous-openers' && section.chars === note.length + 2), 'it is its own measured section');
+  assert.ok(withNote.sections.some(section => section.id === 'previous-openers' && section.chars === note.length), 'it is its own measured section');
   const without = composeLiveSessionInstruction({ text: instruction.text, tools: ['research'], ownerProfile: FIXTURE_OWNER, records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   assert.equal(without.text.includes('earlier openers'), false, 'a call with no earlier opener carries no context');
   assert.equal(without.sections.some(section => section.id === 'previous-openers'), false, 'and no empty section is reported');
@@ -773,7 +773,7 @@ test('R7: the session composition carries the warm calendar digest after the run
   assert.ok(at > ids.indexOf('runtime'), 'it follows the runtime context');
   assert.ok(at < ids.indexOf('memory'), 'and precedes the memory records');
   const sections = Object.fromEntries(composed.sections.map(section => [section.id, section.chars]));
-  assert.equal(sections['calendar'], 'Today: 09:00 standup, 15:00 review'.length + 2, 'measured with its joining separator');
+  assert.equal(sections['calendar'], 'Today: 09:00 standup, 15:00 review'.length, 'measured section content');
   const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, ...sizeMetadata(composed.text), sections, languageCode: 'en', voice: 'marin' });
   assert.ok(logged !== undefined, 'the sizes line still passes the closed set with the calendar key');
   assert.equal((logged['sections'] as Record<string, number>)['calendar'], sections['calendar'], 'the calendar key survives it');
@@ -1071,7 +1071,7 @@ test('M11: calendar selection ranks whole events by proximity to the owner clock
 
 test('M11: complete rendered section counts include every joining separator', () => {
   const result = m11Session({ calendar: '12:00 Synthetic event', pickupNote: 'Synthetic pickup' });
-  assert.equal(result.sections.reduce((sum, section) => sum + section.chars, 0), result.text.length);
+  assert.equal(result.sections.reduce((sum, section) => sum + section.chars, 0) + 2 * (result.sections.length - 1), result.text.length);
   assert.equal(result.estimatedTokens, estimatedTokens(result.text));
 });
 

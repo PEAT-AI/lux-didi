@@ -431,7 +431,7 @@ export function withToolsSection(text: string, _tools: readonly string[]): strin
 }
 
 /** Verbatim header for the earlier-conversations section (session memory v1). */
-export const EARLIER_CONVERSATIONS_TITLE = '# Earlier conversations';
+const EARLIER_CONVERSATIONS_TITLE = '# Earlier conversations';
 export const EARLIER_CONVERSATIONS_HEADER =
   'Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner\'s words now win.';
 export const EARLIER_CONVERSATIONS_MAX_CHARS = LIVE_INSTRUCTION_TARGET_CHARS;
@@ -638,10 +638,6 @@ export function composeLiveSessionInstruction(input: {
   readonly calendar?: string;
   /** C-MEMORYTRUTH: the alarms table at the moment of the seed, so an armed alarm reaches the next call. */
   readonly alarms?: string;
-  readonly earlierConversations?: string;
-  /** #108: the room held free for the earlier-conversations section, so the sections that yield (the
-   *  owner lore and opener hints) make it instead of the summary section taking the leftovers. */
-  readonly earlierReserve?: number;
   /** The owner's accent selection at this session start; the head and tail anchors carry it. */
   readonly accentSelection?: LiveAccent;
 } ) {
@@ -753,7 +749,7 @@ export function composeLiveSessionInstruction(input: {
     omitted: rendered.block.omitted.filter(item => recordIds.has(item.id) && item.reason === 'budget').map(item => ({ id: item.id, reason: 'budget' as const })),
     sections: rendered.sections.map((section, index) => {
       const text = (index ? separator : '') + section.text;
-      return { id: section.id, chars: text.length, estimatedTokens: estimatedTokens(text) };
+      return { id: section.id, chars: section.text.length, estimatedTokens: estimatedTokens(text) };
     }),
     earlierConversationsIncluded: rendered.block.summaryIds.length > 0,
     summaryIds: rendered.block.summaryIds,

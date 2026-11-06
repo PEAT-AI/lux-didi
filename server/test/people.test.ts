@@ -175,7 +175,7 @@ test('people: a 130 person roster renders under its ceiling and the whole instru
   assert.equal(ownerProfileSections(profile).length, 2);
   const composed = composeLiveSessionInstruction({
     text: '# BASE\n' + 'b'.repeat(5086), tools: ['research', 'mattermost_chat'], records: [], trustedChars: LIVE_INSTRUCTION_HARD_LIMIT,
-    ownerProfile: profile, earlierConversations: 'x'.repeat(8957), accentSelection: 'indian-strong',
+    ownerProfile: profile, memoryBlockInput: { now: 0, timeZone: 'UTC', clock: 'Synthetic clock', entries: [], items: [], summaries: Array.from({ length: 20 }, (_, index) => ({ id: `summary-${index}`, sessionId: `session-${index}`, startedAt: -index, text: 'x'.repeat(300) })) }, accentSelection: 'indian-strong',
   });
   assert.ok(composed.sections.some(section => section.id === 'people'), composed.sections.map(section => section.id).join(','));
   assert.ok(composed.text.length < LIVE_INSTRUCTION_HARD_LIMIT, `${composed.text.length} over the hard limit`);
@@ -275,15 +275,16 @@ test('people: a full lore plus a 130 person roster still composes under the hard
   }, 'owner-1');
   const composed = composeLiveSessionInstruction({
     text: `# BASE\n${'b'.repeat(20_000)}`, tools: ['research', 'mattermost_chat'], records: [], trustedChars: LIVE_INSTRUCTION_HARD_LIMIT,
-    ownerProfile: profile, earlierConversations: 'x'.repeat(8_957), accentSelection: 'indian-strong',
+    ownerProfile: profile, memoryBlockInput: { now: 0, timeZone: 'UTC', clock: 'Synthetic clock', entries: [], items: [], summaries: Array.from({ length: 20 }, (_, index) => ({ id: `summary-${index}`, sessionId: `session-${index}`, startedAt: -index, text: 'x'.repeat(300) })) }, accentSelection: 'indian-strong',
   });
   assert.ok(composed.text.length < LIVE_INSTRUCTION_HARD_LIMIT, `${composed.text.length} over the hard limit`);
   const section = composed.sections.find(entry => entry.id === 'people');
   assert.ok(section !== undefined, 'the people section must still be present');
   assert.ok(section.chars <= PEOPLE_CHAR_LIMIT);
-  const trimmed = events.filter(event => event.event === 'people_trimmed');
-  assert.equal(trimmed.length, 1, JSON.stringify(events));
-  assert.ok((trimmed[0]!.dropped ?? 0) > 0);
+  const omitted = composed.omitted.filter(item => item.id.startsWith('person:'));
+  assert.ok(omitted.length > 0, 'whole people are omitted with source ids');
+  assert.ok(omitted.every(item => item.reason === 'budget'));
+  assert.ok(!composed.text.includes('l'.repeat(100)), 'the oversized lore paragraph is omitted, never clipped');
   installPeople(null);
 });
 

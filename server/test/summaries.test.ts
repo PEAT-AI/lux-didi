@@ -1,3 +1,4 @@
+import { compileMemoryBlock } from '../prompt/memory-block.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -7,7 +8,7 @@ import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
-import { buildEarlierConversationsSection, earlierConversationsBudget } from '../prompt/live-persona.js';
+import { buildEarlierConversationsSection } from '../prompt/live-persona.js';
 import { composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences } from '../prompt/index.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
@@ -345,10 +346,10 @@ test('voice and text chat render the same summary for the same past session', ()
 
     const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
     const voice = composeLiveSessionInstruction({ text: baseline.text, tools: [], records: [],
-      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section.section });
+      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, memoryBlockInput: { now: NOW, timeZone: 'UTC', clock: new Date(NOW).toISOString(), entries: [], items: [], summaries: candidates.map(candidate => ({ id: candidate.id, sessionId: candidate.liveSessionId, startedAt: candidate.endedAt, text: candidate.summary })) } });
     assert.equal(voice.earlierConversationsIncluded, true);
     assert.ok(voice.text.includes('moved to Lisbon'));
-    assert.ok(voice.text.includes('# Earlier conversations'));
+    assert.ok(voice.text.includes('# Last conversations'));
 
     const compiled = compilePrompt({
       ownerId: h.store.assistantId, persona: 'didi', promptVersion: PROMPT_VERSION,
@@ -418,23 +419,24 @@ test('host-start recovery re-queues the newest 30 failed-deadline sessions whose
   } finally { h.cleanup(); }
 });
 
-test('twenty complete summaries fill the space left under the target instead of the old six', () => {
+test('the compiled conversation budget selects a newest-first whole-summary prefix from twenty admitted candidates', () => {
   const h = open();
   try {
     for (let i = 0; i < 20; i++) insertPastSummary(h.store, `past-${String(i).padStart(2, '0')}`,
       `The owner discussed the Mongoose mint delivery window and the Friday schedule, item ${i}.`, NOW - i * 3_600_000);
     const candidates = h.store.transaction(tx => summaries.injectionCandidates(tx));
     assert.equal(candidates.length, 20);
-    const build = (earlierSection?: string) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
-      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(earlierSection ? { earlierConversations: earlierSection } : {}) });
-    const basis = build();
-    const section = buildEarlierConversationsSection(candidates, { now: NOW + 1, timeZone: 'UTC', maxChars: earlierConversationsBudget(basis.text.length) });
-    assert.ok(section.selectedIds.length > 6, `kept ${section.selectedIds.length} summaries`);
-    assert.equal(section.omitted.length, 20 - section.selectedIds.length);
-    assert.deepEqual(section.selectedIds, candidates.map(candidate => candidate.id).filter(id => section.selectedIds.includes(id)), 'newest first');
-    const composed = build(section.section);
+    const input = { now: NOW + 1, timeZone: 'UTC', clock: new Date(NOW).toISOString(), entries: [], items: [],
+      summaries: candidates.map(candidate => ({ id: candidate.id, sessionId: candidate.liveSessionId, startedAt: candidate.endedAt, text: candidate.summary })) };
+    const block = compileMemoryBlock(input);
+    assert.ok(block.summaryIds.length > 6 && block.summaryIds.length < 20);
+    assert.deepEqual(block.summaryIds, candidates.filter(candidate => block.summaryIds.includes(candidate.id)).map(candidate => candidate.id));
+    for (const candidate of candidates) assert.equal(block.text.includes(candidate.summary), block.summaryIds.includes(candidate.id));
+    const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
+      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, memoryBlockInput: input });
     assert.equal(composed.earlierConversationsIncluded, true);
-    assert.ok(composed.text.length > basis.text.length);
+    assert.deepEqual(composed.summaryIds, block.summaryIds);
+    assert.ok(block.parts[3]!.estimatedTokens <= 800);
   } finally { h.cleanup(); }
 });
 

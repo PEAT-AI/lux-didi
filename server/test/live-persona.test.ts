@@ -1,3 +1,7 @@
+import { validateOwnerProfile } from '../prompt/index.js';
+import { installPeople, renderPeople, type Person } from '../people/index.js';
+import { CONTEXT_BUDGET, estimatedTokens } from '../prompt/context-budget.js';
+import { MEMORY_BACKGROUND, type MemoryBlockInput } from '../prompt/memory-block.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -5,13 +9,12 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, MEMORY_SECTION_CHAR_LIMIT, STANDING_MEMORY_CHAR_LIMIT, STANDING_MEMORY_PREFACE, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
+  NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS,
   LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
-  validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
+  validatePersonaOverlay, withToolsSection, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
   buildOpeningFacts,
-  EARLIER_CONVERSATIONS_RESERVE_CHARS,
 } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -19,12 +22,29 @@ import type { OwnerProfileSnapshot } from '../prompt/types.js';
 /** Root-approved source guide, kept exact in the executing surfaces. */
 
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
-const BUDGET = TRUSTED_SYSTEM_CODE_UNIT_LIMIT;
 
 function writePrivate(dir: string, name: string, text: string): void {
   const path = join(dir, name);
   writeFileSync(path, text, { mode: 0o600 });
   chmodSync(path, 0o600);
+}
+
+
+function sizeMetadata(text: string) {
+  return { estimatedTokens: estimatedTokens(text), stablePrefixChars: 0, stablePrefixEstimatedTokens: 0,
+    fixedChars: 0, fixedEstimatedTokens: 0, overTarget: estimatedTokens(text) > CONTEXT_BUDGET.target };
+}
+const M11_NOW = Date.UTC(2026, 10, 7, 0);
+function m11Context(patch: Partial<MemoryBlockInput> = {}): MemoryBlockInput {
+  return { now: M11_NOW, timeZone: 'UTC', clock: 'Sat 7 Nov 2026, 00:00 UTC', items: [], entries: [],
+    summaries: [
+      { id: 'recent-one', sessionId: 'recent-one', startedAt: M11_NOW - 1000, text: 'Synthetic recent conversation one.' },
+      { id: 'recent-two', sessionId: 'recent-two', startedAt: M11_NOW - 2000, text: 'Synthetic recent conversation two.' },
+    ], ...patch };
+}
+function m11Session(patch: Partial<Parameters<typeof composeLiveSessionInstruction>[0]> = {}) {
+  return composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], records: [], trustedChars: 60_000,
+    now: M11_NOW, timeZone: 'UTC', runtimeContext: '# Runtime context\nSynthetic runtime', memoryBlockInput: m11Context(), ...patch });
 }
 
 test('the public Naya character is new, bounded, neutral and names no biography', () => {
@@ -160,21 +180,18 @@ test('speech language canonicalization keeps bare ISO 639-1 only', () => {
   assert.equal(canonicalSpeechLanguage(''), undefined);
 });
 
-test('the target budget yields memory first and never drops the base, overlay or anchor', () => {
-  // PV1: the target is 30,000 now, so the overlay has to be larger than it was for memory to be the section
-  // that yields; the rule under test is the yield order, not the size that used to reach it.
-  const ownerProfile = syntheticOwner('S'.repeat(8_000), 'OWNER LORE BLOCK');
-  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(16_000) };
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', memory: 'M'.repeat(20_000),
-    runtimeContext: 'R'.repeat(20_000) });
-  assert.ok(result.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `composed text ${result.text.length} must fit the hard limit`);
-  assert.ok(result.text.includes(NAYA_LIVE_BASE), 'base never yields');
-  assert.ok(result.text.includes('O'.repeat(16_000)), 'overlay never yields');
-  assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
-  // PV2: a yielded section is reported with a zero size, so the size line names exactly what was dropped.
-  assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
-  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), language: 'en' }),
-    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
+test('M11: target pressure preserves fixed persona, runtime and bounded memory below hard admission', () => {
+  const ownerProfile = syntheticOwner('S'.repeat(17_000), 'Synthetic authored lore');
+  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile,
+    overlay: { schemaVersion: 1, text: 'O'.repeat(5_000) }, language: 'en',
+    memory: 'A synthetic whole memory item', runtimeContext: 'R'.repeat(2_000) });
+  assert.ok(result.text.includes(NAYA_LIVE_BASE));
+  assert.ok(result.text.includes('S'.repeat(17_000)));
+  assert.ok(result.text.includes('O'.repeat(5_000)));
+  assert.ok(result.text.includes('R'.repeat(2_000)));
+  assert.ok(result.text.includes('A synthetic whole memory item'));
+  assert.ok(estimatedTokens(result.text) > CONTEXT_BUDGET.target);
+  assert.ok(estimatedTokens(result.text) <= CONTEXT_BUDGET.hard);
 });
 
 test('no declarations retain the public work policy and stable hash', () => {
@@ -248,48 +265,24 @@ test('loadPersonaOverlay returns undefined when absent and throws when the file 
 });
 
 
-test('session composition places bounded whole memory records and pickup before the final voice anchor', () => {
-  const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
-    style: { text: 'Fixture owner style\n\nLANGUAGE: caller-owned marker', dataClass: 'ordinary' }, lore: { text: 'Fixture owner lore', dataClass: 'ordinary' } };
-  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'hi' });
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], ownerProfile, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, records: [{ id: 'b', text: 'Fixture note B' }, { id: 'a', text: 'Fixture note A' }], pickupNote: 'Fixture pickup note', trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
-  assert.deepEqual(composed.selectedIds, ['a', 'b']);
-  const order = ['Fixture owner style', 'Fixture overlay', NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, 'Fixture owner lore', '# Memory', 'Fixture pickup note'];
-  for (let i = 1; i < order.length; i++) assert.ok(composed.text.indexOf(order[i - 1]!) < composed.text.indexOf(order[i]!));
-  const trustedAnchor = composed.text.lastIndexOf('\n\nLANGUAGE:');
-  assert.ok(trustedAnchor > composed.text.indexOf('caller-owned marker'));
-  assert.ok(order.every(marker => composed.text.indexOf(marker) < trustedAnchor));
-  assert.ok(composed.text.endsWith(baseline.text.slice(baseline.text.lastIndexOf('LANGUAGE:'))));
-  const withMemory = composeLiveInstruction({ base: NAYA_LIVE_BASE, memory: 'Fixture memory section' });
-  assert.deepEqual(withMemory.sections.map(section => section.id), ['voice-head', 'base', 'tools', 'memory', 'voice']);
-  const capped = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay: { schemaVersion: 1, text: 'Fixture overlay' }, memory: 'x'.repeat(BUDGET) });
-  const memorySection = capped.sections.find(section => section.id === 'memory');
-  assert.ok(memorySection, 'an over-long memory input is retained');
-  assert.equal(memorySection.chars, MEMORY_SECTION_CHAR_LIMIT, 'memory is capped at 1500 chars');
-  // PV1: the target moved to 30,000, so the overlay is sized from the target itself rather than a fixed number.
-  const yieldingSize = LIVE_INSTRUCTION_TARGET_CHARS - baseline.text.length + 1;
-  const yielding = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay: { schemaVersion: 1, text: 'O'.repeat(yieldingSize) }, memory: 'x'.repeat(BUDGET) });
-  assert.equal(yielding.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields before the overlay and the base');
-  assert.ok(yielding.text.includes('O'.repeat(yieldingSize)), 'memory yields before the overlay');
+test('M11: explicit entries are whole, deterministic and precede per-call pickup', () => {
+  const entries = [{ id: 'b', text: 'Whole synthetic note B' }, { id: 'a', text: 'Whole synthetic note A' }];
+  const result = m11Session({ records: entries, memoryBlockInput: m11Context({ entries }), pickupNote: 'Synthetic pickup' });
+  assert.deepEqual(result.selectedIds, ['a', 'b']);
+  for (const entry of entries) assert.ok(result.text.includes(entry.text));
+  assert.ok(result.text.indexOf('# Who he is') < result.text.indexOf('Synthetic pickup'));
+  assert.ok(!result.text.includes('# Memory\n'));
 });
 
-test('tool-enabled Live CREATE retains expanded owner bytes and yields memory only as whole records', () => {
-  const lore = `SYNTHETIC expanded lore ${'L'.repeat(4_000)}`;
-  const ownerProfile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'fixture', displayName: 'Example',
-    style: { text: `SYNTHETIC style ${'S'.repeat(4096)}`, dataClass: 'private' }, lore: { text: lore, dataClass: 'sensitive' } };
-  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, language: 'en' });
-  const records = [{ id: 'fits', text: 'SYNTHETIC retained memory' }, { id: 'whole-oversize', text: 'M'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT) }];
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'], records,
-    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
-  assert.equal(composed.text.split(lore).length - 1, 1);
-  assert.ok(composed.text.includes(NAYA_WORK_DELIVERY));
-  assert.deepEqual(composed.selectedIds, ['fits']);
-  assert.deepEqual(composed.omitted, [{ id: 'whole-oversize', reason: 'budget' }]);
-  assert.ok(!composed.text.includes('M'.repeat(128)));
-  const oversized: OwnerProfileSnapshot = { ...ownerProfile,
-    style: { text: 'S'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), dataClass: 'private' } };
-  assert.throws(() => composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: oversized, language: 'en' }),
-    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
+test('M11: tool-enabled CREATE preserves fixed owner style and selects whole identity notes', () => {
+  const style = 'Synthetic fixed style. '.repeat(300);
+  const entries = Array.from({ length: 20 }, (_, index) => ({ id: String(index), text: `Note ${index} ${'word '.repeat(80)}` }));
+  const result = m11Session({ ownerProfile: syntheticOwner(style, 'A short synthetic lore paragraph.'), records: entries,
+    memoryBlockInput: m11Context({ entries }), tools: ['search_knowledge'] });
+  assert.ok(result.text.includes(style));
+  assert.ok(result.selectedIds.length > 0 && result.selectedIds.length < entries.length);
+  for (const id of result.selectedIds) assert.ok(result.text.includes(entries.find(entry => entry.id === id)!.text));
+  assert.ok(result.text.includes(NAYA_WORK_DELIVERY));
 });
 
 test('runtime context is inserted right after the base and before the tools', () => {
@@ -319,24 +312,20 @@ test('P1: persona leads, facts sit in the middle and the anchor closes the instr
   }
 });
 
-test('P1: the memory section is capped at 1500 characters', () => {
-  assert.equal(MEMORY_SECTION_CHAR_LIMIT, 1_500);
+test('M11: an oversized whole memory input is omitted, never clipped mid-text', () => {
   const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, memory: 'm'.repeat(50_000) });
-  const memory = result.sections.find(section => section.id === 'memory');
-  assert.ok(memory, 'an over-long memory input is retained, clipped');
-  assert.equal(memory.chars, MEMORY_SECTION_CHAR_LIMIT);
+  assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0);
+  assert.ok(!result.text.includes('m'.repeat(100)));
+  const whole = 'A synthetic whole memory item';
+  assert.ok(composeLiveInstruction({ base: NAYA_LIVE_BASE, memory: whole }).text.includes(whole));
 });
 
-test('P1: owner lore survives while memory yields under the budget', () => {
-  const lore = `OWNER LORE ${'L'.repeat(4_000)}`;
-  // PV1: the 30,000 target needs a larger overlay before memory is the section that yields.
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('S'.repeat(5_500), lore),
-    overlay: { schemaVersion: 1, text: 'O'.repeat(30_000) }, language: 'en', memory: `MEMORY ${'m'.repeat(20_000)}` });
-  assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
-  const loreSection = result.sections.find(section => section.id === 'owner-lore');
-  assert.ok(loreSection && loreSection.chars > 0, 'owner lore is never dropped before memory');
-  assert.equal(result.text.split(lore).length - 1, 1, 'the dense lore is present exactly once');
-  assert.ok(result.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
+test('M11: pinned whole lore selection leaves recent memory intact under pressure', () => {
+  const lore = Array.from({ length: 12 }, (_, index) => `Lore ${index}: ${'synthetic '.repeat(60)}`).join('\n\n');
+  const result = m11Session({ text: 'F'.repeat(29_736), ownerProfile: syntheticOwner('Synthetic style', lore) });
+  assert.deepEqual(result.summaryIds, ['recent-one', 'recent-two']);
+  assert.ok(result.itemOmissions.some(item => item.id.startsWith('lore:')));
+  assert.ok(estimatedTokens(result.sections.find(section => section.id === 'owner-lore') ? result.text.slice(result.text.indexOf('Authored background'), result.text.indexOf('End authored background.') + 'End authored background.'.length) : '') <= 1_000);
 });
 
 test('P1: exactly one LANGUAGE line, the accent leads the head block and is restated at the terminal anchor', () => {
@@ -355,64 +344,33 @@ test('P1: exactly one LANGUAGE line, the accent leads the head block and is rest
   assert.doesNotMatch(result.text, /ACCENT: /);
 });
 
-test('P1: the target and hard limits are the declared 44000 and 52000 characters (PV2)', () => {
-  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 44_000);
-  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 52_000);
-  assert.equal(OWNER_LORE_CHAR_LIMIT, 14_000);
+test('M11: character limits are derived from conservative estimated token limits', () => {
+  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, CONTEXT_BUDGET.target * 3.2);
+  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, CONTEXT_BUDGET.hard * 3.2);
 });
 
-test('PV2: a 14,000 character owner lore survives intact, inside its own section budget', () => {
-  const lore = 'L'.repeat(14_000);
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', lore), language: 'en' });
-  assert.equal(result.text.split(lore).length - 1, 1, 'the whole 14k lore is present exactly once');
-  const loreSection = result.sections.find(section => section.id === 'owner-lore');
-  assert.ok(loreSection && loreSection.chars > lore.length, 'the whole lore plus its leader and closing marker');
-  assert.ok(result.text.includes('End authored background.'), 'and the closing marker is never cut');
-  assert.ok(result.text.length <= LIVE_INSTRUCTION_TARGET_CHARS);
-  // Past that budget the lore section is clipped at its own limit, which is not a target-budget yield.
-  const clipped = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'L'.repeat(14_001)), language: 'en' });
-  assert.equal(clipped.text.includes('L'.repeat(14_001)), false);
-  assert.ok(clipped.text.includes(lore));
+test('M11: authored lore is pinned by whole paragraph priority, not a 14k character clip', () => {
+  const paragraphs = Array.from({ length: 20 }, (_, index) => `Synthetic paragraph ${index}: ${'L'.repeat(450)}`);
+  const ownerProfile = syntheticOwner('Synthetic owner style', paragraphs.join('\n\n'));
+  const first = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile });
+  const second = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, runtimeContext: 'Different per-call state' });
+  const extract = (text: string) => text.slice(text.indexOf('Authored background'), text.indexOf('End authored background.') + 'End authored background.'.length);
+  const lore = extract(first.text);
+  assert.equal(lore, extract(second.text));
+  assert.ok(estimatedTokens(lore) <= CONTEXT_BUDGET.sections.lore.ceiling);
+  assert.ok(lore.includes(paragraphs[0]!));
+  assert.ok(!lore.includes(paragraphs[19]!));
+  for (const paragraph of paragraphs) if (lore.includes(paragraph.slice(0, 25))) assert.ok(lore.includes(paragraph));
 });
 
-test('P9-R2 F1: the session composition carries one accent tail, gives the description once, and logs it', () => {
-  const description = 'Warm Indian English, unhurried.';
-  const stays = (text: string): number => text.split('Stay in this accent').length - 1;
-  const plain = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en' });
-  const described = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en', voiceDescription: description });
-  const session = (text: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'], records: [],
-    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, accentSelection: 'indian-strong' });
-  const withoutDescription = session(plain.text);
-  const composed = session(described.text);
-  // The head block and the tail block, never a third: the description adds no accent tail.
-  assert.equal(stays(withoutDescription.text), 2, 'the head and the tail, in the text that has no description');
-  assert.equal(stays(composed.text), stays(withoutDescription.text), 'the description adds no accent tail');
-  assert.equal(composed.text.split('Voice description:').length - 1, 1, 'the description appears once');
-  assert.ok(composed.text.trimEnd().endsWith(description), 'and it is the last thing the model reads');
-  // The sizes line the session start emits carries the description as its own section.
-  const sections = Object.fromEntries(composed.sections.map(section => [section.id, section.chars]));
-  const line = `Voice description: ${description}`;
-  assert.equal(sections['voice-description'], line.length);
-  const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, sections,
-    languageCode: 'en', voice: 'marin' });
-  assert.ok(logged, 'the session size line stays inside the closed shape');
-  assert.equal((logged.sections as Record<string, number>)['voice-description'], line.length);
-  // A second pass over an already composed session text keeps one tail and one description.
-  const again = session(composed.text);
-  assert.equal(stays(again.text), 2);
-  assert.equal(again.text.split('Voice description:').length - 1, 1);
-  assert.equal(again.sections.filter(section => section.id === 'voice-description').length, 1);
-  // A description that holds a blank line is legal (two paragraphs, or a file with a trailing empty line),
-  // so the split must never depend on the description being one paragraph.
-  for (const varied of ['Warm Indian English.\n\nDeep and calm.', 'Warm Indian English.\n']) {
-    const describedMore = composeLiveInstruction({ base: NAYA_LIVE_BASE, accentSelection: 'indian-strong', language: 'en', voiceDescription: varied });
-    const shaped = session(describedMore.text);
-    assert.equal(stays(shaped.text), 2, 'still one accent tail');
-    assert.equal(shaped.text.split('Voice description:').length - 1, 1, 'still one description');
-    assert.ok(shaped.text.endsWith(varied), 'still the last thing the model reads');
-    const sized = Object.fromEntries(shaped.sections.map(section => [section.id, section.chars]));
-    assert.equal(sized['voice-description'], `Voice description: ${varied}`.length, 'and still its own section');
-  }
+test('M11: fixed voice description and approved accent blocks are preserved in the stable prefix', () => {
+  const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', voiceDescription: 'SYNTHETIC VOICE DESCRIPTION' });
+  const result = m11Session({ text: frozen.text });
+  const stable = result.text.slice(0, result.stablePrefixChars);
+  assert.equal(occurrence(result.text, 'SYNTHETIC VOICE DESCRIPTION'), 1, 'description appears once');
+  assert.ok(stable.includes('SYNTHETIC VOICE DESCRIPTION'));
+  assert.equal(stable.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS[LIVE_DEFAULT_ACCENT as 'indian-strong'].tail).length, frozen.text.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS[LIVE_DEFAULT_ACCENT as 'indian-strong'].tail).length, 'preserve approved repetition without adding voice blocks');
+  assert.ok(result.sections.some(section => section.id === 'voice-description'));
 });
 
 test('PV2: the voice description is appended once inside the accent tail and logs as its own section', () => {
@@ -427,7 +385,7 @@ test('PV2: the voice description is appended once inside the accent tail and log
   assert.equal(section.chars, line.length);
   // It is on the closed section allowlist, so the size line carries its own count.
   assert.ok((LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes('voice-description'));
-  const logged = safeEvent({ event: 'live_instruction_sizes', total: result.text.length,
+  const logged = safeEvent({ event: 'live_instruction_sizes', total: result.text.length, ...sizeMetadata(result.text),
     sections: Object.fromEntries(result.sections.map(entry => [entry.id, entry.chars])), languageCode: 'en', voice: 'marin' });
   assert.ok(logged, 'the size line stays inside the closed shape');
   assert.equal((logged.sections as Record<string, number>)['voice-description'], line.length);
@@ -437,21 +395,12 @@ test('PV2: the voice description is appended once inside the accent tail and log
   assert.equal(plain.text.includes('Voice description:'), false);
 });
 
-test('P3-R2: a full owner layer, session memory and earlier conversations all survive under the raised limits', () => {
-  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(3_000) };
-  const ownerProfile = syntheticOwner('S'.repeat(3_000), 'L'.repeat(3_000));
-  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en' });
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const section = buildEarlierConversationsSection(Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, endedAt: now - i * 3_600_000, summary: 'x'.repeat(400) })), { now, timeZone: 'UTC' }).section;
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'],
-    records: [{ id: 'a', text: 'M'.repeat(1_000) }], trustedChars: LIVE_INSTRUCTION_HARD_LIMIT, earlierConversations: section });
-  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `session instruction ${composed.text.length} must fit the hard limit`);
-  assert.deepEqual(composed.selectedIds, ['a'], 'the memory record is kept');
-  assert.equal(composed.earlierConversationsIncluded, true, 'the earlier-conversations section is kept');
-  assert.deepEqual(composed.omitted, [], 'nothing is omitted');
-  assert.ok(composed.sections.some(s => s.id === 'memory' && s.chars > 0), 'the memory section survives');
-  assert.ok(composed.sections.some(s => s.id === 'tools' && s.chars === NAYA_WORK_DELIVERY.length), 'TOOLS is intact');
-  assert.ok(composed.text.includes(NAYA_WORK_DELIVERY));
+test('M11: fixed text above target composes below hard admission and reports the overrun', () => {
+  const result = m11Session({ text: 'F'.repeat(30_000) });
+  assert.ok(result.text.startsWith('F'.repeat(30_000)));
+  assert.ok(result.overTarget);
+  assert.ok(result.estimatedTokens <= 14_000);
+  assert.deepEqual(result.summaryIds, ['recent-one', 'recent-two']);
 });
 
 test('P1: session composition reports the composed size per section', () => {
@@ -463,78 +412,11 @@ test('P1: session composition reports the composed size per section', () => {
   assert.ok(composed.sections.some(section => section.id === 'memory' && section.chars > 0), 'the memory section is measured');
 });
 
-// --- session memory v1: earlier-conversations injection section -------------------------------
-
-const DAY = 24 * 60 * 60 * 1000;
-
-test('the earlier-conversations header is the authored verbatim constant', () => {
-  assert.equal(EARLIER_CONVERSATIONS_HEADER,
-    "Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner's words now win.");
-});
-
-test('earlier-conversations fills the space left under the budget, newest first, whole summaries only', () => {
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000, summary: `summary number ${i}` }));
-  // Full budget: every whole summary fits, nothing is capped at six or at 3000 chars.
-  const full = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC' });
-  assert.equal(full.selectedIds.length, 20);
-  assert.deepEqual(full.omitted, []);
-  // Tight budget: as many whole summaries as fit, newest first, never over the budget.
-  const tight = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: 414 });
-  assert.ok(tight.selectedIds.length > 0 && tight.selectedIds.length < 20, 'a tight budget keeps a prefix');
-  assert.deepEqual(tight.selectedIds, candidates.map(candidate => candidate.id).filter(id => tight.selectedIds.includes(id)), 'newest first');
-  assert.ok(tight.section.length <= 414, `section stayed at the budget (${tight.section.length})`);
-  assert.deepEqual(tight.omitted.map(o => o.id), candidates.map(candidate => candidate.id).filter(id => !tight.selectedIds.includes(id)));
-  assert.ok(tight.omitted.every(o => o.reason === 'budget'));
-  for (const line of tight.section.split('\n').slice(2)) assert.match(line, /^[A-Z][a-z]{2} \d+ [A-Z][a-z]{2}, \w+: \[session:s\d{2}\] summary number \d+$/, 'no summary is cut mid-sentence');
-});
-
-test('a summary that does not fit is skipped and a smaller older one still fills the budget', () => {
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const big = buildEarlierConversationsSection([
-    { id: 'a', endedAt: now, summary: 'x'.repeat(2_500) },
-    { id: 'b', endedAt: now - 1, summary: 'y'.repeat(600) },
-    { id: 'c', endedAt: now - 2, summary: 'small' },
-  ], { now, timeZone: 'UTC', maxChars: 3_000 });
-  assert.deepEqual(big.selectedIds, ['a', 'c'], 'b no longer fits the budget; c still does');
-  assert.ok(big.omitted.some(o => o.id === 'b' && o.reason === 'budget'));
-  assert.ok(big.section.length <= 3_000);
-});
-
-test('earlier-conversations excludes summaries older than 14 days as stale', () => {
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const result = buildEarlierConversationsSection([
-    { id: 'fresh', endedAt: now - 13 * DAY, summary: 'fresh' },
-    { id: 'stale', endedAt: now - 15 * DAY, summary: 'stale' },
-  ], { now, timeZone: 'UTC' });
-  assert.deepEqual(result.selectedIds, ['fresh']);
-  assert.deepEqual(result.omitted, [{ id: 'stale', reason: 'stale' }]);
-});
-
-test('earlier-conversations prefixes an absolute local date and part of day in the owner timezone', () => {
-  const endedAt = Date.UTC(2026, 9, 13, 12, 30);
-  const kolkata = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'Asia/Kolkata' });
-  const losAngeles = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'America/Los_Angeles' });
-  assert.ok(kolkata.section.includes('Tue 13 Oct, evening: [session:a] Shipped the thing.'), kolkata.section);
-  assert.ok(losAngeles.section.includes('Tue 13 Oct, morning: [session:a] Shipped the thing.'), losAngeles.section);
-});
-
-test('the earlier-conversations section sits right after # Memory and cannot silently yield', () => {
-  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const section = buildEarlierConversationsSection([{ id: 'a', endedAt: now, summary: 'SYNTHETIC prior conversation' }], { now, timeZone: 'UTC' }).section;
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'],
-    records: [{ id: 'fits', text: 'SYNTHETIC retained memory' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, earlierConversations: section });
-  assert.ok(composed.earlierConversationsIncluded);
-  const memoryAt = composed.text.indexOf('# Memory');
-  const earlierAt = composed.text.indexOf('# Earlier conversations');
-  assert.ok(earlierAt > memoryAt, 'the section sits after # Memory');
-  assert.ok(composed.sections.some(s => s.id === 'earlier-conversations' && s.chars > 0), 'the section is measured');
-
-  // M0-R1: an impossible mandatory section fails closed instead of silently losing recall.
-  assert.throws(() => composeLiveSessionInstruction({ text: baseline.text, tools: [],
-    records: [{ id: 'fits', text: 'SYNTHETIC retained memory' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    earlierConversations: 'E'.repeat(TRUSTED_SYSTEM_CODE_UNIT_LIMIT) }), PersonaOverlayError);
+test('M11: one background block replaces the three old memory headings', () => {
+  const result = m11Session();
+  assert.equal(occurrence(result.text, MEMORY_BACKGROUND), 1);
+  for (const heading of ['# Now', '# Who he is', '# Open loops', '# Last conversations']) assert.equal(occurrence(result.text, heading), 1);
+  assert.doesNotMatch(result.text, /^# (Memory|Standing memory|Earlier conversations)$/m);
 });
 
 test('the recovery pickup is typed connection data, not an opening sentence', () => {
@@ -645,118 +527,55 @@ test('every composed section id is on the LIVE_INSTRUCTION_SECTION_IDS allowlist
     tools: ['search_knowledge'], memory: 'Fixture note', runtimeContext: 'Fixture runtime' });
   for (const section of instruction.sections) assert.ok(allowed.has(section.id), `${section.id} is listed`);
   const session = composeLiveSessionInstruction({ text: instruction.text, tools: ['search_knowledge'], ownerProfile: FIXTURE_OWNER,
-    records: [{ id: 'a', text: 'Fixture note' }], pickupNote: 'Fixture pickup', earlierConversations: '# Earlier conversations\nFixture header\nline',
+    records: [{ id: 'a', text: 'Fixture note' }], pickupNote: 'Fixture pickup', memoryBlockInput: m11Context({ summaries: [{ id: 'fixture-summary', sessionId: 'fixture-session', startedAt: M11_NOW, text: 'Fixture summary' }] }),
     trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   for (const section of session.sections) assert.ok(allowed.has(section.id), `${section.id} is listed`);
   assert.ok(allowed.has('earlier-conversations'), 'the summary section is a known id');
 });
 
-test('the earlier-conversations budget is what the rest of the instruction leaves under the target', () => {
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000,
-    summary: 'Synthetic past conversation about the Mongoose mint and the Friday delivery window.' }));
-  const build = (earlierSection?: string) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
-    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(earlierSection ? { earlierConversations: earlierSection } : {}) });
-  const basis = build();
-  const budget = earlierConversationsBudget(basis.text.length);
-  assert.ok(budget > 0 && budget < LIVE_INSTRUCTION_TARGET_CHARS);
-  const section = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: budget });
-  assert.ok(section.selectedIds.length > 6, `the budget keeps more than the old six (${section.selectedIds.length})`);
-  const composed = build(section.section);
-  assert.ok(composed.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `stays under the target (${composed.text.length})`);
-  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
-  assert.ok(composed.text.includes(NAYA_WORK_DELIVERY), 'tools are never dropped for summaries');
-  assert.equal(composed.earlierConversationsIncluded, true);
+test('M11: recent conversations have a dedicated 800 ceiling and 700 floor', () => {
+  assert.deepEqual(CONTEXT_BUDGET.memory.conversations, { ceiling: 800, floor: 700 });
+  const result = m11Session({ text: 'F'.repeat(30_000) });
+  assert.deepEqual(result.summaryIds, ['recent-one', 'recent-two']);
 });
 
-test('#108: the earlier-conversations section keeps its own reserve beside a 17k owner style', () => {
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000,
-    summary: 'Synthetic past conversation about the Mongoose mint and the Friday delivery window.' }));
-  // The private owner style is not in this repository. Release 10.7.3 carried 16,625 characters of it,
-  // which is what pushed the rest of the instruction past the target; this synthetic one is 17,000.
-  const style = 'Synthetic style line: she answers the way the owner does and stops when done. '.repeat(220).slice(0, 17_000);
-  const profile: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: 'synthetic-17k',
-    displayName: 'Synthetic Owner', style: { text: style, dataClass: 'private' },
-    lore: { text: 'Synthetic lore line about the house, the boat and the Friday delivery. '.repeat(155), dataClass: 'sensitive' } };
-  const records = Array.from({ length: 12 }, (_, i) => ({ id: `n${String(i).padStart(2, '0')}`,
-    text: `Synthetic note ${i}: the mint ships on Friday and the invoice goes out on Monday morning.` }));
-  const build = (earlierSection?: string, earlierReserve?: number) => composeLiveSessionInstruction({ text: NAYA_LIVE_BASE,
-    tools: ['search_knowledge'], records, runtimeContext: 'Runtime: one synthetic Mac and one synthetic workspace.', ownerProfile: profile,
-    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ...(earlierReserve === undefined ? {} : { earlierReserve }),
-    ...(earlierSection ? { earlierConversations: earlierSection } : {}) });
-  const basis = build(undefined, EARLIER_CONVERSATIONS_RESERVE_CHARS);
-  const budget = earlierConversationsBudget(basis.text.length);
-  const section = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: budget });
-  const composed = build(section.section, EARLIER_CONVERSATIONS_RESERVE_CHARS);
-  const sizes = JSON.stringify({ basis: basis.text.length, budget, section: section.section.length, total: composed.text.length,
-    hardLimit: LIVE_INSTRUCTION_HARD_LIMIT, trustedLimit: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, sections: composed.sections });
-  // #843: the per-section sizes, so a section that grows shows up in this check's own output.
-  console.log('live instruction sizes', sizes);
-  assert.ok(budget >= 1_400, `the section owns a reserve under the hard ceiling (${budget})`);
-  assert.ok(section.section.length > 1_400, `she starts the call with her last calls (${section.section.length} chars)`);
-  assert.equal(composed.earlierConversationsIncluded, true, 'the digest reaches the opener');
-  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT, `under the hard ceiling (${composed.text.length})`);
-  assert.ok(composed.text.length <= TRUSTED_SYSTEM_CODE_UNIT_LIMIT, `under the 60k trusted limit (${composed.text.length})`);
-  assert.ok(composed.text.includes(NAYA_WORK_DELIVERY), 'the tool conduct never yields to the summaries');
+test('M11: recent summaries survive alongside a 17k fixed owner style', () => {
+  const result = m11Session({ ownerProfile: syntheticOwner('S'.repeat(17_000), 'Short synthetic lore') });
+  assert.ok(result.text.includes('S'.repeat(17_000)));
+  assert.deepEqual(result.summaryIds, ['recent-one', 'recent-two']);
 });
 
-const standingRecord = (id: string, text: string, status: 'current' | 'dated' | 'open' = 'current') =>
-  ({ id, text, standing: { id, text, status, capturedAt: '2026-09-01' } });
-
-test('standing memory sits after owner lore and before # Memory, and never rides the uuid-ordered list', () => {
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, ownerProfile: FIXTURE_OWNER,
-    records: [{ id: 'plain', text: 'Fixture plain note' }, standingRecord('standing-1', 'Fixture standing note')] });
-  const ids = composed.sections.map(section => section.id);
-  assert.ok(ids.indexOf('owner-lore') < ids.indexOf('standing-memory'), 'after owner lore');
-  assert.ok(ids.indexOf('standing-memory') < ids.indexOf('memory'), 'before # Memory');
-  assert.ok(composed.text.includes(STANDING_MEMORY_PREFACE));
-  const memorySection = composed.sections.find(section => section.id === 'memory')!;
-  const memoryText = composed.text.slice(composed.text.indexOf('# Memory'), composed.text.indexOf('# Memory') + memorySection.chars);
-  assert.ok(!memoryText.includes('Fixture standing note'), 'a standing note is not repeated in # Memory');
-  assert.ok(memoryText.includes('Fixture plain note'));
-  assert.equal(composed.sections.filter(section => section.id === 'standing-memory').length, 1);
+test('M11: imported explicit entries fold into Who he is, not a separate standing list', () => {
+  const entries = [{ id: 'imported', text: 'A synthetic imported fact', capturedAt: M11_NOW }];
+  const result = m11Session({ records: entries, memoryBlockInput: m11Context({ entries }) });
+  assert.ok(result.text.indexOf('# Who he is') < result.text.indexOf('A synthetic imported fact'));
+  assert.ok(result.text.indexOf('A synthetic imported fact') < result.text.indexOf('# Open loops'));
+  assert.doesNotMatch(result.text, /# Standing memory/);
+  assert.ok(result.text.includes('(7 Nov 2026)'));
 });
 
-test('the standing section keeps its own budget and reports each omission as budget', () => {
-  const note = (index: number) => standingRecord(`standing-${String(index).padStart(2, '0')}`, `Fixture standing note ${index} `.repeat(6), 'open');
-  // Twenty notes: the compact render fits more of them, so the corpus has to grow to reach the cap.
-  const records = Array.from({ length: 20 }, (_, index) => note(index));
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
-  const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
-  assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);
-  assert.ok(composed.selectedIds.length > 0 && composed.selectedIds.length < records.length, 'whole notes only, and some omitted');
-  assert.deepEqual(composed.selectedIds, records.slice(0, composed.selectedIds.length).map(record => record.id), 'kept in rank order');
-  assert.ok(composed.omitted.length > 0);
-  for (const omission of composed.omitted) assert.equal(omission.reason, 'budget');
-  assert.equal(composed.text, composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records }).text, 'deterministic');
+test('M11: identity omissions carry ids and budget reasons without content', () => {
+  const entries = Array.from({ length: 12 }, (_, index) => ({ id: `note-${index}`, text: 'SYNTHETIC CONTENT '.repeat(100) }));
+  const result = m11Session({ records: entries, memoryBlockInput: m11Context({ entries }) });
+  assert.ok(result.itemOmissions.length > 0);
+  for (const omission of result.itemOmissions) assert.deepEqual(Object.keys(omission).sort(), ['id', 'reason']);
+  assert.ok(!JSON.stringify(result.itemOmissions).includes('SYNTHETIC CONTENT'));
 });
 
-test('a standing note costs at most 40 characters of render overhead and keeps its id', () => {
-  // A real entry id is a 36-character uuid: the delimiters around it are the whole framing budget.
-  const id = '3f1c2a44-1b7e-4c2d-9c3a-9b8d0f7e5a61';
-  assert.equal(id.length, 36);
-  const text = 'Fixture standing note kept whole';
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    records: [standingRecord(id, text)] });
-  const line = composed.text.split('\n').find(candidate => candidate.includes(text))!;
-  assert.ok(line.length - text.length <= 40, `overhead ${line.length - text.length} within 40`);
-  assert.ok(line.includes(id), 'the id stays available to the selection receipt');
-  assert.ok(line.startsWith('[') && line.includes('] '), 'the record is still clearly delimited');
+test('M11: identity accounting charges rendered headings and whole-note overhead', () => {
+  const entries = [{ id: 'one', text: 'Synthetic whole fact', capturedAt: M11_NOW }];
+  const result = m11Session({ records: entries, memoryBlockInput: m11Context({ entries }) });
+  const who = result.text.slice(result.text.indexOf('# Who he is'), result.text.indexOf('# Open loops'));
+  assert.ok(estimatedTokens(who) <= CONTEXT_BUDGET.memory.identity.ceiling);
+  assert.ok(who.includes(entries[0]!.text));
 });
 
-test('the standing section fits more of a 29-note corpus of median 210 characters', () => {
-  const body = 'the owner keeps this note because it carries context for later calls and it is read whole ';
-  const note = (index: number) => standingRecord(`3f1c2a44-1b7e-4c2d-9c3a-${String(index).padStart(12, 'a')}`,
-    `note ${index} ${body.repeat(3)}`.slice(0, 210));
-  const records = Array.from({ length: 29 }, (_, index) => note(index));
-  const lengths = records.map(record => record.text.length).sort((a, b) => a - b);
-  assert.equal(lengths[14], 210, 'the fixture median is 210 characters');
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
-  const section = composed.sections.find(entry => entry.id === 'standing-memory')!;
-  assert.ok(section.chars <= STANDING_MEMORY_CHAR_LIMIT, `section ${section.chars} within ${STANDING_MEMORY_CHAR_LIMIT}`);
-  assert.equal(composed.selectedIds.length, 11, 'eleven whole notes of median 210 characters fit');
-  assert.ok(composed.omitted.length > 0, 'the cap still bounds the section');
+test('M11: a 29-note synthetic corpus packs whole facts to its identity allocation', () => {
+  const entries = Array.from({ length: 29 }, (_, index) => ({ id: `note-${index}`, text: `${index} ${'S'.repeat(208)}` }));
+  const result = m11Session({ records: entries, memoryBlockInput: m11Context({ entries }) });
+  assert.ok(result.selectedIds.length > 0 && result.selectedIds.length < entries.length);
+  for (const id of result.selectedIds) assert.ok(result.text.includes(entries.find(entry => entry.id === id)!.text));
+  assert.deepEqual(result.summaryIds, ['recent-one', 'recent-two']);
 });
 
 test('the standing selection receipt is a closed shape of counts and no text', () => {
@@ -766,28 +585,16 @@ test('the standing selection receipt is a closed shape of counts and no text', (
   assert.equal(safeEvent({ selected: 11, omitted: 18, chars: 2_891 }), undefined, 'the event name is required');
 });
 
-test('# Memory keeps its own budget when a standing set is present', () => {
-  const records = [
-    standingRecord('standing-1', 'S'.repeat(MEMORY_SECTION_CHAR_LIMIT)),
-    { id: 'plain-1', text: 'Fixture ad hoc voice note' },
-  ];
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, records });
-  const memory = composed.sections.find(section => section.id === 'memory')!;
-  assert.ok(memory.chars <= MEMORY_SECTION_CHAR_LIMIT);
-  assert.ok(composed.text.includes('Fixture ad hoc voice note'));
-  assert.ok(composed.sections.some(section => section.id === 'standing-memory'));
+test('M11: identity selection cannot consume the recent-conversation allocation', () => {
+  const entries = Array.from({ length: 30 }, (_, index) => ({ id: String(index), text: `${index} ${'fact '.repeat(70)}` }));
+  const result = m11Session({ records: entries, memoryBlockInput: m11Context({ entries }) });
+  assert.deepEqual(result.summaryIds, ['recent-one', 'recent-two']);
+  assert.ok(result.text.includes('# Last conversations'));
 });
 
-test('PV2: the budget numbers are the wire-tested ones and a 43,000-char composition fits while 53,000 throws', () => {
-  assert.equal(LIVE_INSTRUCTION_TARGET_CHARS, 44_000);
-  assert.equal(LIVE_INSTRUCTION_HARD_LIMIT, 52_000);
-  // A gpt-live-1 probe accepted 28,000 and 60,000-character instructions and echoed them in full, and the
-  // model's 16,384 instruction tokens hold about 60,000 characters; the host targets 44,000 of them.
-  const fits = composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_TARGET_CHARS - composeLiveInstruction({ base: 'B', language: 'en' }).text.length), language: 'en' });
-  assert.ok(fits.text.length >= 43_000, `the composition is at least 43,000 chars (${fits.text.length})`);
-  assert.ok(fits.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `and stays under the target (${fits.text.length})`);
-  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(53_000), language: 'en' }),
-    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
+test('M11: hard admission refuses visibly only above 14,000 estimated tokens', () => {
+  assert.doesNotThrow(() => m11Session({ text: 'F'.repeat(40_000) }));
+  assert.throws(() => m11Session({ text: 'F'.repeat(45_000) }), { code: 'instruction_too_large' });
 });
 
 test('PV1-R1: the accent head and tail blocks are pinned verbatim, and the voice default emits none', () => {
@@ -816,35 +623,28 @@ test('PV1-R1: the accent head and tail blocks are pinned verbatim, and the voice
   assert.equal(own.sections.some(section => section.id === 'voice-head'), false, 'and no head block either');
 });
 
-test('PV1: the overlay accent detail follows the block, and the receipt lists style and lore apart', () => {
-  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'OVERLAY PERSONA BLOCK', accent: 'SYNTHETIC-ACCENT-DESCRIPTION' };
-  const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'OWNER LORE BLOCK'), overlay, language: 'en', accentSelection: 'indian-strong' });
-  const block = LIVE_ACCENT_PRESETS['indian-strong'].head;
-  assert.ok(frozen.text.startsWith(block), 'the block leads');
-  assert.ok(frozen.text.indexOf('SYNTHETIC-ACCENT-DESCRIPTION') > block.length, 'the private accent text still follows it');
-  const session = composeLiveSessionInstruction({ text: frozen.text, tools: [], records: [], overlay, trustedChars: BUDGET, accentSelection: 'indian-strong' });
-  assert.deepEqual(session.sections.map(section => section.id), ['voice-head', 'owner-style', 'overlay', 'base', 'tools', 'owner-lore', 'voice']);
-  assert.ok(session.sections.find(section => section.id === 'owner-style')!.chars > 0, 'the style has its own chars');
-  assert.ok(session.sections.find(section => section.id === 'owner-lore')!.chars > 0, 'and so does the lore');
-  assert.equal(session.text, frozen.text, 'the split labels the same bytes, never a re-arrangement');
+test('M11: fixed style, overlay, base, tools and voice precede pinned lore and runtime', () => {
+  const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: FIXTURE_OWNER, language: 'en', overlay: { schemaVersion: 1, text: 'SYNTHETIC OVERLAY' } });
+  const result = m11Session({ text: frozen.text, ownerProfile: FIXTURE_OWNER });
+  const ids = result.sections.map(section => section.id);
+  assert.ok(ids.indexOf('owner-style') < ids.indexOf('base'));
+  assert.ok(ids.indexOf('tools') < ids.indexOf('owner-lore'));
+  assert.ok(ids.indexOf('voice') < ids.indexOf('owner-lore'));
+  assert.ok(ids.indexOf('owner-lore') < ids.indexOf('runtime'));
+  assert.ok(ids.indexOf('runtime') < ids.indexOf('memory'));
+  assert.ok(result.text.slice(0, result.stablePrefixChars).includes('SYNTHETIC OVERLAY'));
 });
 
-test('PV1: a saved accent takes the next session start, replacing the frozen block without an app restart', () => {
+test('M11: a saved accent changes the next stable prefix without an app restart', () => {
   const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accentSelection: 'indian-strong' });
-  const session = composeLiveSessionInstruction({ text: frozen.text, tools: [], records: [], trustedChars: BUDGET, accentSelection: 'indian-light' });
-  const light = LIVE_ACCENT_PRESETS['indian-light'].head;
-  assert.ok(session.text.startsWith(light), 'the head anchor carries the new selection');
-  assert.ok(session.text.endsWith(LIVE_ACCENT_PRESETS['indian-light'].tail), 'and so does the tail anchor');
-  assert.ok(!session.text.includes(LIVE_ACCENT_PRESETS['indian-strong'].head), 'the frozen block is replaced, never doubled');
-  const same = composeLiveSessionInstruction({ text: frozen.text, tools: [], records: [], trustedChars: BUDGET, accentSelection: 'indian-strong' });
-  assert.equal(same.text, frozen.text, 'the same selection composes byte-identically');
-  const own = composeLiveSessionInstruction({ text: session.text, tools: [], records: [], trustedChars: BUDGET, accentSelection: 'voice-default' });
-  assert.ok(!own.text.includes(light), 'and the voice default removes a saved block at the next start');
+  const result = m11Session({ text: frozen.text, accentSelection: 'indian-light' });
+  const stable = result.text.slice(0, result.stablePrefixChars);
+  assert.ok(stable.startsWith(LIVE_ACCENT_PRESETS['indian-light'].head));
+  assert.ok(stable.includes(LIVE_ACCENT_PRESETS['indian-light'].tail));
+  assert.ok(!stable.includes(LIVE_ACCENT_PRESETS['indian-strong'].head));
+  assert.equal(stable.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS['indian-light'].tail).length, occurrence(LIVE_ACCENT_PRESETS['indian-light'].head, LIVE_ACCENT_PRESETS['indian-light'].tail) + 1, 'one selected head plus its terminal tail');
 });
 
-// Q5: both openers of one day were the same eleven-second line, a "go deep" question was answered from
-// cut snippets, and a timed-out research call was handed back to the owner and then re-fired. Three
-// unconditional rules, each stated once, replacing the sentences they supersede.
 test('Q5-R4: the start instruction carries the previous-openers context once, and nothing when there is none', () => {
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: FIXTURE_OWNER, language: 'en' });
   const note = 'Open on a different subject and different words than these earlier openers: "Morning."';
@@ -890,19 +690,13 @@ test('S4b: the accent preset head and tail are byte-identical to the shipped voi
   assert.equal(LIVE_ACCENT_PRESETS['indian-strong'].tail, LIVE_ACCENT_PRESETS['indian-light'].tail, 'both presets share the one tail');
 });
 
-const NOW_3U = Date.UTC(2026, 9, 20, 9, 30);
 
-test('593: an old standing loop carries its age and last-seen date', () => {
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    now: NOW_3U, timeZone: 'UTC',
-    records: [standingRecord('standing-1', 'Call the accountant about the invoice', 'open')] });
-  const line = composed.text.split('\n').find(candidate => candidate.includes('standing-1'))!;
-  assert.ok(line.includes('from 49 days ago'), `the plain-word age is carried: ${line}`);
-  assert.ok(line.includes('last seen open 1 Sept 2026'), `the last-seen date is carried: ${line}`);
-  assert.ok(line.includes('is it done:'), 'an old standing loop is asked about');
+test('M11: imported explicit notes carry their real local observation date', () => {
+  const entries = [{ id: 'old-note', text: 'A synthetic observed state', capturedAt: M11_NOW - 3 * 86_400_000 }];
+  const result = m11Session({ records: entries, memoryBlockInput: m11Context({ entries }) });
+  assert.match(result.text, /A synthetic observed state \(4 Nov 2026\)/);
 });
 
-// 593: the persona states the 24 hour rule once, in plain words.
 test('593: the persona carries one rule about still and loops not seen in the last day', () => {
   assert.match(NAYA_CHARACTER, /Call something still open or still true only when it was confirmed in the last 24 hours/, 'the 24 hour still rule is in the persona');
   assert.match(NAYA_CHARACTER, /never state it as a current fact/, 'and an older item is never a current fact');
@@ -924,8 +718,8 @@ test('R7: the session composition carries the warm calendar digest after the run
   assert.ok(at > ids.indexOf('runtime'), 'it follows the runtime context');
   assert.ok(at < ids.indexOf('memory'), 'and precedes the memory records');
   const sections = Object.fromEntries(composed.sections.map(section => [section.id, section.chars]));
-  assert.equal(sections['calendar'], 'Today: 09:00 standup, 15:00 review'.length, 'measured as what it added');
-  const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, sections, languageCode: 'en', voice: 'marin' });
+  assert.equal(sections['calendar'], 'Today: 09:00 standup, 15:00 review'.length, 'measured section content');
+  const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, ...sizeMetadata(composed.text), sections, languageCode: 'en', voice: 'marin' });
   assert.ok(logged !== undefined, 'the sizes line still passes the closed set with the calendar key');
   assert.equal((logged['sections'] as Record<string, number>)['calendar'], sections['calendar'], 'the calendar key survives it');
 });
@@ -1117,31 +911,13 @@ test('client-mode composition retains work and spoken delivery without declared 
   assert.ok(composed.sections.some(section => section.id === 'tools'));
 });
 
-test('work policy survives over-target composition, memory and runtime yield with sizes logged', () => {
-  const overlay = validatePersonaOverlay({ schemaVersion: 1, text: 'O'.repeat(12_000) });
-  const ownerProfile = syntheticOwner('S'.repeat(16_000), 'L'.repeat(10_000));
-  const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, ownerProfile,
-    memory: 'M'.repeat(MEMORY_SECTION_CHAR_LIMIT), runtimeContext: 'R'.repeat(1000), tools: [] });
-  assert.ok(composed.text.length > LIVE_INSTRUCTION_TARGET_CHARS);
-  assert.ok(composed.text.length < LIVE_INSTRUCTION_HARD_LIMIT);
-  assert.ok(composed.text.includes(overlay.text));
-  assert.ok(composed.text.includes(NAYA_WORK_DELIVERY));
-  assert.equal(composed.sections.find(section => section.id === 'tools')?.chars, NAYA_WORK_DELIVERY.length);
-  assert.equal(composed.sections.find(section => section.id === 'memory')?.chars, 0);
-  assert.equal(composed.sections.find(section => section.id === 'runtime')?.chars, 0);
-  assert.throws(() => composeLiveInstruction({ base: 'B'.repeat(LIVE_INSTRUCTION_HARD_LIMIT), tools: [] }),
-    (error: unknown) => error instanceof PersonaOverlayError && error.code === 'instruction_too_large');
+test('M11: work policy and runtime survive target overflow with a size diagnostic', () => {
+  const result = m11Session({ text: 'F'.repeat(30_000) });
+  assert.ok(result.text.includes(NAYA_WORK_DELIVERY));
+  assert.ok(result.text.includes('# Runtime context'));
+  assert.ok(result.overTarget);
+  assert.ok(result.fixedEstimatedTokens > 4_700);
 });
-
-for (const provider of ['openai', 'gemini']) {
-  test(`${provider} accepted Live instruction carries the same work policy without tools`, () => {
-    const accepted = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], records: [],
-      trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, delegatedBackend: provider === 'openai' });
-    assert.ok(accepted.text.includes(NAYA_WORK_DELIVERY));
-    assert.equal(accepted.text.split(NAYA_WORK_DELIVERY).length - 1, 1);
-    assert.doesNotMatch(accepted.text, /# Research procedure/);
-  });
-}
 
 test('worker instructions append composed presentation style and private owner lore', async () => {
   const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
@@ -1161,33 +937,108 @@ test('worker instructions append composed presentation style and private owner l
   assert.ok(result.text.length < 60000);
 });
 
-const STILL_NEGATION = /still\s+(?:not|did not|has not|hasn't|to|has to|needs to)/iu;
 
-test('593: standing lines never state an old loop as still unfinished', () => {
-  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    now: NOW_3U, timeZone: 'UTC',
-    records: [standingRecord('standing-old', 'The owner said the tax form is still not filed.', 'open')] });
-  const line = composed.text.split('\n').find(candidate => candidate.includes('standing-old'))!;
-  assert.ok(!STILL_NEGATION.test(line), `no stale assertion in the standing line: ${line}`);
-  assert.ok(line.includes('is it done:'), 'an old standing loop is a question');
+test('M11: typed state supersession is applied before text rendering', () => {
+  const old: MemoryBlockInput['items'][number] = { id: 'old', kind: 'plan', text: 'The synthetic plan is unfinished', subject: 'plan',
+    validFrom: M11_NOW - 1000, validUntil: null, eventAt: null, eventTz: null, eventText: null, place: null,
+    authority: 'explicit_owner', status: 'superseded', supersededBy: 'new', salience: 1, createdAt: M11_NOW - 1000, createdBy: 'synthetic', generation: 1 };
+  const replacement = { ...old, id: 'new', text: 'The synthetic plan is complete', kind: 'durable_fact' as const,
+    status: 'active' as const, supersededBy: null, validFrom: M11_NOW };
+  const result = m11Session({ memoryBlockInput: m11Context({ items: [old, replacement] }) });
+  assert.ok(!result.text.includes(old.text));
+  assert.ok(result.text.includes(replacement.text));
+  assert.ok(result.itemOmissions.some(item => item.id === 'old' && item.reason === 'superseded'));
 });
 
-test('M0-R1: overflow clips owner lore, not the three earlier calls or memory', () => {
-  const ownerProfile = syntheticOwner('SYNTHETIC STYLE', 'L'.repeat(OWNER_LORE_CHAR_LIMIT));
-  const fixed = composeLiveSessionInstruction({ text: 'BASE', ownerProfile, tools: [], records: [], trustedChars: 60_000 });
-  const text = 'BASE' + 'B'.repeat(53_000 - fixed.text.length);
-  const now = Date.UTC(2026, 10, 6, 12);
-  const earlier = buildEarlierConversationsSection([0, 1, 2].map(i => ({ id: `synthetic-${i}`, endedAt: now - i * 60_000, summary: 'S'.repeat(400) })), { now, timeZone: 'UTC' });
-  const composed = composeLiveSessionInstruction({ text, ownerProfile, tools: [], records: [{ id: 'note', text: 'SYNTHETIC NOTE' }],
-    trustedChars: 60_000, earlierReserve: 1_800, earlierConversations: earlier.section });
-  assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
-  assert.equal(composed.earlierConversationsIncluded, true);
-  assert.deepEqual(earlier.selectedIds, ['synthetic-0', 'synthetic-1', 'synthetic-2']);
-  for (const id of ['synthetic-0', 'synthetic-1', 'synthetic-2']) assert.ok(composed.text.includes(`[session:${id}]`));
-  assert.ok(composed.text.includes(earlier.section), 'the complete earlier-conversations section is intact');
-  assert.deepEqual(composed.selectedIds, ['note']);
-  assert.ok(composed.sections.find(section => section.id === 'owner-lore')!.chars < OWNER_LORE_CHAR_LIMIT);
-  assert.ok(composed.text.includes(text), 'the non-yielding base is intact');
-  assert.equal(composed.yielded[0]?.id, 'owner-lore');
-  assert.ok(composed.yielded[0]!.before > composed.yielded[0]!.after);
+test('M0-R1 intent under M11: pinned lore selection protects all admitted recent summaries', () => {
+  const lore = Array.from({ length: 25 }, (_, index) => `Lore paragraph ${index}: ${'synthetic '.repeat(60)}`).join('\n\n');
+  const summaries = Array.from({ length: 3 }, (_, index) => ({ id: `admitted-${index}`, sessionId: `admitted-${index}`, startedAt: M11_NOW - index, text: `Synthetic admitted call ${index}.` }));
+  const result = m11Session({ text: 'F'.repeat(29_736), ownerProfile: syntheticOwner('Synthetic style', lore), memoryBlockInput: m11Context({ summaries }) });
+  assert.deepEqual(result.summaryIds, summaries.map(summary => summary.id));
+  assert.ok(result.itemOmissions.some(item => item.id.startsWith('lore:')));
+  assert.ok(!result.yielded.some(section => section.id === 'memory'));
+});
+
+test('compiled start block replaces legacy headings and stable lore precedes runtime', () => {
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, records: [], tools: [], trustedChars: 50_000,
+    runtimeContext: '# Runtime context\nSynthetic runtime', memoryBlockInput: {
+      now: 0, timeZone: 'UTC', clock: 'Synthetic clock', items: [], entries: [], summaries: [],
+    } });
+  assert.ok(composed.text.includes('# Who he is'));
+  assert.ok(!/^# (Memory|Standing memory|Earlier conversations)$/m.test(composed.text));
+  assert.ok(composed.text.indexOf('# Runtime context') < composed.text.indexOf('# Now'));
+});
+
+
+test('M11-R1: a 52,263-character legacy-shaped fixture protects recent calls and pins lore', () => {
+  const fixed = 'F'.repeat(29_736);
+  const paragraphs = Array.from({ length: 18 }, (_, index) => {
+    const prefix = `Synthetic lore ${index}: `;
+    return prefix + 'L'.repeat((index === 17 ? 823 : 500) - prefix.length);
+  });
+  const lore = paragraphs.join('\n\n');
+  assert.equal(lore.length, 9_357);
+  const people: Person[] = Array.from({ length: 20 }, (_, index) => ({ id: `person-${index}`, name: `Synthetic Person ${index}`,
+    aliases: [], role: 'Synthetic role', circle: 'external', project: '', tier: 1, email: [], mattermost: '', note: 'detail '.repeat(20) }));
+  const roster = { version: 1 as const, people, bytes: 0 };
+  const extra = 5_858 - renderPeople(roster, Infinity).text.length;
+  assert.ok(extra > 0);
+  people[people.length - 1] = { ...people[people.length - 1]!, role: people[people.length - 1]!.role + 'P'.repeat(extra) };
+  const rawPeople = renderPeople(roster, Infinity).text;
+  assert.equal(rawPeople.length, 5_858);
+  const legacyPrefix = [fixed, lore, rawPeople].join('\n\n');
+  const legacyRendered = `${legacyPrefix}\n\n${'V'.repeat(52_263 - legacyPrefix.length - 2)}`;
+  assert.equal(legacyRendered.length, 52_263);
+  installPeople(roster);
+  try {
+    const result = m11Session({ text: fixed, ownerProfile: syntheticOwner('Synthetic style', lore) });
+    assert.deepEqual(result.summaryIds, ['recent-one', 'recent-two']);
+    for (const heading of ['# Now', '# Who he is', '# Open loops', '# Last conversations']) assert.ok(result.text.includes(heading));
+    assert.ok(result.sections.find(section => section.id === 'owner-lore')!.estimatedTokens <= 1_000);
+    assert.ok(result.sections.find(section => section.id === 'people')!.estimatedTokens <= 200);
+    assert.ok(result.itemOmissions.some(item => item.id.startsWith('lore:')));
+    assert.ok(result.itemOmissions.some(item => item.id.startsWith('person:')));
+    assert.ok(result.overTarget, 'fixed text is preserved even when floors cannot reach the target');
+    assert.ok(result.estimatedTokens <= 14_000);
+    const again = m11Session({ text: fixed, ownerProfile: syntheticOwner('Synthetic style', lore), now: M11_NOW + 86_400_000,
+      calendar: '23:00 A synthetic different event', memoryBlockInput: m11Context({ summaries: [] }) });
+    assert.equal(result.text.slice(0, result.stablePrefixChars), again.text.slice(0, again.stablePrefixChars));
+    const loreSection = result.text.slice(result.text.indexOf('Authored background'), result.text.indexOf('End authored background.'));
+    for (const paragraph of paragraphs) assert.equal(loreSection.includes(paragraph), !result.itemOmissions.some(item => item.id === `lore:${createHash('sha256').update(paragraph).digest('hex')}`));
+  } finally { installPeople(null); }
+});
+
+test('M11: calendar selection ranks whole events by proximity to the owner clock', () => {
+  const now = Date.UTC(2026, 10, 7, 12);
+  const result = m11Session({ now, timeZone: 'UTC', calendar: '23:00 Synthetic late event; 12:05 Synthetic nearest event; 03:00 Synthetic early event',
+    memoryBlockInput: m11Context({ now, clock: 'Sat 7 Nov 2026, 12:00 UTC' }) });
+  assert.ok(result.text.indexOf('Synthetic nearest event') < result.text.indexOf('Synthetic early event'));
+  assert.ok(result.text.indexOf('Synthetic early event') < result.text.indexOf('Synthetic late event'));
+  for (const event of ['23:00 Synthetic late event', '12:05 Synthetic nearest event', '03:00 Synthetic early event']) assert.ok(result.text.includes(event));
+});
+
+test('M11: complete rendered section counts include every joining separator', () => {
+  const result = m11Session({ calendar: '12:00 Synthetic event', pickupNote: 'Synthetic pickup' });
+  assert.equal(result.sections.reduce((sum, section) => sum + section.chars, 0) + 2 * (result.sections.length - 1), result.text.length);
+  assert.equal(result.estimatedTokens, estimatedTokens(result.text));
+});
+
+
+test('M11: opening-option availability does not change the fixed cacheable prefix', () => {
+  const absent = m11Session();
+  const present = m11Session({ openingFacts: 'Synthetic opening options' });
+  assert.equal(absent.text.slice(0, absent.stablePrefixChars), present.text.slice(0, present.stablePrefixChars));
+});
+
+
+test('M11: a frozen preview and the admitted profile produce one canonical pinned lore catalog', () => {
+  const paragraphs = Array.from({ length: 5 }, (_, index) => `Synthetic paragraph ${index}: ${'L'.repeat(1_800)}`);
+  const ownerProfile = validateOwnerProfile({ schemaVersion: 1, kind: 'profile', ownerId: 'owner-1', profileVersion: 'synthetic',
+    displayName: 'Synthetic Owner', style: { text: 'Synthetic style', dataClass: 'ordinary' },
+    lore: { text: paragraphs.join('\n\n'), dataClass: 'ordinary' } }, 'owner-1');
+  const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile });
+  const result = m11Session({ text: frozen.text, ownerProfile });
+  assert.equal(result.itemOmissions.filter(item => item.id.startsWith('lore:')).length, 4);
+  assert.equal(result.text.split(paragraphs[0]!).length - 1, 1);
+  for (const paragraph of paragraphs.slice(1)) assert.ok(!result.text.includes(paragraph));
 });

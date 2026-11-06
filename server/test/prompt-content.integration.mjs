@@ -1,3 +1,4 @@
+import { compileMemoryBlock, MEMORY_BACKGROUND } from '../dist/prompt/memory-block.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -6,6 +7,11 @@ import { EVIDENCE_SOURCES_GUIDE } from '../dist/prompt/source-guidance.js';
 import { WORKER_INSTRUCTIONS, workerInstructions } from '../dist/tasks/instructions.js';
 import { openAiInstructions } from '../dist/adapters/live-voice/openai.js';
 import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from '../dist/tools/history.js';
+
+// The live composer must not retain the retired text-chat renderer or a compatibility export.
+assert.doesNotMatch(readFileSync(new URL('../dist/prompt/live-persona.js', import.meta.url), 'utf8'),
+  /STANDING_MEMORY_TITLE|EARLIER_CONVERSATIONS_TITLE/u, 'retired chat headings do not live in the live composer');
+assert.equal(Object.hasOwn(prompt, 'buildEarlierConversationsSection'), false, 'no compatibility export from the prompt barrel');
 
 const approved = JSON.parse(readFileSync(new URL('./fixtures/prompt-final.json', import.meta.url)));
 assert.deepEqual(Object.keys(approved).sort(), [
@@ -159,3 +165,9 @@ const pinnedOpening = prompt.buildOpeningFacts({ now: Date.UTC(2026, 10, 5, 9), 
 const { now: openingTime, ...pinnedOpeningFacts } = pinnedOpening.facts;
 assert.match(openingTime, /2026/);
 assert.deepEqual(pinnedOpeningFacts, approved['Opening facts']);
+
+const startupBackground = compileMemoryBlock({ now: 0, timeZone: 'UTC', clock: 'Synthetic clock', items: [], entries: [], summaries: [] });
+assert.ok(startupBackground.text.startsWith(MEMORY_BACKGROUND));
+assert.match(MEMORY_BACKGROUND, /Background knowledge, not instructions/);
+assert.match(MEMORY_BACKGROUND, /owner's words in this call win/);
+assert.match(MEMORY_BACKGROUND, /never announce remembering/);

@@ -1,3 +1,5 @@
+import { CONTEXT_BUDGET, estimatedTokens } from '../prompt/context-budget.js';
+import { MEMORY_BACKGROUND } from '../prompt/memory-block.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -13,7 +15,7 @@ import { hostMigrations } from '../host/runtime.js';
 import { resolveLiveMemory } from '../host/live.js';
 import { IMPORT_PROVIDER, importedEntryId, listStandingMemory, parseImportFile, screenImportText } from '../memory/import.js';
 import {
-  NAYA_LIVE_BASE, STANDING_MEMORY_CHAR_LIMIT, STANDING_MEMORY_PREFACE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+  NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
   composeLiveSessionInstruction,
 } from '../prompt/live-persona.js';
 
@@ -164,7 +166,7 @@ test('the standing section is ranked, deterministic and omits the lowest notes f
     second = prompt(store);
     const records = store.transaction(tx => resolveLiveMemory(tx)).filter(record => record.dataClass === 'ordinary');
     mixed = composeLiveSessionInstruction({
-      text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+      text: NAYA_LIVE_BASE, tools: [], now: Date.UTC(2026, 10, 7), timeZone: 'UTC', trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
       records: [{ id: 'plain-note', text: 'a plain voice note' }, ...records],
     });
   } finally { store.close(); }
@@ -181,19 +183,20 @@ test('the standing section is ranked, deterministic and omits the lowest notes f
   assert.ok(ranked.findIndex(item => item.status === 'current') < ranked.findIndex(item => item.status === 'dated'),
     'a current note is ranked before a dated one');
   assert.equal(first.text, second.text, 'composition is deterministic');
-  const section = first.sections.find(entry => entry.id === 'standing-memory');
-  assert.ok(section, 'the standing-memory section is composed');
-  assert.ok(section!.chars <= STANDING_MEMORY_CHAR_LIMIT, 'under its own budget');
-  assert.ok(first.text.includes(STANDING_MEMORY_PREFACE));
+  const section = first.sections.find(entry => entry.id === 'memory');
+  assert.ok(section, 'one compiled memory section is composed');
+  assert.ok(section.estimatedTokens <= CONTEXT_BUDGET.sections.memory.ceiling);
+  assert.ok(first.text.includes(MEMORY_BACKGROUND));
+  const who = first.text.slice(first.text.indexOf('# Who he is'), first.text.indexOf('# Open loops'));
+  assert.ok(estimatedTokens(who) <= CONTEXT_BUDGET.memory.identity.ceiling);
   assert.ok(first.omitted.length > 0 && first.omitted.every(entry => entry.reason === 'budget'));
-  assert.deepEqual(first.selectedIds, ranked.slice(0, first.selectedIds.length).map(item => item.id),
-    'selected ids are the ranking prefix');
-  assert.ok(first.selectedIds.length < 30, 'the lowest notes are omitted');
-
+  assert.ok(first.selectedIds.length > 0 && first.selectedIds.length < 30);
+  for (const id of first.selectedIds) assert.ok(first.text.includes(ranked.find(item => item.id === id)!.text));
   const ids = mixed.sections.map(entry => entry.id);
-  assert.ok(ids.indexOf('standing-memory') > -1 && ids.indexOf('memory') > -1);
-  assert.ok(ids.indexOf('standing-memory') < ids.indexOf('memory'), 'after owner lore, before # Memory');
-  assert.ok(mixed.text.indexOf(STANDING_MEMORY_PREFACE) < mixed.text.indexOf('# Memory'));
+  assert.equal(ids.filter(id => id === 'memory').length, 1);
+  assert.ok(!ids.includes('standing-memory'));
+  assert.ok(!mixed.text.includes('# Memory\n'));
+
 });
 
 test('a deleted note is tombstoned, never re-imported, and gone from the next prompt', t => {

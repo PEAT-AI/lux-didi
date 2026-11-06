@@ -14,7 +14,7 @@ import { turnScriptBucket, turnScriptCounts } from '../live/index.js';
 const SECTIONS = ['voice-head', 'base', 'runtime', 'tools', 'owner-style', 'owner-lore', 'overlay', 'pickup', 'memory', 'earlier-conversations', 'voice'];
 const LIVE_SESSION_ID = '11111111-2222-4333-8444-555555555555';
 
-const SIZE = { event: 'live_instruction_sizes', total: 100, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
+const SIZE = { event: 'live_instruction_sizes', total: 100, estimatedTokens: 32, stablePrefixChars: 30, stablePrefixEstimatedTokens: 10, fixedChars: 30, fixedEstimatedTokens: 10, overTarget: false, sections: { 'voice-head': 30, base: 70 }, languageCode: 'unset', voice: 'Aoede' };
 
 // Release 3: the shed receipt carries the speech and silence split of what the uplink dropped, counts only.
 const SHED = { event: 'uplink_shed', bytes: 42_528, bufferedPeak: 123_904, shedRuns: 1, drainBytesPerSec: 19_200, notOpenBytes: 0,
@@ -38,7 +38,7 @@ test('live_instruction_sizes keeps a closed section schema of counts only', () =
   assert.equal(safeEvent({ ...SIZE, total: 1.5 }), undefined, 'a non-integer total is refused');
   assert.equal(safeEvent({ ...SIZE, total: -1 }), undefined, 'a negative total is refused');
   for (const id of SECTIONS) {
-    assert.equal(!!safeEvent({ ...SIZE, total: 1, sections: { [id]: 1 } }), true, `${id} is a known section id`);
+    assert.equal(!!safeEvent({ ...SIZE, total: 1, estimatedTokens: 1, stablePrefixChars: 0, stablePrefixEstimatedTokens: 0, fixedChars: 0, fixedEstimatedTokens: 0, sections: { [id]: 1 } }), true, `${id} is a known section id`);
   }
 });
 
@@ -765,4 +765,29 @@ test('connector_failure permits only closed refresh classes and integer HTTP sta
   assert.equal(safeEvent({ ...base, exceptionClass: 'private issuer detail' }), undefined);
   for (const httpStatus of [99, 600, 400.5, '400', NaN]) assert.equal(safeEvent({ ...base, httpStatus }), undefined);
   assert.equal(safeEvent({ ...base, httpStatus: 400, body: 'PRIVATE' }), undefined);
+});
+
+
+test('startup omission and target-overrun diagnostics are closed and content-free', () => {
+  const omitted = { event: 'live_context_item_omitted', id: `lore:${'a'.repeat(64)}`, reason: 'budget' };
+  assert.deepEqual(safeEvent(omitted), omitted);
+  assert.equal(safeEvent({ ...omitted, text: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...omitted, reason: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...omitted, id: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  const overrun = { event: 'live_context_target_overrun', estimatedTokens: 10_000, fixedEstimatedTokens: 9_100,
+    sections: [{ id: 'base', chars: 29_120, estimatedTokens: 9_100 }] };
+  assert.deepEqual(safeEvent(overrun), overrun);
+  assert.equal(safeEvent({ ...overrun, text: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...overrun, sections: [{ ...overrun.sections[0], text: 'SYNTHETIC PRIVATE CONTENT' }] }), undefined);
+  assert.equal(safeEvent({ ...overrun, sections: [{ id: 'SYNTHETIC PRIVATE CONTENT', chars: 1, estimatedTokens: 1 }] }), undefined);
+});
+
+test('estimated startup counts reject negative, nonnumeric and unknown fields', () => {
+  for (const key of ['estimatedTokens', 'stablePrefixChars', 'stablePrefixEstimatedTokens', 'fixedChars', 'fixedEstimatedTokens']) {
+    assert.equal(safeEvent({ ...SIZE, [key]: -1 }), undefined);
+    assert.equal(safeEvent({ ...SIZE, [key]: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  }
+  assert.equal(safeEvent({ ...SIZE, overTarget: 'yes' }), undefined);
+  assert.equal(safeEvent({ ...SIZE, stablePrefixChars: 101 }), undefined);
+  assert.equal(safeEvent({ ...SIZE, fixedChars: 31 }), undefined);
 });

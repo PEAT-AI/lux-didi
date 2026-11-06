@@ -131,3 +131,8 @@ type and elapsed time. The host lives for one call, so this bounded batch, not a
 what turns her older calls into typed memory.
 
 `memory_excluded` is emitted once at Live session creation with class, yield, legacy, source and budget exclusion counts; budget includes the bounded recall window, and no memory text is logged. Its `yielded` sizes name owner-lore clipping, then opening-options and previous-openers removal, while persona, tools, runtime context and the reserved memory sections never yield.
+
+`memory_excluded` is emitted once at Live session creation with class, yield, legacy, source and budget exclusion counts; budget includes the bounded recall window, and no memory text is logged. Its `yielded` sizes name owner-lore clipping, then opening-options and previous-openers removal, while persona, tools, runtime context and the reserved memory sections never yield.
+
+
+The `live_instruction_sizes` event records complete rendered section character counts, the total estimated tokens (3.2 characters per estimated token), stable-prefix characters and estimated tokens, and measured fixed-section characters and estimated tokens. A target overrun preserves fixed text and per-call floors below hard admission, while closed `live_context_target_overrun` and `live_context_item_omitted` diagnostics carry only sizes or stable ids and enumerated reasons, never content.

@@ -40,7 +40,12 @@ export interface LiveLimits {
   wsBufferedBytes: number;
 }
 
-export interface LiveMemoryRecord { readonly id: string; readonly text: string; readonly dataClass: DataClass | 'unknown' }
+export interface LiveMemoryRecord {
+  readonly id: string; readonly text: string; readonly dataClass: DataClass | 'unknown';
+  readonly capturedAt?: number;
+  readonly memoryItem?: import('../domain/memory-items.js').MemoryItem;
+  readonly sourceSessionIds?: readonly string[];
+}
 export type LiveMemorySource = (tx: import('../contracts/storage.js').Transaction) => readonly LiveMemoryRecord[];
 export interface LiveMemoryProvenance {
   readonly status: 'empty' | 'selected' | 'partial' | 'omitted';

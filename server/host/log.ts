@@ -836,18 +836,36 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return Object.fromEntries(['event','terminalCode',...numeric].map(key => [key, value[key]]));
   }
   if (value.event === 'live_instruction_sizes') {
-    // Closed shape: a total, per-section character counts (every id a known section), the effective
-    // languageCode (or `unset`) and the voice name; never any text.
-    if (Object.keys(value).sort().join(',') !== ['event','total','sections','languageCode','voice'].sort().join(',')) return;
-    if (!Number.isSafeInteger(value.total) || Number(value.total) < 0) return;
+    const numeric = ['total', 'estimatedTokens', 'stablePrefixChars', 'stablePrefixEstimatedTokens', 'fixedChars', 'fixedEstimatedTokens'] as const;
+    if (!closedKeys(value, ['event', ...numeric, 'sections', 'languageCode', 'voice', 'overTarget'])) return;
+    if (numeric.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0) || typeof value.overTarget !== 'boolean') return;
+    if (Number(value.stablePrefixChars) > Number(value.total) || Number(value.fixedChars) > Number(value.stablePrefixChars)) return;
     if (!isSafeToken(value.voice)) return;
     if (value.languageCode !== 'unset' && (typeof value.languageCode !== 'string' || !/^[a-z]{2}(?:-[A-Z]{2})?$/.test(value.languageCode))) return;
     const sections = value.sections;
     if (!sections || typeof sections !== 'object' || Array.isArray(sections)) return;
     const ids = Object.keys(sections);
-    if (ids.length > 16 || ids.some(id => !(LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes(id)
+    if (ids.length > LIVE_INSTRUCTION_SECTION_IDS.length || ids.some(id => !(LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes(id)
       || !Number.isSafeInteger((sections as Record<string, unknown>)[id]) || Number((sections as Record<string, unknown>)[id]) < 0)) return;
-    return { event: 'live_instruction_sizes', total: value.total, sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])), languageCode: value.languageCode, voice: value.voice };
+    return { ...Object.fromEntries(['event', ...numeric, 'languageCode', 'voice', 'overTarget'].map(key => [key, value[key]])),
+      sections: Object.fromEntries(ids.map(id => [id, (sections as Record<string, unknown>)[id]])) };
+  }
+  if (value.event === 'live_context_item_omitted') {
+    if (!closedKeys(value, ['event', 'id', 'reason']) || typeof value.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(value.id)) return;
+    if (typeof value.reason !== 'string' || !['budget', 'duplicate', 'superseded', 'invalid', 'expired', 'not-yet-valid'].includes(value.reason)) return;
+    return { event: value.event, id: value.id, reason: value.reason };
+  }
+  if (value.event === 'live_context_target_overrun') {
+    if (!closedKeys(value, ['event', 'estimatedTokens', 'fixedEstimatedTokens', 'sections'])) return;
+    if (['estimatedTokens', 'fixedEstimatedTokens'].some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
+    if (!Array.isArray(value.sections) || value.sections.length > LIVE_INSTRUCTION_SECTION_IDS.length) return;
+    for (const section of value.sections) {
+      if (!section || typeof section !== 'object' || Array.isArray(section) || !closedKeys(section, ['id', 'chars', 'estimatedTokens'])
+        || !(LIVE_INSTRUCTION_SECTION_IDS as readonly unknown[]).includes(section.id)
+        || !Number.isSafeInteger(section.chars) || section.chars < 0 || !Number.isSafeInteger(section.estimatedTokens) || section.estimatedTokens < 0) return;
+    }
+    return { event: value.event, estimatedTokens: value.estimatedTokens, fixedEstimatedTokens: value.fixedEstimatedTokens,
+      sections: value.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) };
   }
   if (value.event === 'conversation_summary_injection') {
     // Closed shape: how many summaries were injected, how many were dropped, and the section size.

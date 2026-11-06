@@ -1,3 +1,6 @@
+import { validateOwnerProfile } from '../prompt/index.js';
+import { toolGroupNames } from '../prompt/index.js';
+import { CONTEXT_BUDGET } from '../prompt/context-budget.js';
 import { WORKER_INSTRUCTIONS } from '../tasks/instructions.js';
 import { taskMigrations } from '../runtime/task-schema.js';
 import './tasks-lifecycle.test.js';
@@ -55,7 +58,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, buildOpeningFacts, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, buildOpeningFacts, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -79,6 +82,13 @@ import { notesExportMigrations } from '../live/schema.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
+function expectedSessionInstruction(input: Parameters<typeof composeLiveSessionInstruction>[0]) {
+  const timeZone = input.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return composeLiveSessionInstruction({ now: NOW, timeZone,
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone, connected: toolGroupNames(input.tools), vault: { dictation: true, composed: false } }),
+    ...input });
+}
+
 const context = (store: Store): LiveContext => ({ clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
@@ -673,7 +683,7 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   note(h, 'a', 'Fixture whole note');
   const initial = h.owner.create({ idempotencyKey: 'measure-memory', inputClass: 'ordinary' }, h.ctx);
   assert.deepEqual(accepted(h, initial.liveSessionId).memory.selectedIds, ['a']);
-  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(MEMORY_SECTION_CHAR_LIMIT), 'a']));
+  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(CONTEXT_BUDGET.memory.identity.ceiling * 3.2), 'a']));
   note(h, 'b', 'Fixture overflow note');
   const boundary = h.owner.create({ idempotencyKey: 'boundary-memory', inputClass: 'ordinary' }, h.ctx);
   const snapshot = accepted(h, boundary.liveSessionId);
@@ -681,7 +691,7 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   assert.deepEqual(snapshot.memory.selectedIds, ['b']);
   assert.deepEqual(snapshot.memory.omitted, [{ id: 'a', reason: 'budget' }]);
   assert.ok(!snapshot.system.includes('x'.repeat(128)));
-  assert.ok(snapshot.system.includes('"text":"Fixture overflow note"'), 'the selected record survives byte for byte');
+  assert.ok(snapshot.system.includes('Fixture overflow note'), 'the selected record survives byte for byte');
   const failed = await harness(t, { memoryFailure: true });
   assert.throws(() => failed.owner.create({ idempotencyKey: 'failed-memory', inputClass: 'ordinary' }, failed.ctx), (error: unknown) => error instanceof LiveError && String(error.code) === 'memory_unavailable');
   assert.equal(failed.requests.length, 0);
@@ -728,7 +738,7 @@ test('both declared-tool and client-delegated sessions carry the exact master ha
   const withoutTools = await harness(t, {});
   const { attachment: withoutAttachment } = await attached(withoutTools);
   assert.equal(withoutTools.requests.length, 1);
-  assert.equal(withoutTools.requests[0]!.system.text, composeLiveSessionInstruction({ text: 'Synthetic system', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section }).text, 'client delegation needs the same authored handoff even without direct voice tools');
+  assert.equal(withoutTools.requests[0]!.system.text, expectedSessionInstruction({ text: 'Synthetic system', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, timeZone: 'Asia/Kolkata', openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section }).text, 'client delegation needs the same authored handoff even without direct voice tools');
   assert.ok(!withoutTools.requests[0]!.system.text.includes('# Tools'));
   withoutAttachment.close(); await withoutAttachment.done;
 });
@@ -1414,7 +1424,7 @@ test('accepted complete system uses the shared 60k bound while prompt text is bo
 
 test('tool-enabled Live CREATE freezes an expanded classified owner system byte for byte', async t => {
   const style = `SYNTHETIC style ${'S'.repeat(8_000)}`;
-  const lore = `SYNTHETIC lore ${'L'.repeat(4_000)}`;
+  const lore = `SYNTHETIC lore one ${'L'.repeat(2_000)}\n\nSYNTHETIC lore two ${'L'.repeat(2_000)}`;
   let expectedSystem = '';
   const h = await harness(t, { tools: true, routeClasses: ['ordinary', 'private', 'sensitive'], acceptedPrompt: ownerId => {
     const ownerProfile = { schemaVersion: 1 as const, kind: 'profile' as const, ownerId, profileVersion: 'fixture', displayName: 'Example',
@@ -1426,14 +1436,15 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
-  assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
+  assert.equal(frozen.system, expectedSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, timeZone: 'Asia/Kolkata', openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
     // W4: the runtime context now names the live connector state, so the expectation carries the
     // one endpoint this harness publishes.
 
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [],
       vault: { dictation: true, composed: false }, connectors: [{ connector: 'lux-knowledge', state: 'connected' }] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
-  assert.equal(frozen.system.split(lore).length - 1, 1);
+  assert.equal(frozen.system.split(lore.split('\n\n')[0]!).length - 1, 1);
+  assert.ok(!frozen.system.includes(lore.split('\n\n')[1]!), 'lower-priority whole lore yields to its pinned ceiling');
   assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
 });
 
@@ -2018,9 +2029,9 @@ test('Live persists the exact typed accepted instruction before intent and corru
   const run = owner.create({ idempotencyKey: 'owner-frozen', inputClass: 'ordinary' }, h.ctx);
   const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot,dispatch_intent FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!;
   assert.equal(row.dispatch_intent, 0);
-  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, system: composeLiveSessionInstruction({ text: 'SYNTHETIC exact accepted A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text, memory: { status: 'empty', selectedIds: [], omitted: [] } });
+  assert.deepEqual(JSON.parse(String(row.accepted_prompt_snapshot)), { ...acceptedPrompt, system: expectedSessionInstruction({ text: 'SYNTHETIC exact accepted A', ownerProfile: validateOwnerProfile(ownerProfile, h.store.assistantId), tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text, memory: { status: 'empty', selectedIds: [], omitted: [] } });
   acceptedPrompt.system = 'SYNTHETIC B';
-  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, composeLiveSessionInstruction({ text: 'SYNTHETIC exact accepted A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
+  assert.equal(JSON.parse(String(h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [run.liveSessionId]))!.accepted_prompt_snapshot)).system, expectedSessionInstruction({ text: 'SYNTHETIC exact accepted A', ownerProfile: validateOwnerProfile(ownerProfile, h.store.assistantId), tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
   h.store.transaction(tx => tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=? WHERE live_session_id=?', ['{"schemaVersion":999}', run.liveSessionId]));
   assert.throws(() => owner.attach({ liveSessionId: run.liveSessionId }, h.ctx));
   assert.equal(calls, 0);
@@ -2056,7 +2067,7 @@ test('Live emits exact accepted A setup, not a changed caller B instruction', as
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  assert.equal(frame.setup.systemInstruction.parts[0].text, composeLiveSessionInstruction({ text: 'SYNTHETIC exact wire A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
+  assert.equal(frame.setup.systemInstruction.parts[0].text, expectedSessionInstruction({ text: 'SYNTHETIC exact wire A', tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, familyNames: [], floorSubjects: [] }).section }).text);
   attachment.close();
 });
 
@@ -2186,7 +2197,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   const attachment = owner.attach({ liveSessionId: accepted.liveSessionId }, h.ctx);
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
-  const expectedWithRuntime = composeLiveSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
+  const expectedWithRuntime = expectedSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, timeZone: 'Asia/Kolkata', openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
@@ -2272,7 +2283,7 @@ test('configured owner system survives CREATE and attach open byte for byte befo
   const first = createLiveSessionOwner({ createTaskRuntime: syntheticTaskFactory(store), store, profile: status.config.profile, voice: adapter(), now: () => NOW, timeZone: 'Asia/Kolkata' });
   const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
   const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
-  const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
+  const expectedWithRuntime = expectedSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, timeZone: 'Asia/Kolkata', openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
     runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(persisted.system, expectedWithRuntime); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
   const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
@@ -3350,7 +3361,7 @@ function seedSummary(tx: Parameters<typeof summaries.insertSummary>[0], liveSess
     ...(openLoop === undefined ? {} : { openLoop }) });
 }
 
-test('the earlier-conversations section fills the space under the target in a real session', async t => {
+test('the compiled Last conversations allocation preserves recent summaries in a real session', async t => {
   const lines: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
   const h = await harness(t);
@@ -3365,7 +3376,7 @@ test('the earlier-conversations section fills the space under the target in a re
   const sizes = lines.map(line => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; } })
     .find(entry => entry?.['event'] === 'live_instruction_sizes');
   const sections = sizes?.['sections'] as Record<string, number> | undefined;
-  assert.ok(sections !== undefined && Number(sections['earlier-conversations']) > 0, 'the summary section is recorded per section');
+  assert.ok(sections !== undefined && Number(sections['memory']) > 0, 'the compiled memory block is recorded per section');
   assert.ok(Number(sizes?.['total']) <= LIVE_INSTRUCTION_TARGET_CHARS, `under the target (${String(sizes?.['total'])})`);
 });
 

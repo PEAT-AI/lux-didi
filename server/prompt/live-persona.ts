@@ -670,15 +670,6 @@ export function composeLiveSessionInstruction(input: {
     ...bodySections.filter(section => section.id !== 'owner-lore'),
     ...(description === undefined ? [] : [{ id: 'voice-description' as const, text: description }]),
   ];
-  // Frozen voice regions can retain a standalone preset tail independently of the terminal split.
-  // Replace closed generated accent blocks only, never owner style, overlay, base or authored lore.
-  if (native) for (let index = 0; index < fixed.length; index++) {
-    const section = fixed[index]!;
-    if (section.id === 'voice' || section.id === 'voice-head') {
-      const text = section.text.split(separator).filter(part => !Object.values(LIVE_ACCENT_PRESETS).some(preset => part === preset.tail)).join(separator);
-      fixed[index] = { ...section, text };
-    }
-  }
   const accent = accentPreset(input.accentSelection);
   if (native && fixed.length && accent !== undefined) {
     const first = fixed[0]!, last = fixed[fixed.length - 1]!;

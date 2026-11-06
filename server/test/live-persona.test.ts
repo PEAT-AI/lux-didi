@@ -362,13 +362,13 @@ test('M11: authored lore is pinned by whole paragraph priority, not a 14k charac
   for (const paragraph of paragraphs) if (lore.includes(paragraph.slice(0, 25))) assert.ok(lore.includes(paragraph));
 });
 
-test('M11: the fixed voice description and accent tail occur once in the stable prefix', () => {
+test('M11: fixed voice description and approved accent blocks are preserved in the stable prefix', () => {
   const frozen = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', voiceDescription: 'SYNTHETIC VOICE DESCRIPTION' });
   const result = m11Session({ text: frozen.text });
   const stable = result.text.slice(0, result.stablePrefixChars);
   assert.equal(occurrence(result.text, 'SYNTHETIC VOICE DESCRIPTION'), 1, 'description appears once');
   assert.ok(stable.includes('SYNTHETIC VOICE DESCRIPTION'));
-  assert.equal(stable.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS[LIVE_DEFAULT_ACCENT as 'indian-strong'].tail).length, 1, 'one standalone tail block');
+  assert.equal(stable.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS[LIVE_DEFAULT_ACCENT as 'indian-strong'].tail).length, frozen.text.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS[LIVE_DEFAULT_ACCENT as 'indian-strong'].tail).length, 'preserve approved repetition without adding voice blocks');
   assert.ok(result.sections.some(section => section.id === 'voice-description'));
 });
 
@@ -697,7 +697,7 @@ test('M11: a saved accent changes the next stable prefix without an app restart'
   assert.ok(stable.startsWith(LIVE_ACCENT_PRESETS['indian-light'].head));
   assert.ok(stable.includes(LIVE_ACCENT_PRESETS['indian-light'].tail));
   assert.ok(!stable.includes(LIVE_ACCENT_PRESETS['indian-strong'].head));
-  assert.equal(stable.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS['indian-light'].tail).length, 1);
+  assert.equal(stable.split('\n\n').filter(part => part === LIVE_ACCENT_PRESETS['indian-light'].tail).length, occurrence(LIVE_ACCENT_PRESETS['indian-light'].head, LIVE_ACCENT_PRESETS['indian-light'].tail) + 1, 'one selected head plus its terminal tail');
 });
 
 test('Q5-R4: the start instruction carries the previous-openers context once, and nothing when there is none', () => {

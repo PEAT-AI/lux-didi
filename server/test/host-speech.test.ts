@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { fakeReady } from './openai-live-voice-fixture.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -9,7 +9,7 @@ import { safeEvent } from '../host/log.js';
 // complement the adapter wire tests below; they do not simulate a whole alarm call.
 const source = readFileSync(new URL('../../live/index.ts', import.meta.url), 'utf8');
 for (const [name, start, end] of [
-  ['alarm opening', '  announceAlarm(', '  #armAlarm('],
+  ['alarm opening', '  #sendAlarmOpening(', '  #ringingAlarms('],
   ['mute offer', 'handle.mutedOfferTimer = this.#schedule(', 'handle.mutedOfferTimer.unref'],
   ['continuation', 'const ask = handle.session.', 'this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS'],
 ] as const) {
@@ -24,7 +24,7 @@ for (const [name, start, end] of [
 test('host commentary produces one null-delegation command and no response.create', async t => {
   const { socket, session } = await fakeReady(t);
   const before = socket.sent.length;
-  assert.ok(session.sendSessionCommentary({ text: 'Synthetic host instruction' }));
+  assert.ok(session.sendSessionCommentary!({ text: 'Synthetic host instruction' }));
   const commands = socket.sent.slice(before).map(frame => JSON.parse(frame));
   assert.equal(commands.length, 1);
   assert.equal(commands[0].type, 'session.commentary.append');
@@ -43,7 +43,7 @@ test('provider rejection identifies the rejected command without its content', a
   const records: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => { records.push(raw as Record<string, unknown>); } });
   t.after(detach);
-  const id = session.sendSessionCommentary({ text: 'Synthetic private content' });
+  const id = session.sendSessionCommentary!({ text: 'Synthetic private content' });
   socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_request_error', param: 'type', client_event_id: id } });
   const event = records.find(record => record.event === 'live_provider_error');
   assert.ok(event);
@@ -52,3 +52,97 @@ test('provider rejection identifies the rejected command without its content', a
   assert.equal(safeEvent(event)?.commandType, 'session.commentary.append');
   assert.doesNotMatch(JSON.stringify(event), /Synthetic private content/);
 });
+
+// Exercise the host against the actual adapter, not a fake voice port: provider
+// readiness, silent frames and the first audible frame are distinct transitions.
+async function openHost(t: TestContext) {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Store } = await import('../runtime/store.js');
+  const { domainMigrations } = await import('../domain/schema.js');
+  const { chatMigrations } = await import('../chat/index.js');
+  const { toolsMigrations } = await import('../tools/schema.js');
+  const { createLiveSessionOwner, liveMigrations, validateLiveProfile } = await import('../live/index.js');
+  const { syntheticTaskFactory } = await import('./synthetic-task.js');
+  const { OpenAiLiveVoiceAdapter } = await import('../adapters/live-voice/index.js');
+  const { FakeSocket, FakeClock, options, pcm16 } = await import('./openai-live-voice-fixture.js');
+  const clock = new FakeClock();
+  const dir = mkdtempSync(join(tmpdir(), 'didi-host-speech-'));
+  const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+  const socket = new FakeSocket();
+  const voice = new OpenAiLiveVoiceAdapter(options({ socketFactory: () => {
+    queueMicrotask(() => { socket.readyState = 1; socket.emit('open'); });
+    return socket as unknown as import('ws').default;
+  } }));
+  const records: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { records.push(raw as Record<string, unknown>); } });
+  const profile = validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'cedar', keyReference: 'synthetic-reference',
+    audio: { inputRate: 8000, outputRate: 24000 }, route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] },
+    prompt: { text: 'Synthetic alarm persona', dataClass: 'ordinary' }, limits: { handshakeMs: 1000, idleMs: 600000, sessionMs: 1200000, closeMs: 50 } });
+  const owner = createLiveSessionOwner({ store, voice, profile, timeZone: 'UTC', createTaskRuntime: syntheticTaskFactory(store),
+    now: () => clock.now(), schedule: (fire, ms) => { const timer = clock.setTimer(ms, fire); return { cancel: () => clock.clearTimer(timer) }; } });
+  const now = clock.now();
+  store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id,ring_started_at_utc,ring_deadline_utc) VALUES(?,?,'UTC','','ringing','synthetic',?,?)", ['synthetic-alarm', now, now, now + 60000]));
+  const context = { clientId: 'synthetic', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
+  const created = owner.create({ idempotencyKey: 'synthetic-alarm-call', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic owner', scheduledTime: '08:00', alarmId: 'synthetic-alarm', ringDeadlineUtc: now + 60000 } }, context);
+  const attachment = owner.attach({ liveSessionId: created.liveSessionId }, context);
+  t.after(async () => { attachment.close(); await attachment.done; detach(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const flush = async () => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  const commands = () => socket.sent.map(frame => JSON.parse(frame) as Record<string, unknown>);
+  const events = (name: string) => records.filter(record => record.event === name);
+  return { socket, attachment, flush, commands, events, clock, pcm16 };
+}
+
+test('alarm opening waits for session.started and announces only on its first audible output', async t => {
+  const { socket, attachment, flush, commands, events, pcm16 } = await openHost(t);
+  await flush();
+  assert.equal(commands().filter(command => command.type === 'session.commentary.append').length, 0);
+  assert.equal(events('alarm_prompt_installed').length, 1);
+  assert.equal(events('alarm_ready').length, 0);
+  assert.equal(events('alarm_announced').length, 0);
+  socket.deliver({ type: 'session.started', session: { id: 'synthetic-session' } });
+  await attachment.ready; await flush();
+  const opening = commands().filter(command => command.type === 'session.commentary.append');
+  assert.equal(opening.length, 1);
+  assert.equal(opening[0]!.delegation_id, null);
+  assert.equal(commands().filter(command => command.type === 'response.create').length, 0);
+  assert.equal(events('alarm_ready').length, 1);
+  assert.equal(events('alarm_announced').length, 0);
+  socket.deliver({ type: 'session.output_audio.delta', delta: Buffer.alloc(4800).toString('base64') });
+  await flush();
+  assert.equal(events('alarm_announced').length, 0);
+  socket.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(2400)).toString('base64') });
+  await flush();
+  assert.equal(events('alarm_announced').length, 1);
+  socket.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(2400)).toString('base64') });
+  await flush();
+  assert.equal(events('alarm_announced').length, 1);
+});
+
+
+test('a held muted answer requests exactly one commentary offer, not a typed turn', async t => {
+  const { socket, attachment, flush, commands, clock, pcm16 } = await openHost(t);
+  await flush();
+  socket.deliver({ type: 'session.started', session: { id: 'synthetic-session' } });
+  await attachment.ready; await flush();
+  attachment.setInputMuted(true);
+  socket.deliver({ type: 'session.output_audio.delta', delta: Buffer.from(pcm16(2400)).toString('base64') });
+  await flush();
+  attachment.setInputMuted(false);
+  const before = commands().length;
+  clock.advance(2000); await flush();
+  const offer = commands().slice(before);
+  assert.equal(offer.length, 1);
+  assert.equal(offer[0]!.type, 'session.commentary.append');
+  assert.equal(offer[0]!.delegation_id, null);
+  clock.advance(2000); await flush();
+  assert.equal(commands().length, before + 1);
+});
+
+for (const event of ['alarm_prompt_installed', 'alarm_ready'] as const) {
+  test(`${event} admits only closed alarm metadata`, () => {
+    assert.deepEqual(safeEvent({ event, alarmId: 'synthetic-alarm', mode: 'new_session' }), { event, alarmId: 'synthetic-alarm', mode: 'new_session' });
+    assert.equal(safeEvent({ event, alarmId: 'synthetic-alarm', mode: 'new_session', content: 'Synthetic private text' }), undefined);
+  });
+}

@@ -1,11 +1,14 @@
 import { peopleSnapshot } from '../people/index.js';
 import { pruneOpeningTopics } from '../runtime/task-schema.js';
-import { commentaryEnvelope, commentaryItems, resultCommentary } from '../tasks/delivery.js';
+import { buildFastEvidence } from './fast-evidence.js';
+import { classifyCue } from './memory-cues.js';
+import { commentaryEnvelope, commentaryItems, resultCommentary, type Commentary } from '../tasks/delivery.js';
 import { TaskCall } from '../tasks/call.js';
 import { incompleteConnectorTools } from '../host/mcp.js';
 import { canarySessions } from './canary.js';
 import * as memory from '../domain/memory.js';
 import { recordHistorySession, historySessionEvidence, recordHistoryDependency, isOwnerMemorySession, liveSessionKindOf, ownerMemorySession, ownerMemorySessionSql, type LiveSessionKind } from '../domain/history-lifecycle.js';
+import { searchRecent } from '../domain/history-reader.js';
 import * as summaries from '../domain/summaries.js';
 import { activeAlarms, guardMissedClaims, guardWriteClaims, missedAlarmFacts, writeFacts, type ActiveAlarm, type ClaimClock } from '../domain/write-claims.js';
 import { readToolOutcomes } from '../services/summarize.js';
@@ -4236,6 +4239,33 @@ export class LiveSessionOwner {
   }
 
   /**
+   * FR1: the host's own local read on a cued final. No model call and no network; it appends what her own
+   * store and her cached calendar already hold, and every outcome is one host event with counts, never text.
+   */
+  #fastEvidence(handle: ActiveSession, words: string, generation: number): void {
+    if (handle.muted || handle.terminal || generation !== handle.generation) return;
+    const cues = classifyCue(words);
+    if (!cues.length) return;
+    const ownerId = this.#store.assistantId;
+    const result = buildFastEvidence({
+      text: words, cues, calendar: this.#calendarState === 'stale' ? undefined : this.#calendar, now: () => this.#now(),
+      history: query => this.#store.transaction(tx => searchRecent(tx, ownerId, query, { excludeSessionId: handle.liveSessionId, classes: this.#profile.route.dataClasses })),
+    });
+    const sent = result.commentary !== null && this.#appendLocallyFound(handle, result.commentary);
+    hostLogEvent({ event: 'fast_evidence', cue: cues.join('+'), outcome: result.outcome, hits: result.hits, elapsed_ms: result.elapsedMs, sent });
+  }
+
+  /** The session-context commentary channel: a null delegation id, one item after another, never a task identity. */
+  #appendLocallyFound(handle: ActiveSession, commentary: Commentary): boolean {
+    let sent = false;
+    for (const item of commentaryItems(commentary)) {
+      if (handle.session.sendSessionCommentary?.({ text: item }) === undefined) return sent;
+      sent = true;
+    }
+    return sent;
+  }
+
+  /**
    * #589: the owner's own finalized sentence, with her name at an edge, ends the call. The gate is the
    * host's, so no model turn, tool or generation stands in the stop path; settling closes the provider
    * session (cancelling any answer in flight), drops every later mic frame and sends the one end frame
@@ -4243,14 +4273,18 @@ export class LiveSessionOwner {
    */
   #finalizeOwnerInput(handle: ActiveSession, generation: number, finalOrigin?: string): void {
     if (handle.terminal || generation !== handle.generation) return;
+    let ownerWords: string | undefined;
     if (handle.taskWords?.trim()) {
       const words = handle.taskWords; handle.taskWords = '';
+      ownerWords = words;
       handle.taskOwnerTurn = (handle.taskOwnerTurn ?? 0) + 1;
       handle.tasks?.finalized(words, handle.taskOwnerTurn, this.#now() - (handle.taskLastWordsAt ?? this.#now()));
     }
     // A correction must become current before releasing a queued answer from the speech hold.
     handle.taskOwnerOpen = false;
     handle.tasks?.activity({ outputQuiet: handle.taskOutputQuiet !== false, ownerSpeaking: false });
+    // FR1: strictly after the helper started, and never awaited on its path, so the helper start does not move.
+    if (ownerWords !== undefined) this.#fastEvidence(handle, ownerWords, generation);
     if (handle.stopFinalJournalId === handle.inputJournalId) return;
     handle.stopFinalJournalId = handle.inputJournalId;
     if (handle.stopInputAt === undefined || this.#now() - handle.stopInputAt >= 3_000) return;

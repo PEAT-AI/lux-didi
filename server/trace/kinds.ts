@@ -42,7 +42,7 @@ export const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'] as const;
 export type ProgressReason = (typeof PROGRESS_REASONS)[number];
 
 /** S4a-R4: the command families a rejected provider command can name. */
-export const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'] as const;
+export const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'scm', 'other'] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 
 /** O1b-A (D12-1): what happened to the continuation the answered calls owed. `sent` is a

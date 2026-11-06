@@ -73,7 +73,7 @@ const PROGRESS_SKIP_REASONS = ['settled', 'no_channel', 'budget', 'interval', 'n
 const CEILING_OUTCOMES = ['timeout', 'uncertain'];
 const LATE_OUTCOMES = ['completed', 'failed'];
 /** S4a-R4: the command families a rejected client event id can name. */
-const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
+const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'scm', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 /** W1: the Mongoose sign-in hops and the closed outcomes each may name (MongooseSignInHop in host/mongoose-login.ts). */
 const SIGNIN_ENDPOINTS = ['knowledge', 'data', 'crm', 'trello'];
@@ -896,6 +896,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return;
     }
     return { event: 'standing_memory_selection', selected: value.selected, omitted: value.omitted, chars: value.chars };
+  }
+  if (value.event === 'fast_evidence') {
+    // FR1: which cue classes a final carried, what the host's own local read reached, how many hits it shaped,
+    // its elapsed budget and whether the commentary channel took the items. Never a query word, never an excerpt.
+    if (!closedKeys(value, ['event', 'cue', 'outcome', 'hits', 'elapsed_ms', 'sent'])) return;
+    if (!['memory', 'calendar', 'memory+calendar'].includes(String(value.cue))) return;
+    if (!['found', 'empty', 'unavailable'].includes(String(value.outcome))) return;
+    if (!Number.isSafeInteger(value.hits) || Number(value.hits) < 0 || Number(value.hits) > 20) return;
+    if (!Number.isSafeInteger(value.elapsed_ms) || Number(value.elapsed_ms) < 0 || Number(value.elapsed_ms) > 60_000) return;
+    if (typeof value.sent !== 'boolean') return;
+    return { event: 'fast_evidence', cue: value.cue, outcome: value.outcome, hits: value.hits, elapsed_ms: value.elapsed_ms, sent: value.sent };
   }
   if (value.event === 'live_frame_rejected') {
     // Closed shape: code, error constructor name, frame kind, byte length and key-name paths only, never a value or id.

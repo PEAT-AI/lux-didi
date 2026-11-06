@@ -85,3 +85,33 @@ metadata survives the 30-day content pruning window and expires with task metada
 Provider detail is not retained in this column. `final_answer` keeps its existing
 text-only representation. This supports timeline inspection without retaining
 provider bodies on task rows.
+
+## Typed memory (memory night 1, issue 913)
+
+Domain migration 10 adds the typed memory the dreaming pass writes and the start block reads. Read it
+read-only, from the same private snapshot as the rest of the store; every query in
+[diagnostic-queries.sql](diagnostic-queries.sql) selects metadata unless it names the text column.
+
+- `memory_items` holds one self-contained sentence per fact: `kind` (durable fact, preference, person
+  role, transient state, plan, promise, open question, correction, decision), `subject` for grouping,
+  the `valid_from`/`valid_until` window, the plan's `event_at` with `event_tz` and his original
+  `event_text`, `place`, `authority` (`explicit_owner` when he said it, `derived` when inferred),
+  `status` (`active`, `superseded`, `invalid`, `expired`), `superseded_by`, `salience` (0 to 3: how much
+  it matters to him), `created_at`, `created_by` (`remember_note`, `dreaming:<version>`,
+  `backfill:<version>`, `import:<manifest>`) and the `generation` it was written under. A superseded row
+  keeps its words and gains `valid_until` plus `superseded_by`, so the history survives and only
+  `status='active'` is ever served.
+- `memory_sources` is provenance by turn id: `session_id`, `turn_start_id`, `turn_end_id`, foreign keys
+  into `history_turns`. There is no stored quote column; the words are joined at read time, so a
+  forgotten session takes its quote with it.
+- `memory_jobs` is the dreaming pass's work queue, unique per (`session_id`, `extractor_version`), with
+  `watermark` (the last turn id seen), `state`, `attempts`, timestamps, `error` and the `generation` the
+  job started under.
+- `memory_generation` is one row per store: the `generation`, when a forget last `bumped_at` it, and the
+  `reason`. A forget deletes the items and sources in scope and bumps the generation, so a job that
+  started before it is refused at commit. The forget path also rebuilds the FTS index.
+- `memory_items_fts` is the FTS5 index over (`text`, `subject`), kept in sync by triggers.
+
+The owner forget paths (the entry delete and the history session forget) both reach that fence through
+`forgetHistorySessions`. `entries` is not copied into `memory_items`: the start block reads both until a
+later unit renders from `memory_items` plus the explicit entries.

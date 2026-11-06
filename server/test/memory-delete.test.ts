@@ -7,6 +7,7 @@ import { Store } from '../runtime/store.js';
 import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
 import * as memory from '../domain/memory.js';
+import * as items from '../domain/memory-items.js';
 import { domainMigrations } from '../domain/schema.js';
 
 const context = { assistantId: 'owner', clientId: 'owner-browser', authorityEpoch: 'epoch', now: '2026-01-01T00:00:00.000Z' };
@@ -54,4 +55,42 @@ test('chat refuses a deleted selectedMemoryEntryIds id with its typed not_found 
     fixture.store.transaction(tx => fixture.domain.execute(tx, 'deleteEntry', { id: entry.id }, fixture.context));
     assert.throws(() => fixture.chat.accept({ sessionId: session.id, text: 'Use my note', selectedMemoryEntryIds: [entry.id], idempotencyKey: 'deleted-selected-note' }, fixture.context), { code: 'not_found' });
   } finally { await fixture.chat.shutdown(); fixture.store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the owner forget path reaches the memory forget scope and fences a running job', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-delete-memory-'));
+  const store = new Store(dir, domainMigrations);
+  const port = createDomainPort({ outbox: Outbox });
+  try {
+    const session = store.transaction(tx => port.execute(tx, 'createSession', { title: 'Fixture', timeZone: 'UTC' }, context));
+    const entry = store.transaction(tx => port.execute(tx, 'appendEntry', { sessionId: session.id, text: 'my passport is in the drawer', role: 'user', timeZone: 'UTC' }, context));
+    const built = store.transaction(tx => {
+      tx.run('INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?)',
+        [session.id, 1, 1, 'owner', 'my passport is in the drawer', 1000]);
+      const turn = Number(tx.get('SELECT id FROM history_turns WHERE live_session_id=?', [session.id])!.id);
+      // The domain keeps history_turns_fts in step itself, so a synthetic turn does the same.
+      tx.run('INSERT INTO history_turns_fts(rowid,text) VALUES(?,?)', [turn, 'my passport is in the drawer']);
+      memory.addSourceReference(tx, {
+        ownerKind: 'entry', ownerId: entry.id, label: 'note', provider: 'live-voice',
+        externalId: `${session.id}:1:deadbeef`, availability: 'present',
+      });
+      const item = items.insertItem(tx, {
+        kind: 'durable_fact', text: 'His passport is in the drawer.', subject: 'passport',
+        validFrom: 1000, createdAt: 1000, createdBy: 'dreaming:v1',
+        sources: [{ sessionId: session.id, turnStartId: turn, turnEndId: turn }],
+      });
+      return { item, job: items.claimJob(tx, session.id, 'v1', 1500) };
+    });
+    store.transaction(tx => port.execute(tx, 'deleteEntry', { id: entry.id }, context));
+    const after = store.transaction(tx => ({
+      items: tx.all('SELECT id FROM memory_items').map(row => String(row.id)),
+      sources: tx.all('SELECT memory_id FROM memory_sources').length,
+      generation: Number(tx.get('SELECT generation FROM memory_generation WHERE id=1')!.generation),
+      fenced: items.completeJob(tx, built.job.id, 5, 2000),
+    }));
+    assert.deepEqual(after.items, []);
+    assert.equal(after.sources, 0);
+    assert.equal(after.generation, 2);
+    assert.equal(after.fenced, false);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

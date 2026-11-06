@@ -1,4 +1,5 @@
 import { deleteHistoryTurns } from './history-turns.js';
+import { forgetScope } from './memory-items.js';
 import type { Transaction } from '../contracts/storage.js';
 import type { DataClass } from '../adapters/model/types.js';
 
@@ -80,6 +81,10 @@ export function forgetHistorySessions(tx: Transaction, ids: readonly string[], n
     }
     tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [id]);
   }
+  // The owner forget path: every session forgotten here (the entry delete reaches
+  // this too) takes the memory derived from it, and bumps the generation so a
+  // dreaming job that started before the forget is refused at commit.
+  if (excluded.size > 0) forgetScope(tx, { sessionIds: [...excluded], now });
   return deletedIds;
 }
 

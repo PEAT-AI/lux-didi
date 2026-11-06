@@ -70,6 +70,11 @@ export function forgetHistorySessions(tx: Transaction, ids: readonly string[], n
       excluded.add(String(row.child_session_id)); grew = true;
     }
   }
+  // The owner forget path: every session forgotten here (the entry delete reaches
+  // this too) takes the memory derived from it, and bumps the generation so a
+  // dreaming job that started before the forget is refused at commit. This runs
+  // before the turns go, because a memory source still points at them.
+  if (excluded.size > 0) forgetScope(tx, { sessionIds: [...excluded], now });
   const deletedIds: string[] = [];
   for (const id of excluded) {
     deleteHistoryTurns(tx, id);
@@ -81,10 +86,6 @@ export function forgetHistorySessions(tx: Transaction, ids: readonly string[], n
     }
     tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [id]);
   }
-  // The owner forget path: every session forgotten here (the entry delete reaches
-  // this too) takes the memory derived from it, and bumps the generation so a
-  // dreaming job that started before the forget is refused at commit.
-  if (excluded.size > 0) forgetScope(tx, { sessionIds: [...excluded], now });
   return deletedIds;
 }
 

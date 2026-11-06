@@ -1,4 +1,5 @@
 import { boundTextModel } from './provider-binding.js';
+import { createDreaming, type Dreaming } from '../services/dreaming.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
@@ -214,6 +215,14 @@ export function createMongooseSignIn(options: {
     return latest;
   };
   return signIn;
+}
+
+/**
+ * #914: the dreaming backlog starts when the listener serves, never before, so a host start that failed
+ * to listen spends no model request and leaves no job running.
+ */
+export function afterListenerServing<T>(listen: Promise<T>, start: () => void): Promise<T> {
+  return listen.then(served => { start(); return served; });
 }
 
 export function sessionTerminalHooks(hooks: {
@@ -682,12 +691,25 @@ export async function startHost(config: HostConfig) {
       try { summaryModel = boundTextModel(providerConfigDir, providerLoaded, config.modelTesting).model; }
       catch { summaryModel = null; }
     }
+    // #595: a summary written after the owner moved names the zone he is in now, not the host start's.
+    const liveTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
+    // The dreaming pass (#914) reuses the same text model, and starts only once a call's summary has
+    // settled: `conversation_summary_*` is that moment, and it never runs on the voice path.
+    const dreaming: Dreaming = createDreaming({ store, model: summaryModel, modelId: summaryModelId ?? 'unconfigured',
+      modelAllowedClasses: providerLoaded.status === 'ready' ? providerLoaded.route.dataClasses : [],
+      assistantName: owner.snapshot.displayName, get timeZone(): string { return liveTimeZone(); },
+      now: config.now ?? Date.now, log: event => log.event(event) });
+    const SUMMARY_SETTLED = new Set(['conversation_summary_completed', 'conversation_summary_skipped', 'conversation_summary_failed']);
     const summarizer = createSummarizer({ store, model: summaryModel, modelId: summaryModelId ?? 'unconfigured',
       modelAllowedClasses: providerLoaded.status === 'ready' ? providerLoaded.route.dataClasses : [],
       assistantName: owner.snapshot.displayName,
-      // #595: a summary written after the owner moved names the zone he is in now, not the host start's.
-      get timeZone(): string { return Intl.DateTimeFormat().resolvedOptions().timeZone; },
-      now: config.now ?? Date.now, log: event => log.event(event) });
+      get timeZone(): string { return liveTimeZone(); },
+      now: config.now ?? Date.now,
+      log: event => {
+        log.event(event);
+        const settled = event['liveSessionId'];
+        if (SUMMARY_SETTLED.has(event.event) && typeof settled === 'string' && settled.length > 0) dreaming.schedule(settled);
+      } });
     const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
       acknowledgeAlarm: id => { alarms.acknowledge(id); },
@@ -739,7 +761,13 @@ export async function startHost(config: HostConfig) {
         trelloOwner = outcome.ok ? 'ok' : outcome.code === 'credential_mismatch' ? 'mismatch' : 'unknown';
       }).catch(() => { /* the row stays file based when the probe cannot answer */ });
     }
-    const service = await listenService({ alarms: { scheduler: alarms, shell: alarmShell }, store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), beforeLiveCreate: async () => { await waitForStartupConnectors({ startedAt: processStartedAt, now: config.now ?? Date.now, endpoints: () => mcp.status().endpoints, ...(config.connectorTesting?.pause ? { pause: config.connectorTesting.pause } : {}) }); }, mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const dreamingBacklog = (): void => {
+      // #914: the host lives for one call, so a nightly timer would never fire. Every host start pays a
+      // bounded backlog batch instead, oldest call first, after the listener serves and after recovery:
+      // audio, the opener and the call start never wait on it.
+      void dreaming.backlogBatch().catch(error => log.error(error));
+    };
+    const service = await afterListenerServing(listenService({ alarms: { scheduler: alarms, shell: alarmShell }, store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), beforeLiveCreate: async () => { await waitForStartupConnectors({ startedAt: processStartedAt, now: config.now ?? Date.now, endpoints: () => mcp.status().endpoints, ...(config.connectorTesting?.pause ? { pause: config.connectorTesting.pause } : {}) }); }, mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) }), dreamingBacklog);
     try {
       alarms.recheck('start');
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
@@ -767,6 +795,8 @@ export async function startHost(config: HostConfig) {
           await live.shutdown(supervisionEndReason());
           await mcp.close();
           await summarizer.settleOnExit().catch(() => undefined);
+          // A dreaming job that is still queued settles as skipped: the store it writes to is about to close.
+          dreaming.stop();
         } finally { logExit('ready', 'close'); store.close(); stopDiagnostics(); }
       } };
     } catch (error) { alarms.stop(); await service.close(); throw error; }

@@ -115,3 +115,15 @@ read-only, from the same private snapshot as the rest of the store; every query 
 The owner forget paths (the entry delete and the history session forget) both reach that fence through
 `forgetHistorySessions`. `entries` is not copied into `memory_items`: the start block reads both until a
 later unit renders from `memory_items` plus the explicit entries.
+
+## Dreaming pass logs (10.18)
+
+`dreaming_done` names one finished owner call's memory job: the session id, the job id, the
+operations it committed as counts (`ops`), how many operations the validator refused (`rejected`),
+the `coverage_gap` of journal finals missing from `history_turns`, and the elapsed time. It carries
+no turn text, subject or memory sentence, so the line proves the pass ran without holding owner
+content; `dreaming_op_rejected` names the refused operation and one closed reason.
+
+`dreaming_backlog` is the host-start batch: sessions processed, sessions remaining, operations by
+type and elapsed time. The host lives for one call, so this bounded batch, not a nightly timer, is
+what turns her older calls into typed memory.

@@ -124,6 +124,14 @@ const isCallKey = (value: unknown): value is string => isSafeId(value) || (typeo
 const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
 const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
   && value.every(path => typeof path === 'string' && TRELLO_WRITE_ARGUMENT_FIELDS.includes(path));
+/** M9 #914: the dreaming operation names, and the closed refusals the validator may log. */
+const DREAMING_OPS: readonly string[] = ['add', 'supersede', 'invalidate', 'noop', 'document', 'unknown'];
+const DREAMING_REFUSALS: readonly string[] = ['turn_outside_session', 'explicit_owner_protected', 'unknown_target', 'duplicate',
+  'invalid_json', 'missing_operations', 'too_many_operations', 'not_an_object', 'missing_turn_ids', 'missing_target',
+  'unknown_operation', 'unknown_kind', 'empty_text', 'text_too_long', 'unknown_subject', 'missing_salience',
+  'invalid_salience', 'unparsable_event_at', 'unparsable_valid_until', 'model_noop'];
+/** Counts by operation, as `add:1 supersede:2`: a closed summary, never the text of an item. */
+const isSafeOps = (value: unknown): value is string => typeof value === 'string' && /^(|(add|supersede|invalidate|noop):\d{1,6}( (add|supersede|invalidate|noop):\d{1,6})*)$/.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 /** C-PITCH: a fundamental frequency in Hz, or null when the response had no voiced frames. */
 const isSafeHz = (value: unknown): value is number | null =>
@@ -1720,6 +1728,27 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const pct = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 6400;
     if (!mb(value.rssMb) || !mb(value.heapUsedMb) || !pct(value.cpuPct)) return;
     return { event: 'host_resources', rssMb: value.rssMb, heapUsedMb: value.heapUsedMb, cpuPct: value.cpuPct };
+  }
+  if (value.event === 'dreaming_done' || value.event === 'dreaming_backlog' || value.event === 'dreaming_op_rejected') {
+    // M9 #914: the dreaming pass counts operations and names a refusal; it never logs a turn, a subject
+    // or a memory sentence, so a line here proves the pass ran without carrying owner content.
+    if (value.event === 'dreaming_done') {
+      if (!closedKeys(value, ['event', 'liveSessionId', 'jobId', 'ops', 'rejected', 'coverageGap', 'elapsedMs'])) return;
+      if (!isSafeId(value.liveSessionId) || !isSafeId(value.jobId) || !isSafeOps(value.ops) ||
+        !isSafeCount(value.rejected) || !isSafeCount(value.coverageGap) || !isSafeCount(value.elapsedMs)) return;
+      return { event: 'dreaming_done', liveSessionId: value.liveSessionId, jobId: value.jobId, ops: value.ops,
+        rejected: value.rejected, coverageGap: value.coverageGap, elapsedMs: value.elapsedMs };
+    }
+    if (value.event === 'dreaming_backlog') {
+      if (!closedKeys(value, ['event', 'sessionsProcessed', 'sessionsRemaining', 'ops', 'elapsedMs'])) return;
+      if (!isSafeCount(value.sessionsProcessed) || !isSafeCount(value.sessionsRemaining) || !isSafeOps(value.ops) ||
+        !isSafeCount(value.elapsedMs)) return;
+      return { event: 'dreaming_backlog', sessionsProcessed: value.sessionsProcessed, sessionsRemaining: value.sessionsRemaining,
+        ops: value.ops, elapsedMs: value.elapsedMs };
+    }
+    if (!closedKeys(value, ['event', 'liveSessionId', 'op', 'reason'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeMember(value.op, DREAMING_OPS) || !isSafeMember(value.reason, DREAMING_REFUSALS)) return;
+    return { event: 'dreaming_op_rejected', liveSessionId: value.liveSessionId, op: value.op, reason: value.reason };
   }
   if (value.event === 'opener_facts') {
     // Opening diagnostics admit counts only, never facts, topic keys or delivered words.

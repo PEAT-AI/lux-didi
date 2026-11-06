@@ -150,7 +150,8 @@ function seedConversation(store: Store, id: string, endedAt = SUMMARY_NOW): void
         chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
       [`grant-${id}`, id, 'gemini', 'models/live-start10-test', 'voice', 'gemini-primary', JSON.stringify(['ordinary', 'private']), 'ordinary', 1, endedAt]);
     recordHistorySession(tx, id, 'owner', ['ordinary', 'private'], [], endedAt);
-    for (const text of ['one', 'two']) {
+    // Substantive owner turns: the floor is one turn that carries a noun phrase, not small talk.
+    for (const text of ['I need the car serviced before the holiday', 'and the garage should call me first']) {
       tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
         [id, 'inputTranscription', text, text.length, endedAt]);
     }

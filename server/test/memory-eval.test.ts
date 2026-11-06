@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ABSTENTION_MARKERS, BARS, readAnswers, readGolden, runEval, type MemoryEvalReport,
+  ABSTENTION_MARKERS, BARS, openaiVerifier, readAnswers, readGolden, runEval, type MemoryEvalReport,
 } from '../memory/eval-runner.js';
 import { GOLDEN_FILE, answersFile, buildEvalStore } from './fixtures/memory-eval/build.js';
 
@@ -30,10 +30,10 @@ async function withStore<T>(variant: 'defect' | 'clean', body: (store: string, w
   }
 }
 
-function cli(args: readonly string[]): { status: number; stdout: string; stderr: string } {
+function cli(args: readonly string[], env: NodeJS.ProcessEnv = process.env): { status: number; stdout: string; stderr: string } {
   try {
     const stdout = execFileSync('bash', [join(ROOT, 'scripts', 'didi-memory-eval'), ...args], {
-      cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: ROOT, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     });
     return { status: 0, stdout, stderr: '' };
   } catch (error) {
@@ -165,6 +165,68 @@ test('the CLI refuses an unreadable store and names the missing flags', async ()
     const missingStore = cli(['--store', join(work, 'not-a-store-there'), '--golden', GOLDEN_FILE, '--out', out]);
     assert.equal(missingStore.status, 2);
     assert.match(missingStore.stderr, /memory_eval_store_unreadable/);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test('--strict counts a not_run stage as a miss, and --data-dir reads the same copy', async () => {
+  await withStore('clean', async (store, work) => {
+    const out = join(work, 'report.json');
+    const loose = cli(['--store', store, '--golden', GOLDEN_FILE, '--out', out]);
+    assert.equal(loose.status, 0);
+    const strict = cli(['--store', store, '--golden', GOLDEN_FILE, '--out', out, '--strict']);
+    assert.equal(strict.status, 1, 'a not_run stage is a miss under --strict');
+    const report = readReport(out);
+    assert.equal(report.strict, true);
+    assert.equal(report.items_detail.find(item => item.id === 'm7-restore')!.verdict, 'miss');
+    const viaDataDir = cli(['--data-dir', store, '--golden', GOLDEN_FILE, '--out', out]);
+    assert.equal(viaDataDir.status, 0, '--data-dir names the same store copy');
+  });
+});
+
+test('the OpenAI verifier sends one temperature-0 structured call and fails closed on a transport error', async () => {
+  const requests: { url: string; body: Record<string, unknown> }[] = [];
+  const transport = (async (url: string | URL | Request, init?: RequestInit) => {
+    requests.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ matched_required: ['x'], leaked_forbidden: [], denied_before_search: false }) } }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof globalThis.fetch;
+  const verifier = openaiVerifier({ apiKey: 'test-key', model: 'verifier-model', transport });
+  const verdict = await verifier({
+    item: {
+      id: 'v1', class: 1, query: 'q', eval_at: '2026-11-06T08:30:00+00:00', cutoff_session: 'live-10',
+      gold_turn_ids: [], required: ['x'], forbidden: [], expect_in_start_block: true, expect_search: false,
+      expect_abstain: false, notes: '',
+    },
+    stage: 'start', text: 'a text',
+  });
+  assert.deepEqual(verdict.matched_required, ['x']);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]!.body['temperature'], 0);
+  assert.equal(requests[0]!.body['model'], 'verifier-model');
+  const failing = openaiVerifier({
+    apiKey: 'test-key', model: 'verifier-model',
+    transport: (async () => new Response('nope', { status: 500 })) as unknown as typeof globalThis.fetch,
+  });
+  await assert.rejects(() => failing({
+    item: {
+      id: 'v1', class: 1, query: 'q', eval_at: '2026-11-06T08:30:00+00:00', cutoff_session: 'live-10',
+      gold_turn_ids: [], required: ['x'], forbidden: [], expect_in_start_block: true, expect_search: false,
+      expect_abstain: false, notes: '',
+    },
+    stage: 'start', text: 'a text',
+  }), /verifier_http_500/);
+});
+
+test('the CLI refuses --verifier without a key instead of grading silently', async () => {
+  const work = mkdtempSync(join(tmpdir(), 'memory-eval-cli-'));
+  try {
+    const { OPENAI_API_KEY: _dropped, ...withoutKey } = process.env;
+    const result = cli(['--store', join(work, 'store'), '--golden', GOLDEN_FILE, '--out', join(work, 'r.json'), '--verifier', 'some-model'], withoutKey);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /memory_eval_verifier_key_missing/);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

@@ -554,11 +554,76 @@ function average(values: readonly number[]): number | null {
 
 const USAGE = `usage: didi-memory-eval --store <copy> --golden <file> --out <json> [--strict]
                        [--data-dir <copy>] [--answers <recorded-first-answers.json>]
-                       [--time-zone <zone>] [--verifier]
+                       [--time-zone <zone>] [--verifier <openai-model>]
 
 Scores the FIRST answer, never the eventual recovery. Reads the store copy and
 never writes it. Without --answers the first-answer and latency stages report
-not_run; without --verifier no model is called at all.`;
+not_run; without --verifier no model is called at all. --verifier needs
+OPENAI_API_KEY and is never used by the offline check.`;
+
+const VERIFIER_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['matched_required', 'leaked_forbidden', 'denied_before_search'],
+  properties: {
+    matched_required: { type: 'array', items: { type: 'string' } },
+    leaked_forbidden: { type: 'array', items: { type: 'string' } },
+    denied_before_search: { type: 'boolean' },
+  },
+} as const;
+
+/**
+ * The one structured grading call, at temperature 0 on the helper's OpenAI model.
+ * Only reached when no substring matched; a transport error becomes an item miss.
+ * The offline check never builds one, so no model is called without --verifier.
+ */
+export function openaiVerifier(options: {
+  apiKey: string;
+  model: string;
+  endpoint?: string | undefined;
+  transport?: typeof globalThis.fetch | undefined;
+}): Verifier {
+  const call = options.transport ?? globalThis.fetch;
+  return async input => {
+    const response = await call(options.endpoint ?? 'https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${options.apiKey}` },
+      body: JSON.stringify({
+        model: options.model,
+        temperature: 0,
+        response_format: { type: 'json_schema', json_schema: { name: 'memory_eval_verdict', strict: true, schema: VERIFIER_SCHEMA } },
+        messages: [
+          {
+            role: 'system',
+            content: 'You grade one memory-eval item. Answer only with the schema: the required substrings the text does carry, '
+              + 'the forbidden substrings it leaks, and whether it denied for lack of memory before a search had run. Never guess.',
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              stage: input.stage, item: input.item.id, query: input.item.query,
+              required: input.item.required, forbidden: input.item.forbidden, text: input.text,
+            }),
+          },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(`verifier_http_${response.status}`);
+    const payload = await response.json() as { choices?: { message?: { content?: string } }[] };
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || content === '') throw new Error('verifier_empty');
+    const verdict = JSON.parse(content) as Record<string, unknown>;
+    const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter(entry => typeof entry === 'string') : [];
+    if (!Array.isArray(verdict['matched_required']) || !Array.isArray(verdict['leaked_forbidden'])) {
+      throw new Error('verifier_shape');
+    }
+    return {
+      matched_required: strings(verdict['matched_required']),
+      leaked_forbidden: strings(verdict['leaked_forbidden']),
+      denied_before_search: verdict['denied_before_search'] === true,
+    };
+  };
+}
 
 function flag(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name);
@@ -579,6 +644,13 @@ export async function main(argv: readonly string[]): Promise<number> {
     const out = flag(argv, '--out');
     if (golden === undefined || out === undefined) throw new Error('--golden and --out are required');
     const answersPath = flag(argv, '--answers');
+    const verifierModel = flag(argv, '--verifier');
+    let verifier: Verifier | undefined;
+    if (verifierModel !== undefined) {
+      const apiKey = process.env['OPENAI_API_KEY'];
+      if (apiKey === undefined || apiKey === '') throw new Error('memory_eval_verifier_key_missing: set OPENAI_API_KEY or drop --verifier');
+      verifier = openaiVerifier({ apiKey, model: verifierModel });
+    }
     const result = await runEval({
       golden, out,
       store: flag(argv, '--store'),
@@ -586,6 +658,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       timeZone: flag(argv, '--time-zone'),
       strict: argv.includes('--strict'),
       ...(answersPath === undefined ? {} : { answers: readAnswers(answersPath) }),
+      ...(verifier === undefined ? {} : { verifier }),
     });
     writeFileSync(out, `${JSON.stringify(result.report, null, 2)}\n`);
     report(result.report);

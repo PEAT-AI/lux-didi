@@ -33,9 +33,11 @@ scripts/didi-memory-eval --store <copy-dir> --golden <golden.jsonl> --out <repor
   `not_run: no_runner`; nothing is invented to fill the gap.
 - `--strict` counts a `not_run` stage as a miss. The release check does not use
   it while the restore tool and the live first-answer runner are absent.
-- `--verifier` opts into one structured grading call at temperature 0 for an item
-  whose substrings did not match. Offline nothing is verified by a model, and a
-  verifier error is a failed item, never a pass.
+- `--verifier <openai-model>` opts into one structured grading call at
+  temperature 0 for an item whose substrings did not match. It needs
+  `OPENAI_API_KEY` and refuses to run without it. Offline nothing is verified by
+  a model, and a verifier error (transport, shape or empty answer) is a failed
+  item, never a pass.
 
 Exit code: `0` all bars met, `1` a bar missed, `2` a usage or build error.
 

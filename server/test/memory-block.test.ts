@@ -80,7 +80,7 @@ test('explicit entry and typed identity facts share one authority and salience r
 });
 
 
-test('only a rendered typed loop suppresses a summary open loop for that subject', () => {
+test('only an identical rendered loop suppresses summary work, not another fact sharing its subject', () => {
   const subject = 'synthetic-shared-subject';
   const summary = { id: 'summary-loop', sessionId: 'session-loop', startedAt: input.now - 1,
     text: 'Synthetic earlier discussion', subject, openLoop: 'Synthetic unresolved follow-up' };
@@ -88,8 +88,12 @@ test('only a rendered typed loop suppresses a summary open loop for that subject
   const omitted = compileMemoryBlock({ ...input, entries: [], items: [oversized], summaries: [summary] });
   assert.ok(omitted.omitted.some(value => value.id === oversized.id && value.reason === 'budget'));
   assert.ok(omitted.text.includes(summary.openLoop));
-  const rendered = compileMemoryBlock({ ...input, entries: [], items: [item('rendered-loop', { kind: 'promise', subject, text: 'Synthetic typed unresolved promise' })], summaries: [summary] });
-  assert.ok(rendered.text.includes('Synthetic typed unresolved promise'));
+  const rendered = compileMemoryBlock({ ...input, entries: [], items: [item('rendered-loop', { kind: 'promise', subject, text: summary.openLoop })], summaries: [summary] });
+  assert.ok(rendered.text.includes(summary.openLoop));
   assert.ok(rendered.text.includes(summary.text));
-  assert.ok(!rendered.text.includes(summary.openLoop));
+  assert.equal(rendered.text.split(summary.openLoop).length - 1, 1);
+  const distinct = { ...summary, openLoop: 'Another synthetic unresolved follow-up' };
+  const both = compileMemoryBlock({ ...input, entries: [], items: [item('same-subject-loop', { kind: 'promise', subject, text: summary.openLoop })], summaries: [distinct] });
+  assert.ok(both.text.includes(summary.openLoop));
+  assert.ok(both.text.includes(distinct.openLoop), 'a subject is not an identity for every unresolved fact about it');
 });

@@ -285,8 +285,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_session_clock', liveSessionId: value.liveSessionId, observedAt: value.observedAt,
       timeZone: value.timeZone, clockSource: value.clockSource };
   }
-  if (value.event === 'alarm_announced' || value.event === 'alarm_prompt_installed' || value.event === 'alarm_ready') {
-    // Alarm prompt installation, provider readiness and first audible output are separate receipts.
   if (value.event === 'alarm_announced') {
     // #107: the alarm block reached the provider. The proof that she was asked to speak, and how.
     if (!closedKeys(value, ['alarmId', 'event', 'mode'])) return;

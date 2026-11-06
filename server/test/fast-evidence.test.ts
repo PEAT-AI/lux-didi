@@ -110,7 +110,7 @@ test('FR1: a memory-cued final appends the local fact as one provisional group w
   assert.equal(groups.length, 1, 'exactly one commentary group');
   assert.equal(groups[0]!.kind, 'partial', 'a provisional finding, never a result');
   for (const item of live.voice.taskAnswers) {
-    assert.equal((item as { delegationId: string | null }).delegationId, null, 'general session context carries no delegation id');
+    assert.equal(item.delegationId, null, 'general session context carries no delegation id');
     assert.ok(item.text.length <= 450, 'never an item the adapter would refuse');
   }
   const joined = live.voice.taskAnswers.map(item => String(commentaryPart(item.text)['content'] ?? '')).join(' ');

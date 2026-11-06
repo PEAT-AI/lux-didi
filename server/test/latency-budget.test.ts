@@ -15,7 +15,7 @@ import { safeEvent } from '../dist/host/log.js';
 import { attachHostLogSink } from '../dist/tools/host-events.js';
 import { FakeClock, fakeReady, pcm16 } from '../dist/test/openai-live-voice-fixture.js';
 
-type Segment = 'speechEndToCreateMs' | 'createToFirstAudioMs' | 'toolOutputToCreateMs' | 'providerOutputAckMs' | 'connectorRequestMs' | 'deadAirRungMs';
+type Segment = 'speechEndToCreateMs' | 'createToFirstAudioMs' | 'toolOutputToCreateMs' | 'providerOutputAckMs' | 'connectorRequestMs' | 'deadAirRungMs' | 'finalToFastEvidenceMs';
 const budgets = JSON.parse(readFileSync(join(process.cwd(), '..', 'config', 'latency-budgets.json'), 'utf8')) as
   { segments: Record<Segment, { budgetMs: number; measuredP50Ms: number; basis: string }> };
 
@@ -76,6 +76,8 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
   const frame = JSON.parse(opened.socket.sent.at(-1)!);
   assert.equal(frame.type, 'session.commentary.append'); assert.equal(frame.delegation_id, 'synthetic-plain');
   segments.speechEndToCreateMs = plainCreated - ended;
+  // FR1: his plain turn carried no cue, so the host's own local read never ran and added nothing to this leg.
+  assert.equal(segments.speechEndToCreateMs, fake(1_200), 'an uncued final adds 0 ms to the voice leg');
   clock.advance(fake(500));
   const audioBefore = opened.captured.events.filter(event => event.type === 'audio').length;
   opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
@@ -101,6 +103,14 @@ test('LAT-1022: a plain turn, a one-tool turn, a two-tool batch and a silent con
     segments.providerOutputAckMs = Math.max(segments.providerOutputAckMs ?? 0, clock.now() - sentAt);
     assert.ok(lines.some(line => line.event === 'gptlive_append_ack'));
   }
+  // FR1: a cued final runs the host's own local read inside its own budget, after the helper has started.
+  opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'What did I tell you about last week?' });
+  clock.advance(700);
+  await until(() => lines.some(line => line.event === 'fast_evidence'));
+  const fast = lines.find(line => line.event === 'fast_evidence')!;
+  assert.equal(fast.cue, 'memory');
+  const fastMs = counted(fast.elapsed_ms); assert.ok(fastMs !== undefined);
+  segments.finalToFastEvidenceMs = fastMs;
   // The silent continuation is a completed task answer with no provider audio.
   const silenceAt = clock.now(); clock.advance(fake(2_000));
   segments.deadAirRungMs = clock.now() - silenceAt;

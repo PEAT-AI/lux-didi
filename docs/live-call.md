@@ -79,6 +79,26 @@ Synthetic providers prove routing, ordering, acknowledgement state, holds and bo
 They cannot prove audibility, exact wording, model weaving, or remembered meaning. Real-wire trials
 established null-id commentary and retained history; transcript matches are not delivery receipts.
 
+### Fast evidence (FR1)
+
+A finished utterance that refers to the past or to his calendar is read by the host itself, with no model
+call and no network. `classifyCue` matches whole words only: memory cues are the phrases that point at
+something already said (last time, I told you, you said, we talked, remember, yesterday, a month name, a
+weekday name); calendar cues are today, tomorrow, this week, next week, meeting, calendar, schedule,
+appointment. A memory cue runs one bounded FTS5 read over her call history; a calendar cue reads the
+digest the session already holds. The whole read is budgeted at 100 ms, and a read that throws or overruns
+sends nothing.
+
+When the read finds something it appends one commentary group, kind `partial`, opening with
+`Local recall, provisional, the helper is still checking:` and carrying at most five facts, each dated and
+capped at 240 characters, so every item stays inside the 450-character transport limit. It rides
+`session.commentary.append` with a null delegation id, which the provider accepts as general session
+context even while a delegation is current (`sendSessionCommentary`), and it is marked as local recall so
+she never presents it as the helper's answer. Zero hits send nothing at all. The read runs after the helper
+has already started and is never awaited on its path, so it never holds or moves the reply. One host event,
+`fast_evidence`, records the cue classes, the outcome, the hit count, the elapsed budget and whether the
+channel took the items.
+
 ### Fewer rebuilds, by holding them rather than shortening anything (C-REBUILD)
 
 Three shapes were measured on the 10-25 to 11-01 window (19 owner rebuilds): 7 tore down a response in flight under 9.7 s old, 2 followed a response's end within 4 s, and 8 had no response at all for 29 s or more. The council's ruling is one rule applied three times: a rebuild trigger may only be lengthened or removed, never shortened, and no filler speech may answer a silence he was happy to leave.

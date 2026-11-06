@@ -1807,6 +1807,23 @@ test('client delegation carries task answers on its latest id with separate ackn
   assert.equal(f.socket.sent.some(sent => JSON.parse(sent as string).type === 'response.create'), false);
 });
 
+test('FR1-R1: general session commentary keeps a null delegation id while a delegation is current', async t => {
+  const f = await fakeReady(t);
+  f.socket.deliver({ type: 'session.delegation.created', delegation: { id: 'd-current' } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.session.sendTaskAnswer?.({ text: 'Synthetic answer.', delegationId: null }), undefined,
+    'the task answer still refuses a null id once a delegation exists');
+  const command = f.session.sendSessionCommentary?.({ text: 'Synthetic local recall.' });
+  assert.equal(typeof command, 'string');
+  assert.deepEqual(JSON.parse(f.socket.sent.at(-1)! as string),
+    { type: 'session.commentary.append', event_id: command, delegation_id: null, content: 'Synthetic local recall.' });
+  assert.equal(f.session.sendSessionCommentary?.({ text: '' }), undefined, 'an empty line is never written');
+  assert.equal(f.session.sendSessionCommentary?.({ text: 'x'.repeat(451) }), undefined, 'an item over 450 characters is never written');
+  f.socket.deliver({ type: 'session.commentary.appended', client_event_id: command });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(f.captured.events.some(event => event.type === 'commentaryAccepted' && event.commandId === command));
+});
+
 for (const rejected of [false, true]) {
   test(`client commentary acknowledgement preserves command identity; rejected=${rejected}`, async t => {
     const receipts = hostReceipts(t);

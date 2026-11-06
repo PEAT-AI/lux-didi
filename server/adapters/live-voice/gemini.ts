@@ -670,6 +670,8 @@ class Session implements LiveVoiceSession {
     // Same frame as the model-first greeting text: a text turn the model answers by voice.
     if (!this.write(JSON.stringify({ realtimeInput: { text: input.text } }))) fail(this.terminal!.code);
   }
+  /** FR1: this provider has no general-context commentary append, so the host's local recall rides nothing. */
+  sendSessionCommentary(_input: { text: string }): string | undefined { return undefined; }
   endAudioStream(): void {
     if (this.draining) return;
     if (!this.checkpoint()) fail(this.terminal!.code);

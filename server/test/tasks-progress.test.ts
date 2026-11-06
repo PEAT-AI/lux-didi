@@ -30,12 +30,13 @@ function fixture(t: TestContext, infer: Infer, execute?: () => Promise<ToolResul
 
 
 const progress = { id: 'p1', name: 'report_progress', args: { findings: [{ text: 'The synthetic review is Tuesday.', source: 'calendar: synthetic review' }], still_checking: 'the attendee replies' } };
-function deferred() { let resolve!: (value: Inference) => void; const promise = new Promise<Inference>(done => { resolve = done; }); return { promise, resolve }; }
+function deferred() { let resolve!: (value: Inference) => void; let reject!: (error: unknown) => void; const promise = new Promise<Inference>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 
 test('production runtime emits one sourced partial before final and rejects a duplicate', async t => {
   let step = 0;
   const reached = deferred(), final = deferred();
   const f = fixture(t, async request => {
+    try {
     if (step++ === 0) return { text: '', calls: [{ id: 'read1', name: 'calendar_events', args: { start: '2026-11-10T00:00:00Z', end: '2026-11-11T00:00:00Z' } }] };
     if (step === 2) {
       assert.ok(request.tools.some(tool => tool.name === 'report_progress'));
@@ -50,6 +51,7 @@ test('production runtime emits one sourced partial before final and rejects a du
     assert.match(JSON.stringify(request.outputs), /already_reported/);
     reached.resolve({ text: '', calls: [] });
     return final.promise;
+    } catch (error) { reached.reject(error); throw error; }
   }, async () => ({ status: 'ok', text: 'The synthetic review is Tuesday.', references: [], next_cursor: null, coverage: 'Synthetic calendar record.', repair: null }));
   const pending = f.call.input('Synthetic review question', 1);
   await reached.promise;

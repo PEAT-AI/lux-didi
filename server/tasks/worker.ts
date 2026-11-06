@@ -61,13 +61,13 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   let reported = false;
   const clock = options.clock ?? realClock, start = clock.now();
   const abort = new AbortController();
-  let expired = false;
+  let expired = false, revisionExpired = false;
   let outsideTextSeen = options.outsideTextSeen ?? false;
   const stop = (): void => abort.abort();
   options.signal.addEventListener('abort', stop, { once: true });
   if (options.signal.aborted) stop();
   const expire = (): void => { expired = true; options.event?.('deadline', 0, clock.now() - start); stop(); };
-  const clearRevision = clock.timer(expire, REVISION_DEADLINE_MS);
+  const clearRevision = clock.timer(() => { revisionExpired = true; expire(); }, REVISION_DEADLINE_MS);
   const reads = options.reads ?? new Map<string, ToolResult>();
   let pending = pendingReads.get(reads);
   if (!pending) { pending = new Map(); pendingReads.set(reads, pending); }
@@ -91,7 +91,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const incomplete = (): WorkerResult => ({ status: 'incomplete', text: partialText(), findings, failures, receipts, ...(failure ? { failure } : expired ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, failures, receipts };
   async function compose(): Promise<WorkerResult> {
-    if (expired || clock.now() - start >= REVISION_DEADLINE_MS) { expired = true; return incomplete(); }
+    if (revisionExpired || clock.now() - start >= REVISION_DEADLINE_MS) { expired = true; return incomplete(); }
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
     if (!findings.length) return incomplete();
     const finalAbort = new AbortController();

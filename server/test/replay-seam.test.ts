@@ -38,7 +38,10 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
       db.prepare('INSERT INTO tasks VALUES(?,?)').run(task, i ? 'synthetic' : null);
       db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)').run(`op-${i}`, task, 1, i ? 'search_memory' : 'conversation_history', r.retrieval_started_at, r.retrieval_returned_at, 'committed', JSON.stringify({ records: i ? [] : [{ text: 'Synthetic kite' }] }));
       db.prepare('INSERT INTO task_operations VALUES(?,?,?,?,?,?,?,?)').run(`unrelated-revision-${i}`, task, 2, 'search_memory', 1, 2, 'committed', '{}');
-      return JSON.stringify({ event: 'task_lifecycle', phase: 'start', revision: 1, liveSessionId: 'synthetic', turnId: turn, taskId: task, timestamp: new Date(r.helper_started_at).toISOString() });
+      return [
+        { event: 'task_lifecycle', phase: 'start', revision: 1, liveSessionId: 'synthetic', turnId: turn, taskId: task, timestamp: new Date(r.helper_started_at).toISOString() },
+        { event: 'task_delivery', state: 'accepted', revision: 1, liveSessionId: 'synthetic', taskId: task, timestamp: new Date(i ? 2300 : 1700).toISOString() },
+      ].map(e => JSON.stringify(e)).join('\n');
     });
     db.close();
     writeFileSync(join(dir, 'logs/host.log'), logs.join('\n'));
@@ -50,6 +53,10 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
     assert.equal(output.rows[0].response_create_at, 'missing:response_create_at');
     assert.deepEqual(output.rows.map((r: any) => r.retrievals[0].result), ['found', 'empty']);
     assert.deepEqual(output.rows.map((r: any) => r.retrievals.length), [1, 1], 'another revision must never be attributed to this turn');
+    assert.deepEqual(output.rows.map((r: any) => r.owner_final_to_first_audio_ms), [500, 500]);
+    assert.deepEqual(output.rows.map((r: any) => r.helper_start_to_first_commentary_ms), [600, 200]);
+    assert.deepEqual(output.rows.map((r: any) => r.audio_preceded_first_commentary), [true, false]);
+    assert.deepEqual(output.rows.map((r: any) => r.delegation_created_at), ['missing:delegation_created_at', 'missing:delegation_created_at'], 'helper start must not invent delegation creation');
     assert.equal(output.measured_cued_turns, 2);
     assert.equal(output.median_ms, 0);
     assert.equal(output.p90_ms, 100);

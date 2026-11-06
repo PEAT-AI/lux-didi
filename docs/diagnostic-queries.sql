@@ -119,3 +119,35 @@ ORDER BY at, mono_ms, kind;
 SELECT 'utterance' AS kind, t.turn_index AS ordinal, u.role AS detail, u.at AS at, u.final AS final, u.text AS text
   FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id WHERE t.live_session_id=:session
 ORDER BY at;
+
+-- name: memory_active
+-- What the start block may serve: the active typed memories, most salient first, with the
+-- validity window and the subject used to group them.
+SELECT m.id, m.kind, m.subject, m.text, m.salience, m.authority, m.valid_from, m.valid_until,
+       m.event_at, m.event_tz, m.created_by, m.created_at, m.generation
+  FROM memory_items m WHERE m.status='active'
+ ORDER BY m.salience DESC, m.created_at DESC LIMIT :limit;
+
+-- name: memory_history
+-- The superseded, invalid and expired rows for one subject: kept as history, never served.
+SELECT m.id, m.status, m.text, m.valid_from, m.valid_until, m.superseded_by, m.created_at, m.created_by
+  FROM memory_items m WHERE m.subject=:subject AND m.status<>'active'
+ ORDER BY m.created_at DESC;
+
+-- name: memory_sources
+-- Provenance by turn id: the turns an item came from, with their text joined at read time.
+SELECT s.memory_id, s.session_id, s.turn_start_id, s.turn_end_id, t.id AS turn_id, t.role, t.text, t.at
+  FROM memory_sources s
+  JOIN history_turns t ON t.live_session_id=s.session_id AND t.id BETWEEN s.turn_start_id AND s.turn_end_id
+ WHERE s.memory_id=:memory
+ ORDER BY t.id;
+
+-- name: memory_jobs
+-- The dreaming pass's job per session and extractor version, and the generation it started under.
+SELECT j.id, j.session_id, j.extractor_version, j.state, j.attempts, j.generation, j.watermark,
+       j.started_at, j.finished_at, j.error
+  FROM memory_jobs j WHERE j.session_id=:session ORDER BY j.extractor_version;
+
+-- name: memory_generation
+-- The forget fence: the store's generation and when a forget last bumped it.
+SELECT generation, bumped_at, reason FROM memory_generation;

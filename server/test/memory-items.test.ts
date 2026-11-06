@@ -16,7 +16,6 @@ function fixture() {
   return {
     dir,
     store,
-    open: () => new Store(dir, domainMigrations),
     done() { store.close(); rmSync(dir, { recursive: true, force: true }); },
   };
 }
@@ -27,28 +26,34 @@ function turns(store: Store, sessionId: string, texts: readonly string[]): numbe
     texts.forEach((text, index) => tx.run(
       'INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?)',
       [sessionId, index + 1, index + 1, index === 0 ? 'owner' : 'assistant', text, 1000 + index]));
-    return tx.all('SELECT id FROM history_turns WHERE live_session_id=? ORDER BY journal_first', [sessionId])
-      .map(row => Number(row.id));
+    return tx.all('SELECT id,text FROM history_turns WHERE live_session_id=? ORDER BY journal_first', [sessionId])
+      .map(row => {
+        // The domain keeps history_turns_fts in step itself, so a synthetic turn does the same.
+        tx.run('INSERT INTO history_turns_fts(rowid,text) VALUES(?,?)', [Number(row.id), String(row.text)]);
+        return Number(row.id);
+      });
   });
 }
 
 test('migration 10 creates the memory tables, the indexes and the FTS table, and reopening is clean', () => {
-  const f = fixture();
+  const dir = mkdtempSync(join(tmpdir(), 'mem-items-'));
+  const store = new Store(dir, domainMigrations);
   try {
-    const names = f.store.transaction(tx => tx.all("SELECT name FROM sqlite_master WHERE name LIKE 'memory%' ORDER BY name")
+    const names = store.transaction(tx => tx.all("SELECT name FROM sqlite_master WHERE name LIKE 'memory%' ORDER BY name")
       .map(row => String(row.name)));
     for (const name of ['memory_generation', 'memory_items', 'memory_items_fts', 'memory_jobs', 'memory_sources']) {
       assert.ok(names.includes(name), `missing ${name}: ${names.join(',')}`);
     }
-    const indexes = f.store.transaction(tx => tx.all("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'ix_memory%'")
+    const indexes = store.transaction(tx => tx.all("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'ix_memory%'")
       .map(row => String(row.name)));
     assert.deepEqual(indexes.sort(), ['ix_memory_items_event_at', 'ix_memory_items_status_kind',
       'ix_memory_items_subject', 'ix_memory_sources_session'].sort());
-    const again = f.open();
+    store.close();
+    const again = new Store(dir, domainMigrations);
     try {
       assert.equal(again.transaction(tx => Number(tx.get('SELECT generation FROM memory_generation WHERE id=1')!.generation)), 1);
     } finally { again.close(); }
-  } finally { f.done(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('insertItem stores the fact and sources join the turn text at read time', () => {

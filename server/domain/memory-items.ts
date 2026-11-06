@@ -2,7 +2,7 @@
 //
 // Every operation runs inside the caller's transaction (the domain never opens
 // a database). Provenance is turn ids only: the words live in history_turns
-// and are joined at read time, so a forgotten session takes its quote with it.
+// and are joined at read time, so a forgotten session takes its words with it.
 import { badRequest, notFound } from './contract.js';
 import type { Transaction, SQLRow, SQLValue } from './contract.js';
 import { assertLimit, newId, requireText } from './util.js';

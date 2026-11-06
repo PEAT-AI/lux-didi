@@ -180,4 +180,74 @@ export const domainMigrations: SchemaMigration[] = [
       `CREATE VIRTUAL TABLE history_turns_fts USING fts5(text,content='history_turns',content_rowid='id',tokenize='unicode61 remove_diacritics 2',prefix='2 3')`,
     ],
   },
+  {
+    owner: 'domain', version: 10,
+    statements: [
+      // Typed memory: what the dreaming pass writes and the start block reads.
+      // `salience` is how much the fact matters to him; `generation` is the
+      // forget fence a job or import started under.
+      `CREATE TABLE memory_items (
+         id TEXT PRIMARY KEY,
+         kind TEXT NOT NULL CHECK(kind IN ('durable_fact','preference','person_role','transient_state','plan','promise','open_question','correction','decision')),
+         text TEXT NOT NULL,
+         subject TEXT NOT NULL,
+         valid_from INTEGER NOT NULL,
+         valid_until INTEGER,
+         event_at INTEGER,
+         event_tz TEXT,
+         event_text TEXT,
+         place TEXT,
+         authority TEXT NOT NULL CHECK(authority IN ('explicit_owner','derived')),
+         status TEXT NOT NULL CHECK(status IN ('active','superseded','invalid','expired')),
+         superseded_by TEXT,
+         salience INTEGER NOT NULL DEFAULT 1 CHECK(salience BETWEEN 0 AND 3),
+         created_at INTEGER NOT NULL,
+         created_by TEXT NOT NULL,
+         generation INTEGER NOT NULL
+       )`,
+      `CREATE INDEX ix_memory_items_status_kind ON memory_items(status, kind)`,
+      `CREATE INDEX ix_memory_items_subject ON memory_items(subject)`,
+      `CREATE INDEX ix_memory_items_event_at ON memory_items(event_at)`,
+      // Provenance is turn ids only: no stored quote, the text is joined at read time.
+      `CREATE TABLE memory_sources (
+         memory_id TEXT NOT NULL REFERENCES memory_items(id),
+         session_id TEXT NOT NULL,
+         turn_start_id INTEGER NOT NULL REFERENCES history_turns(id),
+         turn_end_id INTEGER NOT NULL REFERENCES history_turns(id),
+         PRIMARY KEY (memory_id, session_id, turn_start_id)
+       )`,
+      `CREATE INDEX ix_memory_sources_session ON memory_sources(session_id)`,
+      `CREATE TABLE memory_jobs (
+         id TEXT PRIMARY KEY,
+         session_id TEXT NOT NULL,
+         watermark INTEGER,
+         extractor_version TEXT NOT NULL,
+         state TEXT NOT NULL CHECK(state IN ('pending','running','done','failed')),
+         attempts INTEGER NOT NULL DEFAULT 0,
+         generation INTEGER NOT NULL,
+         started_at INTEGER,
+         finished_at INTEGER,
+         error TEXT,
+         UNIQUE(session_id, extractor_version)
+       )`,
+      `CREATE TABLE memory_generation (
+         id INTEGER PRIMARY KEY CHECK(id = 1),
+         generation INTEGER NOT NULL,
+         bumped_at INTEGER NOT NULL,
+         reason TEXT NOT NULL CHECK(reason IN ('forget','reset'))
+       )`,
+      `INSERT INTO memory_generation(id, generation, bumped_at, reason) VALUES (1, 1, 0, 'reset')`,
+      `CREATE VIRTUAL TABLE memory_items_fts USING fts5(text, subject, content='memory_items', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2', prefix='2 3')`,
+      `CREATE TRIGGER memory_items_fts_insert AFTER INSERT ON memory_items BEGIN
+         INSERT INTO memory_items_fts(rowid, text, subject) VALUES (new.rowid, new.text, new.subject);
+       END`,
+      `CREATE TRIGGER memory_items_fts_delete AFTER DELETE ON memory_items BEGIN
+         INSERT INTO memory_items_fts(memory_items_fts, rowid, text, subject) VALUES ('delete', old.rowid, old.text, old.subject);
+       END`,
+      `CREATE TRIGGER memory_items_fts_update AFTER UPDATE ON memory_items BEGIN
+         INSERT INTO memory_items_fts(memory_items_fts, rowid, text, subject) VALUES ('delete', old.rowid, old.text, old.subject);
+         INSERT INTO memory_items_fts(rowid, text, subject) VALUES (new.rowid, new.text, new.subject);
+       END`,
+    ],
+  },
 ];

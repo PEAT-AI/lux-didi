@@ -12,7 +12,7 @@ import {
   NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS,
   LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
-  validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS,
+  validatePersonaOverlay, withToolsSection, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
   buildOpeningFacts,
 } from '../prompt/live-persona.js';
@@ -410,62 +410,6 @@ test('P1: session composition reports the composed size per section', () => {
   assert.ok(Array.isArray(composed.sections), 'section sizes are reported');
   assert.ok(composed.sections.every(section => typeof section.id === 'string' && typeof section.chars === 'number' && section.chars >= 0));
   assert.ok(composed.sections.some(section => section.id === 'memory' && section.chars > 0), 'the memory section is measured');
-});
-
-// --- session memory v1: earlier-conversations injection section -------------------------------
-
-const DAY = 24 * 60 * 60 * 1000;
-
-test('the earlier-conversations header is the authored verbatim constant', () => {
-  assert.equal(EARLIER_CONVERSATIONS_HEADER,
-    "Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner's words now win.");
-});
-
-test('earlier-conversations fills the space left under the budget, newest first, whole summaries only', () => {
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000, summary: `summary number ${i}` }));
-  // Full budget: every whole summary fits, nothing is capped at six or at 3000 chars.
-  const full = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC' });
-  assert.equal(full.selectedIds.length, 20);
-  assert.deepEqual(full.omitted, []);
-  // Tight budget: as many whole summaries as fit, newest first, never over the budget.
-  const tight = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: 414 });
-  assert.ok(tight.selectedIds.length > 0 && tight.selectedIds.length < 20, 'a tight budget keeps a prefix');
-  assert.deepEqual(tight.selectedIds, candidates.map(candidate => candidate.id).filter(id => tight.selectedIds.includes(id)), 'newest first');
-  assert.ok(tight.section.length <= 414, `section stayed at the budget (${tight.section.length})`);
-  assert.deepEqual(tight.omitted.map(o => o.id), candidates.map(candidate => candidate.id).filter(id => !tight.selectedIds.includes(id)));
-  assert.ok(tight.omitted.every(o => o.reason === 'budget'));
-  for (const line of tight.section.split('\n').slice(2)) assert.match(line, /^[A-Z][a-z]{2} \d+ [A-Z][a-z]{2}, \w+: \[session:s\d{2}\] summary number \d+$/, 'no summary is cut mid-sentence');
-});
-
-test('a summary that does not fit is skipped and a smaller older one still fills the budget', () => {
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const big = buildEarlierConversationsSection([
-    { id: 'a', endedAt: now, summary: 'x'.repeat(2_500) },
-    { id: 'b', endedAt: now - 1, summary: 'y'.repeat(600) },
-    { id: 'c', endedAt: now - 2, summary: 'small' },
-  ], { now, timeZone: 'UTC', maxChars: 3_000 });
-  assert.deepEqual(big.selectedIds, ['a', 'c'], 'b no longer fits the budget; c still does');
-  assert.ok(big.omitted.some(o => o.id === 'b' && o.reason === 'budget'));
-  assert.ok(big.section.length <= 3_000);
-});
-
-test('earlier-conversations excludes summaries older than 14 days as stale', () => {
-  const now = Date.UTC(2026, 9, 20, 12, 0);
-  const result = buildEarlierConversationsSection([
-    { id: 'fresh', endedAt: now - 13 * DAY, summary: 'fresh' },
-    { id: 'stale', endedAt: now - 15 * DAY, summary: 'stale' },
-  ], { now, timeZone: 'UTC' });
-  assert.deepEqual(result.selectedIds, ['fresh']);
-  assert.deepEqual(result.omitted, [{ id: 'stale', reason: 'stale' }]);
-});
-
-test('earlier-conversations prefixes an absolute local date and part of day in the owner timezone', () => {
-  const endedAt = Date.UTC(2026, 9, 13, 12, 30);
-  const kolkata = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'Asia/Kolkata' });
-  const losAngeles = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'America/Los_Angeles' });
-  assert.ok(kolkata.section.includes('Tue 13 Oct, evening: [session:a] Shipped the thing.'), kolkata.section);
-  assert.ok(losAngeles.section.includes('Tue 13 Oct, morning: [session:a] Shipped the thing.'), losAngeles.section);
 });
 
 test('M11: one background block replaces the three old memory headings', () => {

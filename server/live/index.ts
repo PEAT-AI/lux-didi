@@ -18,7 +18,7 @@ import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapsh
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, zonedIso, type OpeningFacts } from '../prompt/index.js';
+import { publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, zonedIso, type OpeningFacts } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -484,10 +484,12 @@ export function staleRefusedNoteSessions(tx: Transaction, ownerId: string): Read
 
 /** Contract 1023 N8: the stored open_loop column of the eligible past calls, newest first. The summary text is
  *  never mined for a cue word, so a call whose distillation stored no loop offers none. */
+const OPENING_CONTEXT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
 export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number, refused: ReadonlySet<string> = new Set()): { text: string; lastSeenAt: number; sessionId: string }[] {
   const rows = tx.all(`SELECT s.live_session_id AS id, s.open_loop AS loop, s.ended_at AS seen_at FROM conversation_summaries s
     WHERE s.status='complete' AND s.open_loop IS NOT NULL AND s.ended_at IS NOT NULL AND s.ended_at<=? AND s.ended_at>=?
-    ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - EARLIER_CONVERSATIONS_WINDOW_MS]);
+    ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - OPENING_CONTEXT_WINDOW_MS]);
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   const loops: { text: string; lastSeenAt: number; sessionId: string }[] = [];
   for (const row of rows) {

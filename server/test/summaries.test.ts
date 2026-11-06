@@ -8,7 +8,7 @@ import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import * as summaries from '../domain/summaries.js';
-import { buildEarlierConversationsSection } from '../prompt/live-persona.js';
+import { buildEarlierConversationsSection } from '../chat/context.js';
 import { composeLiveSessionInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction } from '../prompt/live-persona.js';
 import { compilePrompt, createCapabilitySnapshot, PROMPT_VERSION, validatePreferences } from '../prompt/index.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';

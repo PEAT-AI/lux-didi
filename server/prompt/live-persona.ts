@@ -430,55 +430,7 @@ export function withToolsSection(text: string, _tools: readonly string[]): strin
   return `${text.slice(0, after)}${separator}${NAYA_WORK_DELIVERY}${text.slice(after)}`;
 }
 
-/** Verbatim header for the earlier-conversations section (session memory v1). */
-const EARLIER_CONVERSATIONS_TITLE = '# Earlier conversations';
-export const EARLIER_CONVERSATIONS_HEADER =
-  'Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner\'s words now win.';
-// Text-chat policy remains unchanged; startup selection uses the compiled memory budget.
-const EARLIER_CONVERSATIONS_MAX_CHARS = 44_000;
-export const EARLIER_CONVERSATIONS_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 export const CONVERSATION_RECALL_COVERAGE_NOTE = 'Conversation recall is incomplete. Some retained history could not be included because its eligibility is unverified or the selected route cannot read it. Missing context does not mean a conversation never happened. Use the authorized history tools when an answer depends on earlier discussion, and mention a gap only when it affects the answer.';
-
-export interface EarlierConversationCandidate { readonly id: string; readonly liveSessionId?: string; readonly endedAt: number; readonly summary: string }
-export interface EarlierConversationsResult {
-  readonly section: string;
-  readonly selectedIds: readonly string[];
-  readonly omitted: readonly { readonly id: string; readonly reason: 'budget' | 'stale' }[];
-}
-
-function datePrefix(endedAt: number, timeZone: string): string {
-  const date = new Date(endedAt);
-  const parts = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone })
-    .formatToParts(date).reduce<Record<string, string>>((acc, part) => { acc[part.type] = part.value; return acc; }, {});
-  const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hour12: false, timeZone }).format(date));
-  const partOfDay = hour >= 5 && hour < 12 ? 'morning' : hour >= 12 && hour < 17 ? 'afternoon' : hour >= 17 && hour < 22 ? 'evening' : 'night';
-  return `${parts['weekday']} ${parts['day']} ${parts['month']}, ${partOfDay}:`;
-}
-
-/**
- * Select the newest complete summaries that fit the injection budget and render the section.
- * Newest first, ended within the window, whole summaries only: the budget is the space the other
- * instruction sections leave under the target, so a generous budget keeps every summary.
- */
-export function buildEarlierConversationsSection(
-  candidates: readonly EarlierConversationCandidate[],
-  options: { readonly now: number; readonly timeZone: string; readonly maxChars?: number; readonly windowMs?: number },
-): EarlierConversationsResult {
-  const maxChars = options.maxChars ?? EARLIER_CONVERSATIONS_MAX_CHARS;
-  const overhead = `${EARLIER_CONVERSATIONS_TITLE}\n${EARLIER_CONVERSATIONS_HEADER}\n`.length;
-  const cutoff = options.now - (options.windowMs ?? EARLIER_CONVERSATIONS_WINDOW_MS);
-  const ordered = [...candidates].sort((a, b) => b.endedAt - a.endedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const selectedIds: string[] = [], omitted: { id: string; reason: 'budget' | 'stale' }[] = [], lines: string[] = [];
-  let used = overhead;
-  for (const candidate of ordered) {
-    if (candidate.endedAt < cutoff || candidate.endedAt > options.now) { omitted.push({ id: candidate.id, reason: 'stale' }); continue; }
-    const line = `${datePrefix(candidate.endedAt, options.timeZone)} [session:${candidate.liveSessionId ?? candidate.id}] ${candidate.summary}`;
-    const next = used + line.length + (lines.length ? 1 : 0);
-    if (next > maxChars) { omitted.push({ id: candidate.id, reason: 'budget' }); continue; }
-    lines.push(line); used = next; selectedIds.push(candidate.id);
-  }
-  return { section: lines.length ? `${EARLIER_CONVERSATIONS_TITLE}\n${EARLIER_CONVERSATIONS_HEADER}\n${lines.join('\n')}` : '', selectedIds, omitted };
-}
 
 // --- release 3u: the opening options one start offers, from stored facts only -------------------
 

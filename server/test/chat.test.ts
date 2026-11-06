@@ -1,3 +1,4 @@
+import { buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER } from '../chat/context.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +13,7 @@ import { Store } from '../runtime/store.js';
 import { PROMPT_VERSION, compilePrompt } from '../prompt/index.js';
 import * as summaries from '../domain/summaries.js';
 import { recordHistorySession } from '../domain/history-lifecycle.js';
-import { buildEarlierConversationsSection, composeLiveSessionInstruction, composeLiveInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
+import { composeLiveSessionInstruction, composeLiveInstruction, NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT } from '../prompt/live-persona.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
 import { stripModelOnlyNotes } from '../tools/live-shape.js';
 
@@ -651,4 +652,60 @@ test('the owner evidence projection strips the notes at the call site that feeds
   assert.equal(ownerEvidenceMarkdown({ markdown: '- 10:00, Standup [id e1] [+40 chars]\n- x [omitted: 2 more events; final, this tool has no paging argument]' }), '- 10:00, Standup\n- x');
   assert.equal(ownerEvidenceMarkdown({ text: 'plain text' }), 'plain text');
   assert.equal(ownerEvidenceMarkdown({}), 'Tool refused or unavailable.');
+});
+
+// --- session memory v1: earlier-conversations injection section -------------------------------
+
+const DAY = 24 * 60 * 60 * 1000;
+
+test('the earlier-conversations header is the authored verbatim constant', () => {
+  assert.equal(EARLIER_CONVERSATIONS_HEADER,
+    "Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner's words now win.");
+});
+
+test('earlier-conversations fills the space left under the budget, newest first, whole summaries only', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, endedAt: now - i * 3_600_000, summary: `summary number ${i}` }));
+  // Full budget: every whole summary fits, nothing is capped at six or at 3000 chars.
+  const full = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC' });
+  assert.equal(full.selectedIds.length, 20);
+  assert.deepEqual(full.omitted, []);
+  // Tight budget: as many whole summaries as fit, newest first, never over the budget.
+  const tight = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: 414 });
+  assert.ok(tight.selectedIds.length > 0 && tight.selectedIds.length < 20, 'a tight budget keeps a prefix');
+  assert.deepEqual(tight.selectedIds, candidates.map(candidate => candidate.id).filter(id => tight.selectedIds.includes(id)), 'newest first');
+  assert.ok(tight.section.length <= 414, `section stayed at the budget (${tight.section.length})`);
+  assert.deepEqual(tight.omitted.map(o => o.id), candidates.map(candidate => candidate.id).filter(id => !tight.selectedIds.includes(id)));
+  assert.ok(tight.omitted.every(o => o.reason === 'budget'));
+  for (const line of tight.section.split('\n').slice(2)) assert.match(line, /^[A-Z][a-z]{2} \d+ [A-Z][a-z]{2}, \w+: \[session:s\d{2}\] summary number \d+$/, 'no summary is cut mid-sentence');
+});
+
+test('a summary that does not fit is skipped and a smaller older one still fills the budget', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const big = buildEarlierConversationsSection([
+    { id: 'a', endedAt: now, summary: 'x'.repeat(2_500) },
+    { id: 'b', endedAt: now - 1, summary: 'y'.repeat(600) },
+    { id: 'c', endedAt: now - 2, summary: 'small' },
+  ], { now, timeZone: 'UTC', maxChars: 3_000 });
+  assert.deepEqual(big.selectedIds, ['a', 'c'], 'b no longer fits the budget; c still does');
+  assert.ok(big.omitted.some(o => o.id === 'b' && o.reason === 'budget'));
+  assert.ok(big.section.length <= 3_000);
+});
+
+test('earlier-conversations excludes summaries older than 14 days as stale', () => {
+  const now = Date.UTC(2026, 9, 20, 12, 0);
+  const result = buildEarlierConversationsSection([
+    { id: 'fresh', endedAt: now - 13 * DAY, summary: 'fresh' },
+    { id: 'stale', endedAt: now - 15 * DAY, summary: 'stale' },
+  ], { now, timeZone: 'UTC' });
+  assert.deepEqual(result.selectedIds, ['fresh']);
+  assert.deepEqual(result.omitted, [{ id: 'stale', reason: 'stale' }]);
+});
+
+test('earlier-conversations prefixes an absolute local date and part of day in the owner timezone', () => {
+  const endedAt = Date.UTC(2026, 9, 13, 12, 30);
+  const kolkata = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'Asia/Kolkata' });
+  const losAngeles = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'America/Los_Angeles' });
+  assert.ok(kolkata.section.includes('Tue 13 Oct, evening: [session:a] Shipped the thing.'), kolkata.section);
+  assert.ok(losAngeles.section.includes('Tue 13 Oct, morning: [session:a] Shipped the thing.'), losAngeles.section);
 });

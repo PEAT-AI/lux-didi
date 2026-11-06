@@ -11,7 +11,7 @@ import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { searchRecent } from '../domain/history-reader.js';
 import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
-import { FAST_EVIDENCE_MARKER, buildFastEvidence } from '../live/fast-evidence.js';
+import { FAST_EVIDENCE_BUDGET_MS, FAST_EVIDENCE_MARKER, buildFastEvidence } from '../live/fast-evidence.js';
 import type { FastEvidenceInput } from '../live/fast-evidence.js';
 import { Store } from '../runtime/store.js';
 import { commentaryPart, commentaryResults } from './commentary-test.js';
@@ -192,6 +192,13 @@ test('FR1: searchRecent finds the prior call, leaves out the current session, an
   assert.equal(other.outcome, 'empty', 'a session excluded from the search is not a hit');
   const broken = live.store.transaction(tx => searchRecent(tx, live.store.assistantId, '"""', { excludeSessionId: live.liveSessionId }));
   assert.equal(broken.outcome, 'empty', 'a query with no content words is empty, not a failure');
+  // The real store read, on the real clock: the measured segment config/latency-budgets.json budgets at 100 ms.
+  const measured = buildFastEvidence({
+    text: 'when does my flight leave', cues: ['memory'], calendar: undefined, now: Date.now,
+    history: query => live.store.transaction(tx => searchRecent(tx, live.store.assistantId, query, { excludeSessionId: live.liveSessionId })),
+  });
+  assert.equal(measured.outcome, 'found');
+  assert.ok(measured.elapsedMs <= FAST_EVIDENCE_BUDGET_MS, `the host's own read stays inside the budget: ${measured.elapsedMs} ms`);
 });
 
 test('FR1: the helper start does not move, cued or uncued', async t => {

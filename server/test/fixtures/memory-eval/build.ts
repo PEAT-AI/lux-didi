@@ -7,12 +7,12 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Store } from '../../runtime/store.js';
-import { domainMigrations } from '../../domain/schema.js';
-import { liveMigrations } from '../../live/schema.js';
-import * as memory from '../../domain/memory.js';
-import * as summaries from '../../domain/summaries.js';
-import { recordHistorySession } from '../../domain/history-lifecycle.js';
+import { Store } from '../../../runtime/store.js';
+import { domainMigrations } from '../../../domain/schema.js';
+import { liveMigrations } from '../../../live/schema.js';
+import * as memory from '../../../domain/memory.js';
+import * as summaries from '../../../domain/summaries.js';
+import { recordHistorySession } from '../../../domain/history-lifecycle.js';
 
 export type FixtureVariant = 'defect' | 'clean';
 
@@ -78,7 +78,7 @@ export function buildEvalStore(directory: string, variant: FixtureVariant): Stor
         const summary = session.summary[variant];
         summaries.insertSummary(tx, {
           liveSessionId: session.id, status: 'complete', summary, dataClass: 'ordinary', sourceRevision: 1,
-          endedAt, promptVersion: 'synthetic', model: 'synthetic', inputChars: summary.length,
+          endedAt, promptVersion: 'synthetic', model: 'synthetic', inputChars: summary.length, now: CLOCK.now(),
         });
       }
     }

@@ -81,7 +81,7 @@ async function openHost(t: TestContext) {
     audio: { inputRate: 8000, outputRate: 24000 }, route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] },
     prompt: { text: 'Synthetic alarm persona', dataClass: 'ordinary' }, limits: { handshakeMs: 1000, idleMs: 600000, sessionMs: 1200000, closeMs: 50 } });
   const owner = createLiveSessionOwner({ store, voice, profile, timeZone: 'UTC', createTaskRuntime: syntheticTaskFactory(store),
-    now: () => clock.now(), schedule: (fire, ms) => { const timer = clock.setTimer(ms, fire); return { cancel: () => clock.clearTimer(timer) }; } });
+    now: () => clock.now(), schedule: (fire, ms) => { const timer = clock.setTimer(ms, fire); return { unref() {}, cancel: () => clock.clearTimer(timer) }; } });
   const now = clock.now();
   store.transaction(tx => tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id,ring_started_at_utc,ring_deadline_utc) VALUES(?,?,'UTC','','ringing','synthetic',?,?)", ['synthetic-alarm', now, now, now + 60000]));
   const context = { clientId: 'synthetic', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };

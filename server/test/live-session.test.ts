@@ -1,3 +1,4 @@
+import { CONTEXT_BUDGET } from '../prompt/context-budget.js';
 import { WORKER_INSTRUCTIONS } from '../tasks/instructions.js';
 import { taskMigrations } from '../runtime/task-schema.js';
 import './tasks-lifecycle.test.js';
@@ -55,7 +56,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, buildOpeningFacts, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_WORK_DELIVERY, buildOpeningFacts, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -673,7 +674,7 @@ test('Live memory budget keeps whole records, reports overflow, and rejects over
   note(h, 'a', 'Fixture whole note');
   const initial = h.owner.create({ idempotencyKey: 'measure-memory', inputClass: 'ordinary' }, h.ctx);
   assert.deepEqual(accepted(h, initial.liveSessionId).memory.selectedIds, ['a']);
-  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(MEMORY_SECTION_CHAR_LIMIT), 'a']));
+  h.store.transaction(tx => tx.run('UPDATE entries SET text=? WHERE id=?', ['Fixture whole note' + 'x'.repeat(CONTEXT_BUDGET.memory.identity.ceiling * 3.2), 'a']));
   note(h, 'b', 'Fixture overflow note');
   const boundary = h.owner.create({ idempotencyKey: 'boundary-memory', inputClass: 'ordinary' }, h.ctx);
   const snapshot = accepted(h, boundary.liveSessionId);

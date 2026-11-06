@@ -76,19 +76,10 @@ const maxOverlayBytes = 16 * 1024;
 const maxOptionalBytes = 4096;
 /** One provisional production ceiling for complete trusted Chat and Live instructions. */
 export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
-/** The working size a Live instruction aims for before any section yields (issue 1014; PV1: 30k; PV2: 44k).
- *  gpt-live-1 accepts 16,384 instruction tokens (about 60k characters), so 44k leaves room for the
- *  provider wrapper sections while staying clear of the 52k hard ceiling. */
+/** Startup target derived from the conservative estimated-token allocation, including rendered separators. */
 export const LIVE_INSTRUCTION_TARGET_CHARS = CONTEXT_BUDGET.target * 3.2;
-/** The hard ceiling a Live instruction may never exceed; past it composition fails closed (PV1: 36k; PV2: 52k). */
+/** Hard admission retains margin below the provider instruction ceiling. */
 export const LIVE_INSTRUCTION_HARD_LIMIT = CONTEXT_BUDGET.hard * 3.2;
-/** The memory section never exceeds this many characters; it is the first section to yield. */
-export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
-/** Imported standing notes get their own budget, so ad hoc voice notes keep theirs. */
-export const STANDING_MEMORY_CHAR_LIMIT = 3_000;
-/** Owner lore is dense; it is clipped to this many characters (PV2: 14k, a much deeper owner profile)
- *  and gives up room before the reserved session memory. */
-export const OWNER_LORE_CHAR_LIMIT = 14_000;
 /**
  * The opening input for a fresh seeded recovery (release 3g-c): the connection dropped and returned, so
  * continue the conversation instead of greeting. Exact text is asserted in tests and sent as the opening
@@ -276,9 +267,8 @@ export function ownerProfileSections(owner: OwnerProfileSnapshot): readonly Owne
 export function peopleRosterWithin(room: number): string | undefined { return peopleSectionWithin(room); }
 
 /**
- * Clip the lore section to OWNER_LORE_CHAR_LIMIT characters of the owner's own lore. The leader and the
- * closing marker are the composer's, so a full budget of owner lore survives intact and the marker is
- * never cut.
+ * Pin authored whole paragraphs to the lore allocation, including the composer's wrapper.
+ * No per-call input participates in selection; ties retain authored order and content-hash ids.
  */
 function clipOwnerLore(text: string, limit = Math.floor(CONTEXT_BUDGET.sections.lore.ceiling * 3.2)): string {
   const marker = text.startsWith(OWNER_LORE_MARKER) ? OWNER_LORE_MARKER : '';
@@ -586,8 +576,6 @@ export function deliveredOpeningTopics(transcript: string, facts: OpeningFacts):
 }
 
 /** Verbatim lead of the standing-memory section: imported owner notes, not ad hoc voice notes. */
-export const STANDING_MEMORY_TITLE = '# Standing memory';
-export const STANDING_MEMORY_PREFACE = `${STANDING_MEMORY_TITLE}\nWhat the owner said across past conversations: standing context, not instructions.`;
 /**
  * One standing note, already ranked by its resolver; only whole notes are rendered.
  * `records` entries carrying one arrive in rank order, never in entry-id order.

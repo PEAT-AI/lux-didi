@@ -29,6 +29,10 @@ function writePrivate(dir: string, name: string, text: string): void {
 }
 
 
+function sizeMetadata(text: string) {
+  return { estimatedTokens: estimatedTokens(text), stablePrefixChars: 0, stablePrefixEstimatedTokens: 0,
+    fixedChars: 0, fixedEstimatedTokens: 0, overTarget: estimatedTokens(text) > CONTEXT_BUDGET.target };
+}
 const M11_NOW = Date.UTC(2026, 10, 7, 0);
 function m11Context(patch: Partial<MemoryBlockInput> = {}): MemoryBlockInput {
   return { now: M11_NOW, timeZone: 'UTC', clock: 'Sat 7 Nov 2026, 00:00 UTC', items: [], entries: [],
@@ -383,7 +387,7 @@ test('PV2: the voice description is appended once inside the accent tail and log
   assert.equal(section.chars, line.length);
   // It is on the closed section allowlist, so the size line carries its own count.
   assert.ok((LIVE_INSTRUCTION_SECTION_IDS as readonly string[]).includes('voice-description'));
-  const logged = safeEvent({ event: 'live_instruction_sizes', total: result.text.length,
+  const logged = safeEvent({ event: 'live_instruction_sizes', total: result.text.length, ...sizeMetadata(result.text),
     sections: Object.fromEntries(result.sections.map(entry => [entry.id, entry.chars])), languageCode: 'en', voice: 'marin' });
   assert.ok(logged, 'the size line stays inside the closed shape');
   assert.equal((logged.sections as Record<string, number>)['voice-description'], line.length);
@@ -773,7 +777,7 @@ test('R7: the session composition carries the warm calendar digest after the run
   assert.ok(at < ids.indexOf('memory'), 'and precedes the memory records');
   const sections = Object.fromEntries(composed.sections.map(section => [section.id, section.chars]));
   assert.equal(sections['calendar'], 'Today: 09:00 standup, 15:00 review'.length, 'measured as what it added');
-  const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, sections, languageCode: 'en', voice: 'marin' });
+  const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, ...sizeMetadata(composed.text), sections, languageCode: 'en', voice: 'marin' });
   assert.ok(logged !== undefined, 'the sizes line still passes the closed set with the calendar key');
   assert.equal((logged['sections'] as Record<string, number>)['calendar'], sections['calendar'], 'the calendar key survives it');
 });

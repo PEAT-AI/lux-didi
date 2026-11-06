@@ -112,7 +112,8 @@ test('a condensed seed keeps the digest inside the same limits and the bound sti
   assert.ok(seed.turns.length <= SEED_MESSAGE_LIMIT, `${seed.turns.length} messages inside ${SEED_MESSAGE_LIMIT}`);
   assert.equal(seed.turns[0]!.role, 'user');
   assert.ok(seed.turns[0]!.text.startsWith(SEED_DIGEST_HEADER));
-  assert.equal(seed.digestChars, seed.turns[0]!.text.length);
+  assert.equal(seed.digestChars, seed.turns[0]!.text.length, 'the digest is one host turn of its own');
   assert.equal(seed.chars, seed.turns.reduce((sum, turn) => sum + turn.text.length, 0));
   assert.equal(seed.turns.at(-1)!.text, turns.at(-1)!.text, 'the newest turn rides verbatim');
+  assert.equal((seed.turns.length - 1) % 2, 0, 'every kept exchange behind the digest is whole');
 });

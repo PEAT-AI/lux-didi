@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, liveMigrations, SEED_CHAR_LIMIT, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import { createLiveSessionOwner, liveMigrations, SEED_CHAR_LIMIT, SEED_DIGEST_HEADER, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
@@ -172,7 +172,12 @@ test('budget pressure drops whole older exchanges and never the latest one', asy
   first.close();
   const second = await live.start();
   assert.equal(live.conversationOf(second.liveSessionId), live.conversationOf(first.liveSessionId));
-  const seed = live.history(1);
+  const all = live.history(1);
+  // A condensed seed opens with one host-authored owner turn listing the dropped asks, never a model turn, so
+  // the exchange invariant below is asserted over the transcript that rides behind that line.
+  const seed = all.filter(turn => !turn.text.startsWith(SEED_DIGEST_HEADER));
+  assert.equal(all.length - seed.length, 1, 'a condensed seed opens with exactly one host-digest turn');
+  assert.equal(all[0]!.role, 'user', "the digest is the owner's line, never the model's");
   assert.equal(seed.length % 2, 0, 'the seed never holds half an exchange');
   assert.ok(!seed.some(turn => turn.text.includes('question A')), 'the oldest whole exchange is dropped first');
   assert.deepEqual(seed.slice(-2), [

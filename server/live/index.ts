@@ -684,6 +684,8 @@ export function condenseSeed<T extends SeedTurnLike>(transcript: readonly T[], a
   // The digest rides inside the same two limits, so the exchange bound is tightened by exactly its own size.
   const again = fitSeedTurns(transcript, appended, {
     charLimit: SEED_CHAR_LIMIT - digest.length, messageLimit: SEED_MESSAGE_LIMIT - 1 });
+  // The digest is one host-authored owner turn of its own at the head of the seed, so every kept exchange stays
+  // whole and verbatim behind it, and its size is counted in both seed limits.
   const turns: T[] = [{ ...template, role: 'user' as const, text: digest }, ...again.turns];
   return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0), condensed: true, digestChars: digest.length };
 }

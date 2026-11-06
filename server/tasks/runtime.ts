@@ -135,6 +135,7 @@ export class TaskRuntime {
   finalize(words: string, generation: number, ownerTurn = 0, overlapped = false): { revision: Revision; result: Promise<WorkerResult> } {
     const revision = this.begin(words, generation, ownerTurn, overlapped), { identity } = revision;
     const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, this.verifiedStatus(identity), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
+      ...(this.options.timeZone === undefined ? {} : { timeZone: this.options.timeZone }), ...(this.options.now ? { now: this.options.now } : {}),
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       operation: (operation, tool, args, output) => this.recordOperation(operation, tool, args, output),
     }).then(answer => this.settle(identity, answer), () => {

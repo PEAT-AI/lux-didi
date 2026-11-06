@@ -18,7 +18,7 @@ import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapsh
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningFacts } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, EARLIER_CONVERSATIONS_RESERVE_CHARS, buildOpeningFacts, deliveredOpeningTopics, excludedOpeningTopics, openingContextFloors, openingTurnTranscript, EARLIER_CONVERSATIONS_WINDOW_MS,  LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, zonedIso, type OpeningFacts } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -438,6 +438,38 @@ export function recordDeliveredOpening(tx: Transaction, callId: string, now: num
 
 /** Contract 1023 N8: how recent the call that just ended must be for its own words to seed the opener. */
 const FRESH_THREAD_WINDOW_MS = 2 * 60 * 1000;
+/**
+ * How long a prepared session's frozen clock stays usable. Past this, or across a change of the owner's
+ * local day, the instruction no longer describes the owner's now and the session is discarded.
+ */
+const PREPARED_CLOCK_MAX_AGE_MS = 10 * 60 * 1000;
+
+/** The local calendar day of one instant in `timeZone`, which is what a frozen instruction gets wrong. */
+function localDay(ms: number, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+}
+
+/**
+ * The zone a live session's memory is stamped in: the zone recorded when the session was composed, so a
+ * note written during a call carries the owner's own day. A row with no recorded zone falls back to the
+ * host's zone, which is the last of the sources the session clock itself uses.
+ */
+function sessionTimeZone(tx: Transaction, liveSessionId: string): string {
+  const row = tx.get('SELECT time_zone FROM live_sessions WHERE live_session_id=?', [liveSessionId]);
+  const recorded = String(row?.['time_zone'] ?? '');
+  return recorded || Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/**
+ * A prepared session carries the instant and zone it was composed at. A row with no clock at all is stale
+ * by the same rule: no shim keeps an instruction whose clock nothing recorded.
+ */
+function preparedClockStale(row: SQLRow, now: number, fallbackZone: string): boolean {
+  const observed = Date.parse(String(row['observed_at'] ?? ''));
+  if (!Number.isFinite(observed) || now - observed > PREPARED_CLOCK_MAX_AGE_MS) return true;
+  const timeZone = String(row['time_zone'] ?? '') || fallbackZone;
+  return localDay(observed, timeZone) !== localDay(now, timeZone);
+}
 /** The closed set of past calls the open-loop option may draw on, newest first. */
 const OPEN_LOOP_SOURCES = 3;
 
@@ -1257,9 +1289,11 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   const existing = memory.rememberedLiveEntry(tx, externalId);
   if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, metrics);
   const clock = { now: () => now };
-  const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: 'UTC' }, clock);
+  // The note belongs to the session's own zone: the stamp on it is the owner's day, never a literal UTC.
+  const notesZone = sessionTimeZone(tx, liveSessionId);
+  const session = memory.createSession(tx, { title: 'Live voice memory', startedAt: now, timeZone: notesZone }, clock);
   labels.correct(tx, { subject: { kind: 'session', id: session.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
-  const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: 'UTC',
+  const entry = memory.appendEntry(tx, { sessionId: session.id, text: noteText, capturedAt: now, timeZone: notesZone,
     source: { label: `live-voice ${liveSessionId}`, provider: 'live-voice', accountId: liveSessionId, externalId, sourceTimestamp: now, availability: 'present', note: `kind:${args.kind}` } }, clock);
   labels.correct(tx, { subject: { kind: 'entry', id: entry.id }, expectedRevision: 0, dataClass: 'ordinary' }, now);
   // A fragment kept is a partial memory, never a silent one: she says which words were saved.
@@ -1493,6 +1527,15 @@ export class LiveSessionOwner {
     return this.#timeZonePin ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
 
+  /**
+   * The clock this session is composed at: the observed instant written in the owner zone, that zone, and
+   * which source chose it. It is stored on the session row and every later prompt reads that record.
+   */
+  #clockRecord(now: number): { observedAt: string; timeZone: string; source: 'pin' | 'host' } {
+    const timeZone = this.#ownerTimeZone();
+    return { observedAt: zonedIso(new Date(now), timeZone), timeZone, source: this.#timeZonePin === undefined ? 'host' : 'pin' };
+  }
+
   /** C-DIAG109: the response pair every stall and rebuild line carries, read off the turn now in flight. */
   #stallFacts(handle: ActiveSession): { responseCreated: boolean; msSinceResponseCreated: number | null } {
     return stallResponseFacts({ ownerFinalAt: handle.inputFinalAt, responseCreatedAt: handle.responseCreatedAt, now: this.#now() });
@@ -1502,10 +1545,11 @@ export class LiveSessionOwner {
   /** The per-call memory of which Mongoose endpoints were already announced (C-SIGNIN-LIVE). */
   readonly #connectorNotes = new ConnectorNotes();
 
-  #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
+  #liveRuntimeContext(toolNames: readonly string[], clock: { observedAt: string; timeZone: string }): string {
     const connected = toolGroupNames(this.#web === undefined ? toolNames : [...toolNames, WEB_SEARCH_ACTION]);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
-    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected,
+    // Built from the session's stored clock record, never from the host clock at read time.
+    const context = buildRuntimeContext({ now: new Date(clock.observedAt), timeZone: clock.timeZone, connected,
       vault: { dictation: true, composed: this.#composedNotes() }, connectors: endpoints });
     const signIn = signInNote(endpoints);
     // C-SIGNIN-LIVE: the one sentence about a connector that just came up, said on this call only.
@@ -1589,14 +1633,20 @@ export class LiveSessionOwner {
     const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null, ...(input.alarm ? { alarm: input.alarm } : {}) });
     const now = this.#now();
     // #595: the owner travels, so the zone is read when this call is composed, never at host start.
-    const timeZone = this.#ownerTimeZone();
+    const clock = this.#clockRecord(now);
+    const timeZone = clock.timeZone;
     const assistantId = this.#store.assistantId;
     const snapshot = this.#store.transaction(tx => {
       // Same-key replay is decided on the normalized request meaning before any policy.
       const prior = tx.get('SELECT * FROM live_sessions WHERE owner_assistant_id=? AND idempotency_key=?', [assistantId, input.idempotencyKey]);
       if (prior) {
         if (String(prior['fingerprint']) !== fingerprintFor(String(prior['prompt_identity']))) throw new LiveError('idempotency_conflict');
-        return this.#snapshot(tx, this.#expireInTx(tx, prior, now));
+        // A prepared session whose frozen clock went stale is discarded here; the same request then composes
+        // a new one at this instant. A session already in flight is never replayed into a second answer.
+        if (String(prior['lifecycle']) !== 'accepted' || Number(prior['dispatch_intent']) !== 0 || !preparedClockStale(prior, now, timeZone)) {
+          return this.#snapshot(tx, this.#expireInTx(tx, prior, now));
+        }
+        this.#terminalInTx(tx, String(prior['live_session_id']), { state: 'expired' }, false, now, 'detached', null);
       }
       if (context.authorityEpoch !== this.#store.authorityEpoch) throw new LiveError('stale_authority');
       if (!classes.includes(input.inputClass) || !this.#profile.route.dataClasses.includes(input.inputClass)) throw new LiveError('invalid_request');
@@ -1657,7 +1707,7 @@ export class LiveSessionOwner {
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
-        runtimeContext: this.#liveRuntimeContext(toolNames, timeZone),
+        runtimeContext: this.#liveRuntimeContext(toolNames, clock),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         now, timeZone,
         ...(calendar ? { calendar } : {}),
@@ -1719,8 +1769,8 @@ export class LiveSessionOwner {
       const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text + missedNote + missingToolsFact + (input.alarm ? '\n\n' + alarmSessionInstructions(input.alarm) : ''), dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
-      tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
-        [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now]);
+      tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, observed_at, time_zone) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?,?,?)',
+        [liveSessionId, assistantId, context.authorityEpoch, input.idempotencyKey, fingerprint, context.clientId, context.auditId, this.#profileIdentity, promptIdentity, 'accepted', 'detached', now, now, clock.observedAt, clock.timeZone]);
       tx.run("UPDATE live_sessions SET diagnostic_metadata_state='in_progress',diagnostic_content_state='in_progress',native_receipt_state='unknown',diagnostic_failures=0,diagnostic_unattributed_transcripts=0,diagnostic_clock_domain=? WHERE live_session_id=?", [hostClockDomain,liveSessionId]);
       tx.run('UPDATE live_sessions SET accepted_prompt_snapshot=?,memory_provenance=? WHERE live_session_id=?', [JSON.stringify(acceptedPrompt), JSON.stringify({ ...memory, injectedSummaryIds, summaryCoverage: summarySelection.coverage, openerSessionIds: injectedOpeners.map(row => row.sessionId) }), liveSessionId]);
       tx.run('INSERT OR IGNORE INTO live_session_conversations(live_session_id,conversation_id) VALUES(?,?)', [liveSessionId, this.#conversationInTx(tx, assistantId)]);
@@ -1736,6 +1786,9 @@ export class LiveSessionOwner {
     if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() }]]));
     // #107: the alarm block is in this new session's accepted prompt, so the announcement is made.
     if (input.alarm?.alarmId) hostLogEvent({ event: 'alarm_announced', alarmId: input.alarm.alarmId, mode: 'new_session' });
+    // The clock this session carries, and where its zone came from, logged once for this session.
+    hostLogEvent({ event: 'live_session_clock', liveSessionId: snapshot.liveSessionId, observedAt: clock.observedAt,
+      timeZone: clock.timeZone, clockSource: clock.source });
     this.#armExpiry();
     return snapshot;
   }
@@ -1885,6 +1938,12 @@ export class LiveSessionOwner {
       if (String(row['profile_identity']) !== this.#profileIdentity) throw new LiveError('invalidated');
       if (String(row['lifecycle']) === 'terminal') throw new LiveError('terminal');
       if (String(row['lifecycle']) !== 'accepted') throw new LiveError('already_attached');
+      // The frozen instruction is never patched: a prepared session whose clock went stale is discarded here,
+      // before any audio, so the call starts on a freshly composed instruction.
+      if (preparedClockStale(row, now, this.#ownerTimeZone())) {
+        this.#terminalInTx(tx, input.liveSessionId, { state: 'expired' }, false, now, 'detached', null);
+        return 'expired' as const;
+      }
       if (this.#expireInTx(tx, row, now) !== row) return 'expired' as const;
       let acceptedPrompt: AcceptedPromptSnapshot;
       // Null is a pre-v2 legacy record. Refuse honestly rather than recompile private current state.

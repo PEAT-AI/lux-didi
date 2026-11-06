@@ -151,3 +151,58 @@ SELECT j.id, j.session_id, j.extractor_version, j.state, j.attempts, j.generatio
 -- name: memory_generation
 -- The forget fence: the store's generation and when a forget last bumped it.
 SELECT generation, bumped_at, reason FROM memory_generation;
+
+-- Replay seam (scripts/didi-replay-seam). Run only on a private store copy.
+-- :session is the full live session id. Retain explicit missing-event markers;
+-- do not infer a retrieval completion time from tool_calls.created_at.
+SELECT t.turn_id,t.turn_index,t.opened_at,t.first_audible_at,
+       u.at AS owner_final_at
+FROM trace_turn t LEFT JOIN trace_utterance u
+  ON u.turn_id=t.turn_id AND u.role='owner' AND u.final=1
+WHERE t.live_session_id=:session AND t.origin='owner'
+ORDER BY t.opened_at,t.turn_index;
+SELECT response_key,turn_id,created_at FROM trace_response
+WHERE live_session_id=:session ORDER BY created_at;
+SELECT t.task_id,o.operation_id,o.tool,o.state,o.created_at,o.updated_at,
+       d.state AS delivery_state,d.updated_at AS delivery_updated_at
+FROM tasks t LEFT JOIN task_operations o ON o.task_id=t.task_id
+LEFT JOIN task_deliveries d ON d.task_id=t.task_id
+WHERE t.live_session_id=:session ORDER BY t.created_at,o.created_at;
+-- Direct live tools use the live session id as run_id, not task_id.
+SELECT execution_id,call_id,state,created_at,json_extract(intent_json,'$.toolName') AS tool
+FROM tool_calls WHERE run_id=:session ORDER BY created_at;
+-- Host log causal joins: task_lifecycle phase=start by turnId and taskId;
+-- task_settled by taskId; response_first_audio by responseKey.
+-- live_first_audio without a turn/response id cannot safely be assigned to a turn.
+-- Current helper retrieval uses search_memory/read_memory in server/tasks/tools.ts,
+-- not the historical direct conversation_history tool. Compare all three explicitly.
+-- Match each operation/delivery by BOTH task_id AND task_revision to the host log's
+-- task_lifecycle start/revision event carrying turnId. Joining task_id alone assigns
+-- later revision lookups to the earlier turn and produces a false race.
+SELECT o.task_id,o.task_revision,o.operation_id,o.tool,o.state,o.created_at,o.updated_at
+FROM task_operations o WHERE o.tool IN ('conversation_history','search_memory','read_memory')
+AND o.task_id=:task AND o.task_revision=:revision ORDER BY o.created_at;
+-- Before live_session_id persistence was introduced, accept a NULL task session only
+-- when its task id AND revision have an explicit host log link to this session/turn.
+-- task_delivery state=sent timestamps dispatch, not audible playback; a delivered DB
+-- row's updated_at is reported separately and is not substituted for dispatch.
+-- task_operations.result may retain only size_bytes/category; mark result missing
+-- rather than infer found/empty from size or from a successful operation.
+-- M1-R1 all-turn fast-route baseline, including non-cued owner turns:
+-- owner_final_to_first_audio_ms uses the final owner utterance and trace first-audible
+-- timestamp, falling back only to keyed response_first_audio.firstAudioAt when
+-- the trace value is absent. Log envelope timestamp is reported separately as
+-- first_audio_log_written_at and never defines the measured first_audio_at.
+-- If measured audio predates that final, the valid baseline metric is missing.
+-- first_commentary_appended_at is task_delivery state=accepted, joined by task and
+-- revision. delivery.ts accepted() follows the provider commentary append ack;
+-- sent is dispatch and is not interchangeable with appended. The unkeyed
+-- gptlive_append_ack cannot itself be assigned to a turn.
+-- helper_start_to_first_commentary_ms requires that accepted timestamp >= start.
+-- audio_preceded_first_commentary is missing if either valid timestamp is absent.
+-- Current delegationCreated() emits no keyed host-log creation timestamp; do not
+-- invent delegation_created_at from helper start or trace_response.created_at.
+-- Each printed percentile population must name calls, turns, cue definition,
+-- cued turns and valid pair count before quoting its median or p90.
+-- F1: conversation_history operations are reported separately as historical evidence;
+-- only search_memory/read_memory can define the current helper timing seam or population.

@@ -27,7 +27,7 @@ done
 log=$(mktemp)
 http_log=$(mktemp)
 trap 'rm -f "$log" "$http_log"' EXIT
-node_test_files --test-reporter=tap --test-timeout=15000 test/domain.test.ts test/provenance.test.ts test/memory-items.test.ts dist/test/memory-delete.test.js | tee "$log"
+node_test_files --test-reporter=tap --test-timeout=15000 test/domain.test.ts test/provenance.test.ts test/memory-items.test.ts dist/test/memory-delete.test.js test/replay-seam.test.ts | tee "$log"
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'check-domain: zero selected tests' >&2; exit 1; }
 
 # Only the four cases that use the synthetic DomainPort fixture changed for

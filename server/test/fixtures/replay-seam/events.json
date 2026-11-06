@@ -1,0 +1,4 @@
+[
+  {"owner_final_at":1000,"helper_started_at":1100,"retrieval_started_at":1200,"retrieval_returned_at":1600,"first_audio_at":1500,"owner_words":"Last time we discussed a synthetic blue kite."},
+  {"owner_final_at":2000,"helper_started_at":2100,"retrieval_started_at":2200,"retrieval_returned_at":2400,"first_audio_at":2500,"owner_words":"I told you about a synthetic green kite."}
+]

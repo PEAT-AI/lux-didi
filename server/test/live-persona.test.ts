@@ -705,7 +705,7 @@ test('Q5-R4: the start instruction carries the previous-openers context once, an
   const note = 'Open on a different subject and different words than these earlier openers: "Morning."';
   const withNote = composeLiveSessionInstruction({ text: instruction.text, tools: ['research'], ownerProfile: FIXTURE_OWNER, records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, openersNote: note });
   assert.equal(withNote.text.split(note).length - 1, 1, 'the opener context appears exactly once');
-  assert.ok(withNote.sections.some(section => section.id === 'previous-openers' && section.chars === note.length), 'it is its own measured section');
+  assert.ok(withNote.sections.some(section => section.id === 'previous-openers' && section.chars === note.length + 2), 'it is its own measured section');
   const without = composeLiveSessionInstruction({ text: instruction.text, tools: ['research'], ownerProfile: FIXTURE_OWNER, records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   assert.equal(without.text.includes('earlier openers'), false, 'a call with no earlier opener carries no context');
   assert.equal(without.sections.some(section => section.id === 'previous-openers'), false, 'and no empty section is reported');
@@ -773,7 +773,7 @@ test('R7: the session composition carries the warm calendar digest after the run
   assert.ok(at > ids.indexOf('runtime'), 'it follows the runtime context');
   assert.ok(at < ids.indexOf('memory'), 'and precedes the memory records');
   const sections = Object.fromEntries(composed.sections.map(section => [section.id, section.chars]));
-  assert.equal(sections['calendar'], 'Today: 09:00 standup, 15:00 review'.length, 'measured as what it added');
+  assert.equal(sections['calendar'], 'Today: 09:00 standup, 15:00 review'.length + 2, 'measured with its joining separator');
   const logged = safeEvent({ event: 'live_instruction_sizes', total: composed.text.length, ...sizeMetadata(composed.text), sections, languageCode: 'en', voice: 'marin' });
   assert.ok(logged !== undefined, 'the sizes line still passes the closed set with the calendar key');
   assert.equal((logged['sections'] as Record<string, number>)['calendar'], sections['calendar'], 'the calendar key survives it');
@@ -1073,4 +1073,11 @@ test('M11: complete rendered section counts include every joining separator', ()
   const result = m11Session({ calendar: '12:00 Synthetic event', pickupNote: 'Synthetic pickup' });
   assert.equal(result.sections.reduce((sum, section) => sum + section.chars, 0), result.text.length);
   assert.equal(result.estimatedTokens, estimatedTokens(result.text));
+});
+
+
+test('M11: opening-option availability does not change the fixed cacheable prefix', () => {
+  const absent = m11Session();
+  const present = m11Session({ openingFacts: 'Synthetic opening options' });
+  assert.equal(absent.text.slice(0, absent.stablePrefixChars), present.text.slice(0, present.stablePrefixChars));
 });

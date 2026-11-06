@@ -1,3 +1,5 @@
+import { insertItem } from '../domain/memory-items.js';
+import { resolveLiveMemory } from '../host/live.js';
 import { compileMemoryBlock } from '../prompt/memory-block.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -664,4 +666,16 @@ test('M0: a fresh note wins a clipped memory budget by captured chronology, not 
   const result = composeLiveSessionInstruction({ text: 'SYNTHETIC BASE', tools: [], records, trustedChars: 60_000 });
   assert.deepEqual(result.selectedIds, ['m-new']);
   assert.deepEqual(result.omitted.map(record => record.id).sort(), ['a-middle', 'z-old']);
+});
+
+
+test('the resolver does not truncate active typed facts before authority and budget selection', t => {
+  const f = fixture(t);
+  const ids = f.store.transaction(tx => Array.from({ length: 201 }, (_, index) => insertItem(tx, {
+    kind: 'durable_fact', text: `Synthetic typed fact ${index}`, subject: 'synthetic resolver corpus',
+    validFrom: 0, createdBy: 'synthetic-owner', authority: 'explicit_owner', salience: index === 200 ? 0 : 1,
+  }).id));
+  const records = f.store.transaction(tx => resolveLiveMemory(tx)).filter(record => record.memoryItem);
+  assert.equal(records.length, ids.length);
+  assert.ok(records.some(record => record.id === ids[200]), 'lower salience cannot exclude an active fact before the compiler sees it');
 });

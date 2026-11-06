@@ -119,3 +119,26 @@ ORDER BY at, mono_ms, kind;
 SELECT 'utterance' AS kind, t.turn_index AS ordinal, u.role AS detail, u.at AS at, u.final AS final, u.text AS text
   FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id WHERE t.live_session_id=:session
 ORDER BY at;
+
+-- Replay seam (scripts/didi-replay-seam). Run only on a private store copy.
+-- :session is the full live session id. Retain explicit missing-event markers;
+-- do not infer a retrieval completion time from tool_calls.created_at.
+SELECT t.turn_id,t.turn_index,t.opened_at,t.first_audible_at,
+       u.at AS owner_final_at
+FROM trace_turn t LEFT JOIN trace_utterance u
+  ON u.turn_id=t.turn_id AND u.role='owner' AND u.final=1
+WHERE t.live_session_id=:session AND t.origin='owner'
+ORDER BY t.opened_at,t.turn_index;
+SELECT response_key,turn_id,created_at FROM trace_response
+WHERE live_session_id=:session ORDER BY created_at;
+SELECT t.task_id,o.operation_id,o.tool,o.state,o.created_at,o.updated_at,
+       d.state AS delivery_state,d.updated_at AS delivery_updated_at
+FROM tasks t LEFT JOIN task_operations o ON o.task_id=t.task_id
+LEFT JOIN task_deliveries d ON d.task_id=t.task_id
+WHERE t.live_session_id=:session ORDER BY t.created_at,o.created_at;
+-- Direct live tools use the live session id as run_id, not task_id.
+SELECT execution_id,call_id,state,created_at,json_extract(intent_json,'$.toolName') AS tool
+FROM tool_calls WHERE run_id=:session ORDER BY created_at;
+-- Host log causal joins: task_lifecycle phase=start by turnId and taskId;
+-- task_settled by taskId; response_first_audio by responseKey.
+-- live_first_audio without a turn/response id cannot safely be assigned to a turn.

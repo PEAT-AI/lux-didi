@@ -7,7 +7,7 @@ import { CALENDAR_CUES, MEMORY_CUES, classifyCue } from '../live/memory-cues.js'
 
 /** Ten cued finals across both classes and ten uncued ones, each with the exact expected classes. */
 const CASES: [string, string[]][] = [
-  ['What did I tell you about the Lisbon trip?', ['memory']],
+  ['What did I tell you about my trip to Lisbon?', ['memory']],
   ['The last time we talked about the roof, you said it was fine.', ['memory']],
   ['Do you remember my flight?', ['memory']],
   ['What did we discuss yesterday?', ['memory']],

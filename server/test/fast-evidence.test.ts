@@ -18,7 +18,7 @@ import { commentaryPart, commentaryResults } from './commentary-test.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 
-const MODEL = 'synthetic-live-1';
+const MODEL = 'models/fr1-fast-evidence-test';
 const T0 = 1_700_000_000_000;
 
 /** The trusted clock seam: no real timer ever elapses, and every scheduled delay is readable. */
@@ -104,7 +104,7 @@ test('FR1: a memory-cued final appends the local fact as one provisional group w
   const live = await openLive(t);
   seedPriorCall(live.store, live.liveSessionId, [{ role: 'owner', text: 'My flight to Lisbon leaves in April.', at: T0 - 86_400_000 }]);
   const quietBefore = live.clock.scheduled.filter(item => item.delayMs === 600).length;
-  await ownerSaid(live, 'What did I tell you about the Lisbon trip?');
+  await ownerSaid(live, 'What did I tell you about my trip to Lisbon?');
   assert.ok(live.voice.taskAnswers.length > 0, 'the host appended its own finding');
   const groups = commentaryResults(live.voice.taskAnswers);
   assert.equal(groups.length, 1, 'exactly one commentary group');
@@ -122,7 +122,7 @@ test('FR1: a memory-cued final appends the local fact as one provisional group w
 
 test('FR1: a cued final with no match appends nothing at all', async t => {
   const live = await openLive(t);
-  await ownerSaid(live, 'What did I tell you about the Lisbon trip?');
+  await ownerSaid(live, 'What did I tell you about my trip to Lisbon?');
   assert.deepEqual(live.voice.taskAnswers, [], 'zero hits sends no text, not a nothing-found line');
 });
 
@@ -140,7 +140,7 @@ test('FR1: a reader that throws or overruns the 100 ms budget sends nothing and 
   assert.equal(thrown.outcome, 'unavailable');
   let clock = 0;
   const slow = buildFastEvidence(base({
-    now: () => { clock += 60; return clock; },
+    now: () => { clock += 150; return clock; },
     history: () => ({ outcome: 'found', hits: [{ at: T0, sessionRef: 'synthetic-prior-call', excerpt: 'My flight to Lisbon leaves in April.' }], elapsedMs: 60 }),
   }));
   assert.equal(slow.commentary, null, 'an overrun is not evidence');
@@ -196,7 +196,7 @@ test('FR1: the helper start does not move, cued or uncued', async t => {
   await ownerSaid(uncued, 'Open the garage door.');
   const cued = await openLive(t);
   seedPriorCall(cued.store, cued.liveSessionId, [{ role: 'owner', text: 'My flight to Lisbon leaves in April.', at: T0 - 86_400_000 }]);
-  await ownerSaid(cued, 'What did I tell you about the Lisbon trip?');
+  await ownerSaid(cued, 'What did I tell you about my trip to Lisbon?');
   const quiet = (live: Live): number[] => live.clock.scheduled.filter(item => item.delayMs === 600).map(item => item.due);
   assert.deepEqual(quiet(cued), quiet(uncued), 'the helper is scheduled at the identical instant');
   assert.deepEqual(quiet(uncued), [T0 + 600]);
@@ -206,7 +206,7 @@ test('FR1: the helper start does not move, cued or uncued', async t => {
 /** A pure input: one cued memory final, a matching read, no calendar, and a clock that only moves when told. */
 function base(overrides: Partial<FastEvidenceInput> = {}): FastEvidenceInput {
   return {
-    text: 'What did I tell you about the Lisbon trip?', cues: ['memory'],
+    text: 'What did I tell you about my trip to Lisbon?', cues: ['memory'],
     history: () => ({ outcome: 'found', hits: [{ at: T0, sessionRef: 'synthetic-prior-call', excerpt: 'My flight to Lisbon leaves in April.' }], elapsedMs: 3 }),
     calendar: undefined, now: () => T0, budgetMs: 100, ...overrides,
   };

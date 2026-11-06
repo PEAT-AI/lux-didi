@@ -68,6 +68,8 @@ test('the owner forget path reaches the memory forget scope and fences a running
       tx.run('INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?)',
         [session.id, 1, 1, 'owner', 'my passport is in the drawer', 1000]);
       const turn = Number(tx.get('SELECT id FROM history_turns WHERE live_session_id=?', [session.id])!.id);
+      // The domain keeps history_turns_fts in step itself, so a synthetic turn does the same.
+      tx.run('INSERT INTO history_turns_fts(rowid,text) VALUES(?,?)', [turn, 'my passport is in the drawer']);
       memory.addSourceReference(tx, {
         ownerKind: 'entry', ownerId: entry.id, label: 'note', provider: 'live-voice',
         externalId: `${session.id}:1:deadbeef`, availability: 'present',

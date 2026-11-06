@@ -26,8 +26,12 @@ function turns(store: Store, sessionId: string, texts: readonly string[]): numbe
     texts.forEach((text, index) => tx.run(
       'INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?)',
       [sessionId, index + 1, index + 1, index === 0 ? 'owner' : 'assistant', text, 1000 + index]));
-    return tx.all('SELECT id FROM history_turns WHERE live_session_id=? ORDER BY journal_first', [sessionId])
-      .map(row => Number(row.id));
+    return tx.all('SELECT id,text FROM history_turns WHERE live_session_id=? ORDER BY journal_first', [sessionId])
+      .map(row => {
+        // The domain keeps history_turns_fts in step itself, so a synthetic turn does the same.
+        tx.run('INSERT INTO history_turns_fts(rowid,text) VALUES(?,?)', [Number(row.id), String(row.text)]);
+        return Number(row.id);
+      });
   });
 }
 

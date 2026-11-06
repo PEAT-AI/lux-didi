@@ -29,7 +29,7 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
       CREATE TABLE tasks(task_id TEXT,live_session_id TEXT);
       CREATE TABLE task_operations(operation_id TEXT,task_id TEXT,task_revision INTEGER,tool TEXT,created_at INTEGER,updated_at INTEGER,state TEXT,result TEXT);
       CREATE TABLE task_deliveries(task_id TEXT,task_revision INTEGER,state TEXT,updated_at INTEGER);
-      CREATE TABLE tool_calls(execution_id TEXT,run_id TEXT,state TEXT,intent_json TEXT);`);
+      CREATE TABLE tool_calls(execution_id TEXT,run_id TEXT,state TEXT,intent_json TEXT,created_at INTEGER);`);
     const logs = fixture.map((r: Record<string, any>, i: number) => {
       const turn = `turn-${i}`, task = `task-${i}`;
       db.prepare('INSERT INTO trace_turn VALUES(?,?,?,?,?,?)').run(turn, 'synthetic', i, 'owner', r.owner_final_at, r.first_audio_at);

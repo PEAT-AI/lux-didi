@@ -60,6 +60,7 @@ export const BARS = Object.freeze({
 /** Phrases that count as an abstention. Missing evidence is no negative fact. */
 export const ABSTENTION_MARKERS: readonly string[] = Object.freeze([
   'found nothing', 'no record', 'nothing that says', 'cannot find', "can't find", 'i have nothing',
+  "don't have anything", 'do not have anything',
 ]);
 
 /** A configured verifier is one structured call, only after substring grading missed. */

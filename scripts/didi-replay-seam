@@ -11,7 +11,7 @@ function classifyTiming(row) {
   if (Number.isFinite(row.owner_final_at) && row.first_audio_at < row.owner_final_at) return 'invalid:first_audio_before_owner_final';
   return row.retrieval_returned_at > row.first_audio_at ? 'late' : 'early';
 }
-const restricted = /\b(HR|payroll|cap table|deal valuation|executive pay|salary|salaries|compensation|recruitment|hiring|interviews?|candidates?)\b/i;
+const restricted = /\b(HR|payroll|cap table|deal valuation|executive pay|salary|salaries|compensation|recruitment|recruiting|hiring|interviews?|candidates?|job description|chief|CRO|VP|salary bands)\b/i;
 function resultKind(value) {
   let parsed; try { parsed = JSON.parse(value); } catch { return 'missing:retrieval_result'; }
   const records = parsed?.records ?? parsed?.response?.records ?? parsed?.response?.data?.records ?? parsed?.entries ?? parsed?.results ?? parsed?.data?.entries;
@@ -32,12 +32,13 @@ function replay(dataDir, session) {
     const tasks = db.prepare('SELECT * FROM tasks WHERE live_session_id=? OR live_session_id IS NULL').all(session);
     const directHistoryCalls = db.prepare("SELECT execution_id,state,created_at FROM tool_calls WHERE run_id=? AND json_extract(intent_json,'$.toolName')='conversation_history'").all(session);
     const rows = [];
-    let skipped = 0;
+    let skipped = 0, skippedNonOwner = 0;
     for (const turn of turns.filter(t => t.origin === 'owner')) {
       const utterances = db.prepare('SELECT * FROM trace_utterance WHERE turn_id=? AND final=1 ORDER BY at').all(turn.turn_id);
       // Exclude restricted rows before retaining any content in the output.
       if (utterances.some(u => restricted.test(u.text ?? ''))) { skipped++; continue; }
       const owner = utterances.filter(u => u.role === 'owner').at(-1);
+      if (/^\[host note, not the owner\]/i.test(owner?.text ?? '')) { skippedNonOwner++; continue; }
       const model = utterances.find(u => u.role === 'model');
       const events = logs.filter(e => e.turnId === turn.turn_id);
       const starts = events.filter(e => e.event === 'task_lifecycle' && ['start','revision'].includes(e.phase));
@@ -61,9 +62,20 @@ function replay(dataDir, session) {
         result: op.state === 'committed' ? resultKind(op.result) : op.state,
       }));
       const first = retrievals[0];
+      const helperStarted = starts[0]?.at;
+      const commentaryAppended = taskEvents.find(e => e.event === 'task_delivery' && e.state === 'accepted')?.at;
+      const finalAt = owner?.at;
+      const validAudio = Number.isFinite(firstAudio) && Number.isFinite(finalAt) && firstAudio >= finalAt;
       const row = {
         turn_id: turn.turn_id, owner_final_at: owner?.at ?? missing('owner_final_at'),
-        helper_started_at: starts[0]?.at ?? missing('helper_started_at'),
+        helper_started_at: helperStarted ?? missing('helper_started_at'),
+        delegation_created_at: events.find(e => e.event === 'session.delegation.created')?.at ?? missing('delegation_created_at'),
+        first_commentary_appended_at: commentaryAppended ?? missing('first_commentary_appended_at'),
+        owner_final_to_first_audio_ms: validAudio ? firstAudio - finalAt : missing('valid_owner_final_to_first_audio'),
+        helper_start_to_first_commentary_ms: Number.isFinite(helperStarted) && Number.isFinite(commentaryAppended) && commentaryAppended >= helperStarted
+          ? commentaryAppended - helperStarted : missing('valid_helper_start_to_first_commentary'),
+        audio_preceded_first_commentary: validAudio && Number.isFinite(commentaryAppended)
+          ? firstAudio < commentaryAppended : missing('audio_commentary_comparison'),
         retrieval_started_at: first?.retrieval_started_at ?? missing('retrieval_started_at'),
         retrieval_returned_at: first?.retrieval_returned_at ?? missing('retrieval_returned_at'),
         response_create_at: responses[0]?.created_at ?? missing('response_create_at'),
@@ -83,7 +95,9 @@ function replay(dataDir, session) {
     }
     const deltas = rows.filter(r => r.memory_cued && ['late','early'].includes(r.timing))
       .map(r => r.retrieval_returned_at - r.first_audio_at).sort((a, b) => a - b);
-    return { session, direct_history_call_count: directHistoryCalls.length, skipped_restricted_rows: skipped, rows, measured_cued_turns: deltas.length,
+    return { session, direct_history_call_count: directHistoryCalls.length, skipped_restricted_rows: skipped, skipped_non_owner_turns: skippedNonOwner, rows, measured_cued_turns: deltas.length,
+      denominator: { calls: 1, retained_turns: rows.length, cued_turns: rows.filter(r => r.memory_cued).length,
+        cue_definition: 'lexical candidates, not manual adjudication', eligible_pairs: deltas.length },
       median_ms: deltas.length ? (deltas[Math.floor((deltas.length - 1) / 2)] + deltas[Math.floor(deltas.length / 2)]) / 2 : missing('median'),
       p90_ms: deltas.length ? deltas[Math.ceil(deltas.length * .9) - 1] : missing('p90'),
       caveat: 'Only explicit turn/task/response identifiers joined. Missing events cannot refute a race. Lexical cues require private manual review.' };
@@ -102,7 +116,7 @@ if (require.main === module) {
       const result = replay(dataDir, session);
       if (json) console.log(JSON.stringify(result, null, 2));
       else {
-        const columns = ['turn_id','owner_final_at','helper_started_at','retrieval_started_at','retrieval_returned_at','response_create_at','first_audio_at','her_first_words','delivery_part_at','timing'];
+        const columns = ['turn_id','owner_final_at','helper_started_at','retrieval_started_at','retrieval_returned_at','response_create_at','first_audio_at','her_first_words','delivery_part_at','timing','delegation_created_at','first_commentary_appended_at','owner_final_to_first_audio_ms','helper_start_to_first_commentary_ms','audio_preceded_first_commentary','memory_cued','retrieval_ran','first_words_verdict','later_contradiction','cue_review'];
         console.log(columns.join('\t'));
         for (const row of result.rows) console.log(columns.map(k => String(row[k]).replace(/[\t\r\n]/g, ' ')).join('\t'));
       }

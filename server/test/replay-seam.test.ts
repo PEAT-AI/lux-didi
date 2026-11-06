@@ -43,6 +43,10 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
         { event: 'task_delivery', state: 'accepted', revision: 1, liveSessionId: 'synthetic', taskId: task, timestamp: new Date(i ? 2300 : 1700).toISOString() },
       ].map(e => JSON.stringify(e)).join('\n');
     });
+    db.prepare('INSERT INTO trace_turn VALUES(?,?,?,?,?,?)').run('host-note', 'synthetic', 2, 'owner', 3000, null);
+    db.prepare('INSERT INTO trace_utterance VALUES(?,?,?,?,?)').run('host-note', 'owner', 3000, 1, '[host note, not the owner] synthetic reminder');
+    db.prepare('INSERT INTO trace_turn VALUES(?,?,?,?,?,?)').run('restricted', 'synthetic', 3, 'owner', 4000, null);
+    db.prepare('INSERT INTO trace_utterance VALUES(?,?,?,?,?)').run('restricted', 'owner', 4000, 1, 'Synthetic payroll fixture');
     db.close();
     writeFileSync(join(dir, 'logs/host.log'), logs.join('\n'));
     const before = readFileSync(join(dir, 'state.sqlite'));
@@ -57,7 +61,10 @@ test('CLI joins synthetic SQLite and host events read-only and marks late and ea
     assert.deepEqual(output.rows.map((r: any) => r.helper_start_to_first_commentary_ms), [600, 200]);
     assert.deepEqual(output.rows.map((r: any) => r.audio_preceded_first_commentary), [true, false]);
     assert.deepEqual(output.rows.map((r: any) => r.delegation_created_at), ['missing:delegation_created_at', 'missing:delegation_created_at'], 'helper start must not invent delegation creation');
+    assert.equal(output.skipped_non_owner_turns, 1);
+    assert.equal(output.skipped_restricted_rows, 1);
     assert.equal(output.measured_cued_turns, 2);
+    assert.deepEqual(output.denominator, { calls: 1, retained_turns: 2, cued_turns: 2, cue_definition: 'lexical candidates, not manual adjudication', eligible_pairs: 2 });
     assert.equal(output.median_ms, 0);
     assert.equal(output.p90_ms, 100);
     assert.deepEqual(readFileSync(join(dir, 'state.sqlite')), before);

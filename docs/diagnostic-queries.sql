@@ -156,3 +156,16 @@ AND o.task_id=:task AND o.task_revision=:revision ORDER BY o.created_at;
 -- row's updated_at is reported separately and is not substituted for dispatch.
 -- task_operations.result may retain only size_bytes/category; mark result missing
 -- rather than infer found/empty from size or from a successful operation.
+-- M1-R1 all-turn fast-route baseline, including non-cued owner turns:
+-- owner_final_to_first_audio_ms uses the final owner utterance and trace first-audible
+-- timestamp only when audio does not predate that final; otherwise it is missing.
+-- first_commentary_appended_at is task_delivery state=accepted, joined by task and
+-- revision. delivery.ts accepted() follows the provider commentary append ack;
+-- sent is dispatch and is not interchangeable with appended. The unkeyed
+-- gptlive_append_ack cannot itself be assigned to a turn.
+-- helper_start_to_first_commentary_ms requires that accepted timestamp >= start.
+-- audio_preceded_first_commentary is missing if either valid timestamp is absent.
+-- Current delegationCreated() emits no keyed host-log creation timestamp; do not
+-- invent delegation_created_at from helper start or trace_response.created_at.
+-- Each printed percentile population must name calls, turns, cue definition,
+-- cued turns and valid pair count before quoting its median or p90.

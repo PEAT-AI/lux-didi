@@ -1059,3 +1059,18 @@ test('M11-R1: a 52,263-character legacy-shaped fixture protects recent calls and
     for (const paragraph of paragraphs) assert.equal(loreSection.includes(paragraph), !result.itemOmissions.some(item => item.id === `lore:${createHash('sha256').update(paragraph).digest('hex')}`));
   } finally { installPeople(null); }
 });
+
+test('M11: calendar selection ranks whole events by proximity to the owner clock', () => {
+  const now = Date.UTC(2026, 10, 7, 12);
+  const result = m11Session({ now, timeZone: 'UTC', calendar: '23:00 Synthetic late event; 12:05 Synthetic nearest event; 03:00 Synthetic early event',
+    memoryBlockInput: m11Context({ now, clock: 'Sat 7 Nov 2026, 12:00 UTC' }) });
+  assert.ok(result.text.indexOf('Synthetic nearest event') < result.text.indexOf('Synthetic early event'));
+  assert.ok(result.text.indexOf('Synthetic early event') < result.text.indexOf('Synthetic late event'));
+  for (const event of ['23:00 Synthetic late event', '12:05 Synthetic nearest event', '03:00 Synthetic early event']) assert.ok(result.text.includes(event));
+});
+
+test('M11: complete rendered section counts include every joining separator', () => {
+  const result = m11Session({ calendar: '12:00 Synthetic event', pickupNote: 'Synthetic pickup' });
+  assert.equal(result.sections.reduce((sum, section) => sum + section.chars, 0), result.text.length);
+  assert.equal(result.estimatedTokens, estimatedTokens(result.text));
+});

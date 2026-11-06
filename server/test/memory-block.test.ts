@@ -64,3 +64,10 @@ test('summary provenance keeps the summary id distinct from its source session m
   assert.ok(result.text.includes('[session:source-session]'));
   assert.ok(!result.text.includes('[session:summary-uuid]'));
 });
+
+test('identity floor remains 400 estimated tokens after charging the shared background header', () => {
+  const text = 'S'.repeat(1_200);
+  const result = compileMemoryBlock({ ...input, items: [], entries: [{ id: 'identity-floor', text }], floors: true });
+  assert.ok(result.text.includes(text), 'the shared header must not consume the protected identity floor');
+  assert.ok(estimatedTokens(result.text) <= 2_000);
+});

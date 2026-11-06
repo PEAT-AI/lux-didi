@@ -13,7 +13,9 @@ import { searchRecent } from '../domain/history-reader.js';
 import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { FAST_EVIDENCE_BUDGET_MS, FAST_EVIDENCE_MARKER, buildFastEvidence } from '../live/fast-evidence.js';
 import type { FastEvidenceInput } from '../live/fast-evidence.js';
+import { safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import { commentaryPart, commentaryResults } from './commentary-test.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
@@ -106,10 +108,18 @@ function seedPriorCall(store: Store, sourceId: string, turns: { role: 'owner' | 
   return prior;
 }
 
+/** The shaped host lines this change owes: the sink runs the same safeEvent the writer runs. */
+function fastEvidenceLines(t: TestContext): Record<string, unknown>[] {
+  const lines: Record<string, unknown>[] = [];
+  t.after(attachHostLogSink({ event: (raw: unknown) => { const shaped = safeEvent(raw); if (shaped?.['event'] === 'fast_evidence') lines.push(shaped); } }));
+  return lines;
+}
+
 const searchOf = (result: ReturnType<typeof buildFastEvidence>): string => result.commentary === null ? 'null' : result.commentary.content;
 
 test('FR1: a memory-cued final appends the local fact as one provisional group with a null delegation id', async t => {
   const live = await openLive(t);
+  const events = fastEvidenceLines(t);
   seedPriorCall(live.store, live.liveSessionId, [{ role: 'owner', text: 'My flight to Lisbon leaves in April.', at: T0 - 86_400_000 }]);
   const quietBefore = live.clock.scheduled.filter(item => item.delayMs === 600).length;
   await ownerSaid(live, 'What did I tell you about my trip to Lisbon?');
@@ -126,12 +136,32 @@ test('FR1: a memory-cued final appends the local fact as one provisional group w
   assert.match(joined, /Lisbon/u, 'the fact is the stored turn, not a guess');
   // The helper still starts exactly where it did: its quiet timer was scheduled and has not fired.
   assert.equal(live.clock.scheduled.filter(item => item.delayMs === 600).length, quietBefore + 1, 'the helper start was scheduled once');
+  // B1: the host event that carries this whole feature is pinned, field for field, with no free text in it.
+  assert.equal(events.length, 1, 'exactly one fast_evidence host event');
+  assert.deepEqual(Object.keys(events[0]!).sort(), ['cue', 'elapsed_ms', 'event', 'hits', 'outcome', 'sent']);
+  assert.equal(events[0]!['cue'], 'memory');
+  assert.equal(events[0]!['outcome'], 'found');
+  assert.equal(events[0]!['hits'], 1);
+  assert.equal(events[0]!['sent'], true);
+  assert.ok(Number.isSafeInteger(events[0]!['elapsed_ms']), 'the elapsed budget is a count, never text');
 });
 
 test('FR1: a cued final with no match appends nothing at all', async t => {
   const live = await openLive(t);
   await ownerSaid(live, 'What did I tell you about my trip to Lisbon?');
   assert.deepEqual(live.voice.taskAnswers, [], 'zero hits sends no text, not a nothing-found line');
+});
+
+test('FR1: a store the read cannot use logs outcome=unavailable and appends nothing', async t => {
+  const live = await openLive(t);
+  const events = fastEvidenceLines(t);
+  seedPriorCall(live.store, live.liveSessionId, [{ role: 'owner', text: 'My flight to Lisbon leaves in April.', at: T0 - 86_400_000 }]);
+  live.store.transaction(tx => tx.run('DROP TABLE history_turns_fts'));
+  await ownerSaid(live, 'What did I tell you about my trip to Lisbon?');
+  assert.deepEqual(live.voice.taskAnswers, [], 'a read the store refused is not evidence');
+  assert.equal(events.length, 1, 'the failure is still one host event');
+  assert.deepEqual(events[0], { event: 'fast_evidence', cue: 'memory', outcome: 'unavailable', hits: 0, elapsed_ms: events[0]!['elapsed_ms'], sent: false });
+  assert.ok(Number.isSafeInteger(events[0]!['elapsed_ms']));
 });
 
 test('FR1: an uncued final is untouched and never reads the history', () => {

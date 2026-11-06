@@ -190,6 +190,8 @@ test('FR1: searchRecent finds the prior call, leaves out the current session, an
   assert.ok(found.elapsedMs >= 0);
   const other = live.store.transaction(tx => searchRecent(tx, live.store.assistantId, 'when does my flight leave', { excludeSessionId: prior }));
   assert.equal(other.outcome, 'empty', 'a session excluded from the search is not a hit');
+  const privateOnly = live.store.transaction(tx => searchRecent(tx, live.store.assistantId, 'when does my flight leave', { excludeSessionId: live.liveSessionId, classes: ['private'] }));
+  assert.equal(privateOnly.outcome, 'empty', 'a session class the route does not permit is never a fast fact');
   const broken = live.store.transaction(tx => searchRecent(tx, live.store.assistantId, '"""', { excludeSessionId: live.liveSessionId }));
   assert.equal(broken.outcome, 'empty', 'a query with no content words is empty, not a failure');
   // The real store read, on the real clock: the measured segment config/latency-budgets.json budgets at 100 ms.

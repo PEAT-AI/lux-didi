@@ -4249,7 +4249,7 @@ export class LiveSessionOwner {
     const ownerId = this.#store.assistantId;
     const result = buildFastEvidence({
       text: words, cues, calendar: this.#calendarState === 'stale' ? undefined : this.#calendar, now: () => this.#now(),
-      history: query => this.#store.transaction(tx => searchRecent(tx, ownerId, query, { excludeSessionId: handle.liveSessionId })),
+      history: query => this.#store.transaction(tx => searchRecent(tx, ownerId, query, { excludeSessionId: handle.liveSessionId, classes: this.#profile.route.dataClasses })),
     });
     const sent = result.commentary !== null && this.#appendLocallyFound(handle, result.commentary);
     hostLogEvent({ event: 'fast_evidence', cue: cues.join('+'), outcome: result.outcome, hits: result.hits, elapsed_ms: result.elapsedMs, sent });

@@ -165,7 +165,8 @@ function corpus(tx: Transaction, scope: HistoryScope, query: string, from?: stri
 
 /** One hit of the host's own bounded read: the turn's date, the call it belongs to, its shaped excerpt. */
 export interface RecentHit { at: number; sessionRef: string; excerpt: string }
-export interface RecentSearchOptions { limit?: number; budgetMs?: number; excludeSessionId?: string }
+/** `classes` is the live route's own authority: a session whose input class it does not permit is not a hit. */
+export interface RecentSearchOptions { limit?: number; budgetMs?: number; excludeSessionId?: string; classes?: readonly DataClass[] }
 export interface RecentSearch { outcome: 'found' | 'empty' | 'unavailable'; hits: RecentHit[]; elapsedMs: number }
 
 /**
@@ -181,11 +182,15 @@ export function searchRecent(tx: Transaction, ownerId: string, query: string, op
   const expression = terms.map(term => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
   if (!expression) return { outcome: 'empty', hits: [], elapsedMs: elapsed() };
   try {
-    const rows = tx.all(`SELECT t.id,t.live_session_id,t.at,bm25(history_turns_fts) AS rank FROM history_turns_fts
+    // The route's own authority is the filter: a session class it does not permit can never become a fast fact.
+  const permitted = options.classes ?? HISTORY_CLASSES;
+  const inClasses = permitted.map(() => '?').join(',') || 'NULL';
+  const rows = tx.all(`SELECT t.id,t.live_session_id,t.at,bm25(history_turns_fts) AS rank FROM history_turns_fts
       JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN live_sessions l ON l.live_session_id=t.live_session_id
-      WHERE history_turns_fts MATCH ? AND l.owner_assistant_id=? AND t.live_session_id<>? AND ${ownerMemorySessionSql('l')}
+      WHERE history_turns_fts MATCH ? AND l.owner_assistant_id=? AND t.live_session_id<>? AND l.chosen_input_class IN (${inClasses})
+        AND ${ownerMemorySessionSql('l')}
         AND NOT EXISTS (SELECT 1 FROM history_exclusions x WHERE x.source_kind='live' AND x.source_id=t.live_session_id)
-      ORDER BY rank LIMIT ?`, [expression, ownerId, options.excludeSessionId ?? '', limit]);
+      ORDER BY rank LIMIT ?`, [expression, ownerId, options.excludeSessionId ?? '', ...permitted, limit]);
     const hits = rows.map(row => ({ at: Number(row['at']), sessionRef: String(row['live_session_id']),
       excerpt: turnExcerpt(tx, String(row['live_session_id']), Number(row['id']), terms) })).filter(hit => hit.excerpt.trim());
     const elapsedMs = elapsed();

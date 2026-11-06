@@ -6,7 +6,7 @@ import { boundTextModel, pinProviderBinding, type PinnedProviderBinding } from '
 import { ConfigError } from '../config/files.js';
 import { validateLiveProfile } from '../live/config.js';
 import * as memory from '../domain/memory.js';
-import { current as currentLabel } from '../domain/labels.js';
+import { HISTORY_CLASSES } from '../domain/history-lifecycle.js';
 import { listStandingMemory } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -217,12 +217,19 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
 
 /** Resolve durable candidates once; the Live owner applies its route's class set at admission. */
 export const resolveLiveMemory: LiveMemorySource = tx => {
-  const rows = tx.all('SELECT id,session_id FROM entries ORDER BY captured_at DESC,id');
+  const rows = tx.all(`SELECT e.id,el.data_class AS entry_class,pl.data_class AS parent_class
+    FROM entries e JOIN sessions s ON s.id=e.session_id
+    LEFT JOIN routing_labels el ON el.subject_kind='entry' AND el.subject_id=e.id
+      AND el.revision=(SELECT MAX(revision) FROM routing_labels WHERE subject_kind='entry' AND subject_id=e.id)
+    LEFT JOIN routing_labels pl ON pl.subject_kind='session' AND pl.subject_id=s.id
+      AND pl.revision=(SELECT MAX(revision) FROM routing_labels WHERE subject_kind='session' AND subject_id=s.id)
+    ORDER BY e.captured_at DESC,e.id`);
   const classes = new Map(rows.map(row => {
-    const entry = currentLabel(tx, { kind: 'entry', id: String(row['id']) }).dataClass;
-    const parent = currentLabel(tx, { kind: 'session', id: String(row['session_id']) }).dataClass;
-    const order = ['ordinary', 'private', 'sensitive', 'unknown'] as const;
-    return [String(row['id']), order[Math.max(order.indexOf(entry), order.indexOf(parent))]!] as const;
+    const entry = HISTORY_CLASSES.find(value => value === row['entry_class']);
+    const parent = HISTORY_CLASSES.find(value => value === row['parent_class']);
+    const dataClass = entry === undefined || parent === undefined ? 'unknown' as const
+      : HISTORY_CLASSES[Math.max(HISTORY_CLASSES.indexOf(entry), HISTORY_CLASSES.indexOf(parent))]!;
+    return [String(row['id']), dataClass] as const;
   }));
   const ids = rows.map(row => String(row['id']));
   const records: ReturnType<typeof memory.resolveEntries> = [];

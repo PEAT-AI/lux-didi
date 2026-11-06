@@ -1179,7 +1179,9 @@ test('M0-R1: overflow clips owner lore, not the three earlier calls or memory', 
     trustedChars: 60_000, earlierReserve: 1_800, earlierConversations: earlier.section });
   assert.ok(composed.text.length <= LIVE_INSTRUCTION_HARD_LIMIT);
   assert.equal(composed.earlierConversationsIncluded, true);
-  for (const id of earlier.selectedIds) assert.ok(composed.text.includes(`[session:${id}]`));
+  assert.deepEqual(earlier.selectedIds, ['synthetic-0', 'synthetic-1', 'synthetic-2']);
+  for (const id of ['synthetic-0', 'synthetic-1', 'synthetic-2']) assert.ok(composed.text.includes(`[session:${id}]`));
+  assert.ok(composed.text.includes(earlier.section), 'the complete earlier-conversations section is intact');
   assert.deepEqual(composed.selectedIds, ['note']);
   assert.ok(composed.sections.find(section => section.id === 'owner-lore')!.chars < OWNER_LORE_CHAR_LIMIT);
   assert.ok(composed.text.includes(text), 'the non-yielding base is intact');

@@ -880,6 +880,28 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Number.isSafeInteger(value.turns) || Number(value.turns) < 0 || Number(value.turns) > 10_000) return;
     return { event: 'memory_note', remembered: value.remembered, code: value.code, words: value.words, supported: value.supported, supportRatio: value.supportRatio, turns: value.turns };
   }
+  if (value.event === 'memory_excluded') {
+    if (!closedKeys(value, ['event', 'liveSessionId', 'reasons', 'yielded']) ||
+      typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) ||
+      !value.reasons || typeof value.reasons !== 'object' || Array.isArray(value.reasons) ||
+      !Array.isArray(value.yielded) || value.yielded.length > 3) return;
+    const reasons = value.reasons as Record<string, unknown>;
+    const keys = ['class', 'yield', 'legacy', 'source', 'budget'] as const;
+    if (!closedKeys(reasons, [...keys]) || keys.some(key => !isSafeCount(reasons[key]))) return;
+    const yielded: { id: string; before: number; after: number }[] = [];
+    for (const item of value.yielded) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+      const section = item as Record<string, unknown>;
+      if (!closedKeys(section, ['id', 'before', 'after']) ||
+        !['owner-lore', 'opening-options', 'previous-openers'].includes(String(section.id)) ||
+        !isSafeCount(section.before) || !isSafeCount(section.after) || section.after >= section.before ||
+        yielded.some(previous => previous.id === section.id)) return;
+      yielded.push({ id: String(section.id), before: section.before, after: section.after });
+    }
+    if (reasons.yield !== yielded.length) return;
+    return { event: 'memory_excluded', liveSessionId: value.liveSessionId,
+      reasons: { class: reasons.class, yield: reasons.yield, legacy: reasons.legacy, source: reasons.source, budget: reasons.budget }, yielded };
+  }
   if (value.event === 'standing_memory_selection') {
     // Counts and one size only: how many whole notes the build selected and left out, and the section's
     // character size. Never a note id or any text.

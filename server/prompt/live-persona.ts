@@ -80,7 +80,7 @@ export const TRUSTED_SYSTEM_CODE_UNIT_LIMIT = 60_000;
 export const LIVE_INSTRUCTION_TARGET_CHARS = 44_000;
 /** The hard ceiling a Live instruction may never exceed; past it composition fails closed (PV1: 36k; PV2: 52k). */
 export const LIVE_INSTRUCTION_HARD_LIMIT = 52_000;
-/** The memory section never exceeds this many characters; it is the first section to yield. */
+/** The memory section never exceeds this many characters; its budget is reserved before owner lore. */
 export const MEMORY_SECTION_CHAR_LIMIT = 1_500;
 /** Imported standing notes get their own budget, so ad hoc voice notes keep theirs. */
 export const STANDING_MEMORY_CHAR_LIMIT = 3_000;

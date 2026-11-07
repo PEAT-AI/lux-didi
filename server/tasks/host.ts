@@ -23,8 +23,9 @@ export interface HostTaskOptions {
   draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): Promise<ComposeOutcome>;
   timeZone: string;
   /**
-   * The route's own data classes, which is what a memory search may return. The Live host always
-   * passes its profile's set; a runtime composed without a route keeps the domain's own recall.
+   * The route's own data classes, which is what a memory search may return. Both compositions pass
+   * their route's set; a runtime composed without one falls through to `ordinary` alone, never to
+   * every class.
    */
   dataClasses?: readonly DataClass[];
   executors?(sessionId: string): ExistingExecutors;
@@ -93,7 +94,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
           if (receipt.saved) return documentResult(JSON.stringify(receipt), 'vault-receipt');
           return { ...failed(receipt.guidance ?? 'The vault did not confirm this save.'), receipt: { operation_id: identity.operation_id, state: receipt.code === 'outcome_unknown' ? 'unknown' : 'failed' } };
         }
-        if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.searchMemory(tx, String(args.query), 20, options.dataClasses === undefined ? {} : { classes: options.dataClasses }))), 'local-memory');
+        if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.searchMemory(tx, String(args.query), 20, { classes: options.dataClasses ?? ['ordinary'] }))), 'local-memory');
         if (name === 'read_memory') {
           try {
             const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));

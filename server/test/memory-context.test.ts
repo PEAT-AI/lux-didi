@@ -17,6 +17,9 @@ import { createDomainPort } from '../domain/facade.js';
 import { chatMigrations, ChatError, type ChatConfig, type RunSnapshot } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import type { Transaction } from '../contracts/storage.js';
+import { hostTaskFactory } from '../tasks/host.js';
+import { FakeDelivery } from '../tasks/controller.js';
+import { resolveTaskModels } from '../config/tasks.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import { liveMigrations } from '../live/schema.js';
@@ -737,5 +740,38 @@ test('M19 D6: the resolver reads a 500-entry store in a bounded number of querie
     // reads, a statement per subject and item, then a walk per item source. The memo and the four
     // batched reads make the count independent of the corpus.
     assert.ok(seen.queries <= 30, `the resolver issues a bounded number of queries, issued ${seen.queries}`);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- M19 B1: the connected composition's helper search is route-filtered ------
+
+test('M19 B1: the connected task runtime withholds a narrower entry on a non-ordinary route', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-connected-'));
+  const store = new Store(dir, domainMigrations);
+  try {
+    store.transaction(tx => {
+      for (const [id, label] of [['e-ordinary', 'ordinary'], ['e-private', 'private'], ['e-sensitive', 'sensitive']] as const) {
+        tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', [`parent-${id}`, 'Synthetic', 1000, 'UTC', 1000, 1000]);
+        tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?,?,1)', [id, `parent-${id}`, 'user', `Synthetic keycard note ${label}`, 2000, 'UTC']);
+        tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', ['entry', id, label, 'owner_review', 1000]);
+        tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', ['session', `parent-${id}`, 'ordinary', 'owner_review', 1000]);
+      }
+    });
+    const search = async (dataClasses?: readonly ('ordinary' | 'private' | 'sensitive')[]) => {
+      // The same call server/host/connected.ts:34 makes, with its route's own set.
+      const factory = hostTaskFactory({
+        store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
+        bindings: () => [], executors: () => ({}), timeZone: 'UTC', effectCheck: async () => true,
+        ...(dataClasses === undefined ? {} : { dataClasses }),
+      });
+      const runtime = factory('synthetic-connected-session', new FakeDelivery());
+      const tool = runtime.registry.get('search_memory');
+      assert.ok(tool, 'the connected task runtime exposes search_memory');
+      const result = await tool.run({ query: 'keycard' }, {} as never, new AbortController().signal, false);
+      return JSON.parse(String(result.text)).hits.map((hit: { id: string }) => hit.id).sort();
+    };
+    assert.deepEqual(await search(['ordinary', 'private']), ['e-ordinary', 'e-private'], 'the narrower entry is withheld');
+    assert.deepEqual(await search(), ['e-ordinary'], 'a runtime with no route falls through to ordinary only, never every class');
+    assert.deepEqual(await search([]), [], 'a route with no class admits nothing');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

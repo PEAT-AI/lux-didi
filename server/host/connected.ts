@@ -35,6 +35,8 @@ export function composeChat(store: Store, domain: DomainPort, configDir: string,
     bindings: () => tools?.owner.taskBindings(tools.connectionIds()) ?? [], executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    // D3: same rule as the start block on this route. No configured route is no class at all, which denies.
+    dataClasses: [...(route?.dataClasses ?? [])],
     web: createWebSearch({ credentials }), vault: new VaultWriter({ store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: now ?? Date.now, log: event => hostLogEvent(event) }),
   });
   const chat = new ChatService({ createTaskRuntime,

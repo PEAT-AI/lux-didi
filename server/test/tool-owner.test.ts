@@ -351,12 +351,12 @@ for (const [label, result, memoryBytes] of [
 test('cancelled task reads never dispatch early or accept a late completion', async t => {
   const f = await fixture(t); f.owner.journal.intent(f.intent());
   const before = new AbortController(); before.abort();
-  assert.equal((await f.execute(f.intent(), { query: 'synthetic' }, before.signal)).status, 'completed');
+  assert.equal((await f.execute(f.intent(), { query: 'synthetic', mode: null }, before.signal)).status, 'completed');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [f.intent().executionId]))?.state, 'failed'); assert.equal(f.calls.length, 0);
   // Fresh independent execution identity; an aborted committed intent is never rekeyed automatically.
   const call = { ...f.intent('run:1:1'), callId: 'second' }; f.owner.journal.intent(call);
   const after = new AbortController(); f.setDispatch(() => after.abort());
-  assert.equal((await f.execute(call, { query: 'synthetic' }, after.signal)).status, 'completed');
+  assert.equal((await f.execute(call, { query: 'synthetic', mode: null }, after.signal)).status, 'completed');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.signal.aborted, true);
   assert.throws(() => f.owner.complete(call, { text: 'late' }, ['private']), /terminal/);
@@ -463,7 +463,7 @@ test('SOURCE DEFECT task identity: a captured declaration rejects a superseded t
   const stale = f.definitions().find(tool => tool.name === 'search_knowledge')!;
   const call = f.intent(); f.owner.journal.intent(call);
   f.taskRuntime().begin('A different finalized synthetic task.', 2);
-  const outcome = await stale.execute({ query: 'synthetic' }, { ...call, signal: f.signal });
+  const outcome = await stale.execute({ query: 'synthetic', mode: null }, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed', 'the task boundary returns its durable failure repair');
   assert.equal(f.calls.length, 0, 'superseded task identity must never reach a connector');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
@@ -822,7 +822,7 @@ for (const effect of ['read', 'write'] as const) {
     t.after(detach);
     const original = f.definitions().find(tool => tool.name === 'search_knowledge')!;
     const throwing = { ...original, effect, execute: async () => { throw new TypeError('synthetic handler failure'); } };
-    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic' } }], {
+    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', mode: null } }], {
       registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
       seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],

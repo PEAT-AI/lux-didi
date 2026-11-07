@@ -86,7 +86,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   owner.applyConnection(p);
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   if (p.enabled) owner.projectConnection('lux');
-  const reader = createLuxKnowledgeReader({ port, registry, config: { endpointId: p.endpoint.id, account: p.endpoint.account, resource: p.endpoint.resource, schemaDigest: p.schemaDigest, generation: p.generation, maxSearchLimit: p.bounds.maxSearchLimit, maxQueryChars: p.bounds.maxQueryChars, maxGetIds: p.bounds.maxGetIds } });
+  const reader = createLuxKnowledgeReader({ port, registry, config: { endpointId: p.endpoint.id, account: p.endpoint.account, resource: p.endpoint.resource, generation: p.generation, maxSearchLimit: p.bounds.maxSearchLimit, maxQueryChars: p.bounds.maxQueryChars, maxGetIds: p.bounds.maxGetIds } });
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
   live.acceptedRunHash = accepted.sha256;
   const host: HostContext = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1,

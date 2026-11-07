@@ -44,7 +44,7 @@ const CREATE_SCHEMA = { type: 'object', required: ['content', 'insight_title'], 
   insight_type: { type: 'string' }, project: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } };
 /** The write carries its provenance and an idempotency key; the key is the op id, minted per op. */
 const saveArgs = (key: unknown) => ({ content: `${NOTE}${PROVENANCE}`, insight_title: NOTE,
-  source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: SESSION, turn_start_id: OWNER_TURN_ID, turn_end_id: OWNER_TURN_ID, spoken_at: SPOKEN_AT }, idempotency_key: key });
+  source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: SESSION, turn_start_id: OWNER_TURN_ID, turn_end_id: OWNER_TURN_ID, spoken_at: SPOKEN_AT, speaker: 'owner' }, idempotency_key: key });
 
 /** One owner turn, persisted where the host reads it, then one write that names it. */
 async function save(h: Harness, content: string, turnId = OWNER_TURN_ID): Promise<VaultWriteResult> {

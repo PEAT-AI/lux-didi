@@ -232,3 +232,12 @@ test('helper writes require persisted owner consent, retain update ids and bound
   for (let id = 4; id <= 11; id++) assert.equal((await run(String(id))).disposition, 'created');
   assert.equal((await run('12')).disposition, 'refused', 'ten writes per call');
 });
+
+test('M23-R21: non-idempotent updates use explicit write annotations, not description verbs', async () => {
+  const { luxWriteAdmitted, LUX_TOOLS } = await import('../connectors/lux-names.js');
+  const update = { name: LUX_TOOLS.update, description: 'Edit an existing insight in place',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false } };
+  assert.equal(luxWriteAdmitted(update), true);
+  assert.equal(luxWriteAdmitted({ ...update, annotations: { ...update.annotations, destructiveHint: true } }), false);
+  assert.equal(luxWriteAdmitted({ ...update, annotations: { ...update.annotations, readOnlyHint: true } }), false);
+});

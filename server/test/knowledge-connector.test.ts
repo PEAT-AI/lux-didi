@@ -821,9 +821,12 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
     const explicitStore = new Store(join(dir, 'explicit-data'), toolsMigrations);
     const explicit = await composeMcpRuntime({ store: explicitStore, ownerId: explicitStore.assistantId, configDir, lookupAuthority: async () => null });
     try {
-      assert.equal(explicit.registry.currentGrant('source'), undefined);
+      // M21: the trust is the endpoint, not the profile, so even an explicit-mode profile grants
+      // exactly the annotated reads this endpoint publishes, and never its write.
+      const explicitGrant = explicit.registry.currentGrant('source')!;
+      assert.deepEqual([...explicitGrant.toolNames].sort(), ['get_insight', 'search_knowledge']);
       assert.equal(explicit.status().endpoints[0]!.state, 'connected');
-      assert.equal(explicit.status().endpoints[0]!.tools, 0);
+      assert.equal(explicit.status().endpoints[0]!.tools, 2);
     } finally { await explicit.close(); explicitStore.close(); }
 
     mcpEndpointFile(configDir, f.url, 'owner-trusted-reads');
@@ -907,7 +910,7 @@ test('MED-1022: the voice bound and the meeting day reach the wire, and a bad va
 
 
 test('reviewed meeting and list tools dispatch only bounded read-only filters with sensitivity', async () => {
-  const tools: ToolDefinition[] = ['list_meetings', 'get_meeting', 'list_insights'].map(name => ({ name, inputSchema: { type: 'object' } }));
+  const tools: ToolDefinition[] = ['list_meetings', 'get_meeting', 'list_insights'].map(name => ({ name, inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }));
   const f = await fixture({ list: () => ({ tools: [searchTool, getTool, ...tools, writerTool] }) });
   const { adapter, registry } = setup(f.url);
   try {

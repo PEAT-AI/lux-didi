@@ -113,7 +113,9 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const intent = (executionId = 'run:1:0', name = 'search_insights', args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: true }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
     executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE });
   const binding = (ref: { id: string; sha256: string }, call = intent()): ToolResultBinding => ({ executionId: call.executionId, name: call.toolName, callId: call.callId!, contentIndex: 2, partIndex: 0, result: structuredClone(ref) });
-  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: true }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
+  // A dispatched model call retains the declaration it saw before a later revocation.
+  const capturedDefinitions = definitions();
+  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: true }, useSignal = signal) => capturedDefinitions.find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner, taskRuntime: () => { allDefinitions(); return taskRuns.get('run')!.runtime; },
@@ -287,20 +289,17 @@ test('result ref, execution/name/call/scope/hash binding and detached immutable 
 test('task search/read strict arguments keep requested ids distinct from verified provenance', async t => {
   const f = await fixture(t);
   const search = f.definitions().find(tool => tool.name === 'search_insights')!;
-  assert.equal(search.parameters['additionalProperties'], false);
-  assert.equal(search.validate({ query: 'x', limit: 4 }), false);
+  assert.deepEqual(search.parameters, tools[0]!.inputSchema, 'the discovery schema reaches the helper unchanged');
+  assert.equal(search.validate({ query: 'x', limit: 3, include_sensitive: true }), true);
   assert.equal(search.validate({ query: 'x', account: 'foreign' }), false);
-  assert.equal(search.validate({ query: 'x' }), false, 'the declared mode field travels on every call, null for the ranked default');
-  assert.equal(search.validate({ query: 'x', mode: null }), true);
-  assert.equal(search.validate({ query: 'x', mode: 'fast' }), true);
-  assert.equal(search.validate({ query: 'x', mode: 'quick' }), false, 'only the vault\'s own two modes are admitted');
-  const read = f.definitions().find(tool => tool.name === 'read_knowledge')!;
-  assert.equal(read.validate({ insight_ids: [13, 7], include_links: false, cursor: null }), true, 'a task read accepts the merged typed batch schema');
-  assert.equal(read.validate({ insight_ids: [], include_links: false, cursor: null }), false);
+  assert.equal(search.validate({ query: 'x' }), false, 'the fixture requires limit and include_sensitive');
+  const read = f.definitions().find(tool => tool.name === 'get_insight')!;
+  assert.deepEqual(read.parameters, tools[1]!.inputSchema);
+  assert.equal(read.validate({ insight_ids: [13, 7], include_links: false }), true);
   assert.equal(read.validate({ id: '13', cursor: null, account: 'foreign' }), false);
   for (const [index, id] of [13, 7].entries()) {
-    const args = { insight_ids: [id], include_links: false, cursor: null };
-    const call = { ...f.intent(`run:read:${index}`, 'read_knowledge', args), callId: `read-${index}` };
+    const args = { insight_ids: [id], include_links: false };
+    const call = { ...f.intent(`run:read:${index}`, 'get_insight', args), callId: `read-${index}` };
     f.owner.journal.intent(call);
     const outcome = await read.execute(args, { ...call, signal: f.signal });
     assert.equal(outcome.status, 'completed');
@@ -831,9 +830,9 @@ async function pagedTaskFixture(t: TestContext, resultOf: () => unknown) {
   return fixture(t, { policy: p, memoryBytes: 1_000_000, responseBytes: 200_000, resultOf });
 }
 async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, cursor: string | null, executionId: string) {
-  const args = { insight_ids: [Number(id)], include_links: false, cursor }, call = { ...f.intent(executionId, 'read_knowledge', args), callId: executionId };
+  const args = { insight_ids: [Number(id)], include_links: false, cursor }, call = { ...f.intent(executionId, 'get_insight', args), callId: executionId };
   f.owner.journal.intent(call);
-  const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
+  const outcome = await f.definitions().find(tool => tool.name === 'get_insight')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page execution failed');
   const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
   assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('page delivery refused');
@@ -863,8 +862,8 @@ test('SOURCE DEFECT task document pages: a continuation cannot silently splice c
 });
 test('SOURCE DEFECT task read delivery: a captured document page is refused after its source is revoked', async t => {
   const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: 'A'.repeat(25_000) }) }] }));
-  const args = { insight_ids: [7], include_links: false, cursor: null }, call = f.intent('pending-page', 'read_knowledge', args); f.owner.journal.intent(call);
-  const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
+  const args = { insight_ids: [7], include_links: false }, call = f.intent('pending-page', 'get_insight', args); f.owner.journal.intent(call);
+  const outcome = await f.definitions().find(tool => tool.name === 'get_insight')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page read failed');
   f.owner.applyConnection(policy({ generation: 2, enabled: false }));
   const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);

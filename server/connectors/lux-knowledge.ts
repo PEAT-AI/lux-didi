@@ -89,7 +89,7 @@ export function renderLuxText(value: unknown): string {
     const root = value as Record<string, unknown>;
     if (Array.isArray(root.content)) {
       const text = root.content.filter((part): part is { type: 'text'; text: string } => Boolean(part && typeof part === 'object' && (part as { type?: unknown }).type === 'text' && typeof (part as { text?: unknown }).text === 'string')).map(part => part.text);
-      if (text.length) return text.join('\n');
+      if (text.length || root.structuredContent === undefined) return text.join('\n');
     }
     if (root.structuredContent !== undefined) return JSON.stringify(root.structuredContent);
   }

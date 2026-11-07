@@ -656,24 +656,24 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
       line(at, 'clock_sync', { liveSessionId: session, turnId: null, reason: 'call_open' }),
       line(at + 400, 'owner_final', { liveSessionId: session, turnId: 't1', ownerFinalAt: at + 400 }),
       line(at + 2_400, 'live_first_audio', { liveSessionId: session, turnId: 't1', msSinceReady: 10, msSinceOpen: 20, finalToProviderFirstAudioMs: 2_000, missingReason: null }),
-      line(at + 1_000, 'tool_call_outcome', { liveSessionId: session, turnId: 't1', callKey: 'call:ok', tool: 'search_knowledge', outcome: 'completed', ms: 40 }),
+      line(at + 1_000, 'tool_call_outcome', { liveSessionId: session, turnId: 't1', callKey: 'call:ok', tool: 'search_insights', outcome: 'completed', ms: 40 }),
     ].join('\n'));
     const store = new Store(dir, []);
     try {
       turn(store, session, 't1', 1, at);
-      call(store, session, 't1', 'call:ok', 'search_knowledge', 'completed', 40, at + 1_000);
+      call(store, session, 't1', 'call:ok', 'search_insights', 'completed', 40, at + 1_000);
     } finally { store.close(); }
     const audit = JSON.parse(execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--json', '--data-dir', dir], { encoding: 'utf8' })) as CallAudit;
     assert.equal(audit.liveSessionId, session);
-    assert.deepEqual(audit.calls.map(row => [row.name, row.totalMs, row.outcome]), [['search_knowledge', 40, 'completed']]);
+    assert.deepEqual(audit.calls.map(row => [row.name, row.totalMs, row.outcome]), [['search_insights', 40, 'completed']]);
     assert.deepEqual(audit.turns.map(row => row.finalToProviderFirstSoundMs), [2_000]);
     const summary = JSON.parse(execFileSync(process.execPath, [cli, 'sessions', '--since', '2026-10-20', '--audit-summary', '--json', '--data-dir', dir], { encoding: 'utf8' })) as { sessions: number; callsPerTool: Record<string, number> };
     assert.equal(summary.sessions, 1);
-    assert.deepEqual(summary.callsPerTool, { search_knowledge: 1 });
+    assert.deepEqual(summary.callsPerTool, { search_insights: 1 });
     // The human table is the same story, and a missing measurement says so in words.
     const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
     assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 4\)/);
-    assert.match(text, /search_knowledge \d+ms 40ms completed/);
+    assert.match(text, /search_insights \d+ms 40ms completed/);
     assert.match(text, /missing 0 no_native_receipt/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -710,7 +710,7 @@ test('C-LABELS 4: every announced look-up with no call in its turn is counted', 
     // A turn that ran the lookup it announced owes nothing, and a turn with no announcement never counts.
     turn(store, SESSION, 'announced-served', 7, T0 + 7000);
     store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', ['announced-served', 'model', T0 + 7001, "Let's have a look at the numbers"]));
-    call(store, SESSION, 'announced-served', 'looked-up', 'search_knowledge', 'completed', 40, T0 + 7002);
+    call(store, SESSION, 'announced-served', 'looked-up', 'search_insights', 'completed', 40, T0 + 7002);
     turn(store, SESSION, 'plain-answer', 8, T0 + 8000);
     store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)', ['plain-answer', 'model', T0 + 8001, 'The invoice is due on the tenth.']));
     // C-OPENER 10.9: the count read 5 of these 6 because "Give me a second" was outside the listed phrasings,
@@ -785,7 +785,7 @@ test('#1011: a stale dist is reported with the build command, and never rebuilt'
     const store = new Store(data, []);
     try {
       turn(store, SESSION, 't1', 1, T0);
-      call(store, SESSION, 't1', 'k-1', 'search_knowledge', 'refused', 60, T0 + 100, 'policy_denied');
+      call(store, SESSION, 't1', 'k-1', 'search_insights', 'refused', 60, T0 + 100, 'policy_denied');
       call(store, SESSION, null, 'k-2', 'send_message', 'refused', 5, T0 + 2000, 'owner_only');
       // A current module still reads both codes, and the call with no turn stays a row of the table.
       const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf([]));
@@ -1134,14 +1134,14 @@ test('#878: a receipt that joined no turn is named, not left as a bare missing',
 test('task audit joins a wrapped record carrying its identity inside the record', async () => {
   const { createRequire } = await import('node:module');
   const { buildTaskAudit } = createRequire(import.meta.url)('../../../scripts/didi-timeline');
-  const lines = [{ stream: 'host', record: { event: 'task_tool', taskId: 'synthetic-task', revision: 1, liveSessionId: 'synthetic-session', tool: 'search_knowledge', category: 'ok', cache: 'miss', durationMs: 12 } }];
+  const lines = [{ stream: 'host', record: { event: 'task_tool', taskId: 'synthetic-task', revision: 1, liveSessionId: 'synthetic-session', tool: 'search_insights', category: 'ok', cache: 'miss', durationMs: 12 } }];
   const joined = buildTaskAudit({ all: () => [] }, lines, { liveSessionId: 'synthetic-session' });
   assert.equal(joined.tools.length, 1, 'the record identity is the join key');
   assert.equal(joined.unjoinedTaskEvents, 0);
   const unrelated = buildTaskAudit({ all: () => [] }, lines, { liveSessionId: 'another-session' });
   assert.equal(unrelated.tools.length, 0);
   assert.equal(unrelated.unjoinedTaskEvents, 0, 'a line that names another call is not unjoined');
-  const anonymous = buildTaskAudit({ all: () => [] }, [{ stream: 'host', record: { event: 'task_tool', taskId: 'synthetic-task', revision: 1, tool: 'search_knowledge', category: 'ok', cache: 'miss', durationMs: 12 } }], { liveSessionId: 'synthetic-session' });
+  const anonymous = buildTaskAudit({ all: () => [] }, [{ stream: 'host', record: { event: 'task_tool', taskId: 'synthetic-task', revision: 1, tool: 'search_insights', category: 'ok', cache: 'miss', durationMs: 12 } }], { liveSessionId: 'synthetic-session' });
   assert.equal(anonymous.unjoinedTaskEvents, 1, 'only a line with no identity anywhere is unjoined');
 });
 
@@ -1159,13 +1159,13 @@ test('task audit lists one call\'s tasks, its tool rows with reason and its sett
       { task_id: 'stored-failure', created_at: 5, updated_at: 6, current_revision: 1, status: 'incomplete', live_session_id: session, failure: JSON.stringify({ stage: 'inference', reason_code: 'no_access', repair: 'SYNTHETIC_REPAIR_NOT_METADATA' }) },
     ];
     if (sql.includes('FROM task_revisions')) return [{ task_id: 'in-call', task_revision: 1, connection_generation: 2, created_at: 1 }];
-    if (sql.includes('FROM task_operations')) return [{ operation_id: 'op-1', task_id: 'in-call', task_revision: 1, connection_generation: 2, tool: 'search_knowledge', effect: 'none', state: 'failed', created_at: 1, updated_at: 41, reason_code: 'upstream_error' }];
+    if (sql.includes('FROM task_operations')) return [{ operation_id: 'op-1', task_id: 'in-call', task_revision: 1, connection_generation: 2, tool: 'search_insights', effect: 'none', state: 'failed', created_at: 1, updated_at: 41, reason_code: 'upstream_error' }];
     if (sql.includes('FROM task_deliveries')) return [{ attempt_id: 'attempt-1', task_id: 'in-call', task_revision: 1, connection_generation: 2, state: 'delivered', updated_at: 9 }];
     throw new Error(`unexpected statement: ${sql}`);
   } };
   const lines = [
     { stream: 'host', record: { event: 'task_lifecycle', taskId: 'in-call', revision: 1, generation: 2, phase: 'start' } },
-    { stream: 'host', record: { event: 'task_tool', taskId: 'in-call', revision: 1, liveSessionId: session, operationId: 'op-1', tool: 'search_knowledge', category: 'ok', cache: 'miss', durationMs: 12, at: 5 } },
+    { stream: 'host', record: { event: 'task_tool', taskId: 'in-call', revision: 1, liveSessionId: session, operationId: 'op-1', tool: 'search_insights', category: 'ok', cache: 'miss', durationMs: 12, at: 5 } },
     { stream: 'host', record: { event: 'task_settled', taskId: 'in-call', revision: 1, liveSessionId: session, status: 'failed', reason_code: 'upstream_error', findings: 0, elapsed_ms: 40, at: 6 } },
     { stream: 'host', record: { event: 'task_lifecycle', taskId: 'other-call', revision: 1, generation: 2, phase: 'start', liveSessionId: 'another-session' } },
   ];
@@ -1176,7 +1176,7 @@ test('task audit lists one call\'s tasks, its tool rows with reason and its sett
   const rendered = renderTaskAudit(audit);
   assert.match(rendered, /task in-call status=failed revisions=1\/1/u);
   assert.match(rendered, /settled=failed reason=upstream_error/u);
-  assert.match(rendered, /tool search_knowledge outcome=ok ms=12 cache=miss state=failed reason=upstream_error/u);
+  assert.match(rendered, /tool search_insights outcome=ok ms=12 cache=miss state=failed reason=upstream_error/u);
   assert.match(rendered, /task stored-failure status=incomplete revisions=0\/1 delivery=none settled=incomplete reason=no_access/u);
   assert.equal(rendered.includes('SYNTHETIC_REPAIR_NOT_METADATA'), false, 'only the closed reason code leaves the row');
   assert.equal(rendered.includes('other-call'), false);

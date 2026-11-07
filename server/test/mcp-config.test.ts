@@ -21,7 +21,7 @@ import { canonicalJSON, sha256 } from '../tools/canonical.js';
 // Dynamic module paths keep the red baseline compilable: missing behavior fails at runtime.
 const configModule = '../config/mcp.js'; const hostModule = '../host/mcp.js';
 const tools: ToolDefinition[] = [
-  { name: 'search_knowledge', inputSchema: { type: 'object' } },
+  { name: 'search_insights', inputSchema: { type: 'object' } },
   { name: 'get_insight', inputSchema: { type: 'object' } },
 ];
 function privateJSON(path: string, value: unknown) { writeFileSync(path, JSON.stringify(value), { mode: 0o600 }); chmodSync(path, 0o600); }
@@ -53,7 +53,7 @@ async function localSource(t: TestContext) {
       const text = req.params.name === 'gmail_get_profile' ? JSON.stringify({ emailAddress: account })
         : req.params.name === 'calendar_list_calendars' ? JSON.stringify({ calendars: [{ id: account, primary: true }] })
         : req.params.name === 'gmail_search_messages' ? JSON.stringify({ data: { messages: [{ id: 'synthetic-message' }] } })
-        : req.params.name === 'search_knowledge' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
+        : req.params.name === 'search_insights' ? `${ownId}: nonempty ${account} synthetic search` : ids?.includes(ownId) ? `${ownId}: nonempty ${account} synthetic insight` : 'not found in selected account';
       return { content: [{ type: 'text', text }] } as never;
     });
     await sdk.connect(transport); const session = { account, sdk, transport }; sessions.set(id, session); return session;
@@ -91,7 +91,7 @@ async function configFixture(t: TestContext, url = 'https://synthetic.invalid/mc
   const dataDir = join(dir, 'data'); const store = new Store(dataDir, toolsMigrations); const ownerId = store.assistantId;
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const p: ConnectionPolicy = { schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: 'knowledge', generation: 1, enabled: false, connector: 'lux-knowledge',
-    endpoint: { id: 'endpoint', url, account, resource: 'synthetic-corpus', credentialRef: 'mcp-credential' }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
+    endpoint: { id: 'endpoint', url, account, resource: 'synthetic-corpus', credentialRef: 'mcp-credential' }, toolNames: ['search_insights', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
     sourcePolicy: { id: 'operator-reviewed', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'synthetic-route', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } };
   const profile = { schemaVersion: 1, transport: 'streamable-http', dataDir, expectedPolicySha256: null, policy: p };
@@ -140,7 +140,7 @@ test('official authenticated SDK full paged rediscovery restores exact consent; 
   const source = await localSource(t); const a = await configFixture(t, source.url); const b = await configFixture(t, source.url, 'beta');
   for (const f of [a, b]) {
     f.approve(); const bundle = f.compose(); assert.deepEqual(await bundle.restore(), { state: 'restored' });
-    const search = await f.port.call(request(f.p, 'search_knowledge', { query: 'synthetic', limit: 1, include_sensitive: false }));
+    const search = await f.port.call(request(f.p, 'search_insights', { query: 'synthetic', limit: 1, include_sensitive: false }));
     assert.equal(search.state, 'completed'); if (search.state !== 'completed') return;
     assert.match(search.projection.text, new RegExp(`nonempty ${f.p.endpoint.account}`));
     assert.equal(search.coverage.completeCorpus, false);
@@ -153,7 +153,7 @@ test('official authenticated SDK full paged rediscovery restores exact consent; 
   }
   const bundle = a.compose(); const originalHash = sha256(canonicalJSON(a.p));
   privateJSON(join(a.configDir, 'credential.json'), { ...a.credential, enabled: true, token: 'alpha-rotated-secret' });
-  assert.equal((await a.port.call(request(a.p, 'search_knowledge', { query: 'synthetic', limit: 1 }))).state, 'completed');
+  assert.equal((await a.port.call(request(a.p, 'search_insights', { query: 'synthetic', limit: 1 }))).state, 'completed');
   assert.equal(a.registry.currentGrant('endpoint')?.generation, 1);
   assert.equal(a.store.transaction(tx => tx.get('SELECT policy_sha256 FROM tool_connections'))?.policy_sha256, originalHash);
   source.changeCatalog(true); assert.equal((await bundle.restore()).state, 'refused'); assert.equal(a.registry.currentGrant('endpoint'), undefined);
@@ -169,7 +169,7 @@ test('official authenticated SDK full paged rediscovery restores exact consent; 
   assert.deepEqual(await restored.restore(), { state: 'restored' }); assert.equal(registry.currentGrant('endpoint')?.generation, 1);
   assert.equal(a.config.disableMcpConfiguration({ configDir: a.configDir, ownerId: a.ownerId, dataDir: a.dataDir }).state, 'pending');
   const before = source.toolHttp;
-  assert.equal((await port.call(request(a.p, 'search_knowledge', { query: 'synthetic', limit: 1 }))).state, 'refused'); assert.equal(source.toolHttp, before);
+  assert.equal((await port.call(request(a.p, 'search_insights', { query: 'synthetic', limit: 1 }))).state, 'refused'); assert.equal(source.toolHttp, before);
   assert.equal((await restored.restore()).state, 'refused');
   assert.equal(a.host.composeMcpConnection({ store: reopened, owner, registry, configDir: a.configDir }).state, 'pending');
   assert.equal(reopened.transaction(tx => tx.get('SELECT enabled FROM tool_connections'))?.enabled, 1); // CLI has not invented a durable revocation.
@@ -186,19 +186,19 @@ test('CURRENT protected rebind and credential-await local revoke send zero HTTP;
   const source = await localSource(t); const f = await configFixture(t, source.url); f.approve(); const bundle = f.compose(); await bundle.restore();
   const original = readFileSync(join(f.configDir, 'credential.json'), 'utf8');
   privateJSON(join(f.configDir, 'credential.json'), { ...JSON.parse(original), account: 'beta', token: 'beta-secret' });
-  const before = source.toolHttp; assert.equal((await f.port.call(request(f.p, 'search_knowledge', { query: 'synthetic', limit: 1 }))).state, 'refused'); assert.equal(source.toolHttp, before);
+  const before = source.toolHttp; assert.equal((await f.port.call(request(f.p, 'search_insights', { query: 'synthetic', limit: 1 }))).state, 'refused'); assert.equal(source.toolHttp, before);
   writeFileSync(join(f.configDir, 'credential.json'), original);
   await bundle.restore();
   let enter!: () => void; let release!: () => void;
   const started = new Promise<void>(resolve => { enter = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
   const resolveCredential = f.selection.resolveCredential;
   t.mock.method(f.selection, 'resolveCredential', async (reference: string) => { const token = await resolveCredential(reference); enter(); await gate; return token; });
-  const localBefore = source.toolHttp; const localPending = f.port.call(request(f.p, 'search_knowledge', { query: 'synthetic', limit: 1 }));
+  const localBefore = source.toolHttp; const localPending = f.port.call(request(f.p, 'search_insights', { query: 'synthetic', limit: 1 }));
   await started; f.config.disableMcpConfiguration({ configDir: f.configDir, ownerId: f.ownerId, dataDir: f.dataDir }); release();
   assert.equal((await localPending).state, 'refused'); assert.equal(source.toolHttp, localBefore);
   t.mock.restoreAll(); writeFileSync(join(f.configDir, 'credential.json'), original); await bundle.restore();
   source.tokens.delete('alpha-secret');
-  const executed = source.executed; const rejected = await f.port.call(request(f.p, 'search_knowledge', { query: 'synthetic', limit: 1 }));
+  const executed = source.executed; const rejected = await f.port.call(request(f.p, 'search_insights', { query: 'synthetic', limit: 1 }));
   assert.notEqual(rejected.state, 'completed'); assert.equal(source.executed, executed); assert.ok(source.toolHttp > before);
 });
 
@@ -427,7 +427,7 @@ test('host Google call budget admits a real slow read while every configured con
     { id: 'google', connector: 'google', url: google.url },
     { id: 'knowledge', connector: 'lux-knowledge', url: ordinary.url },
   ]);
-  const [result, unchanged] = await Promise.all([call('google', 'gmail_search_messages'), call('knowledge', 'search_knowledge')]);
+  const [result, unchanged] = await Promise.all([call('google', 'gmail_search_messages'), call('knowledge', 'search_insights')]);
   assert.equal(result.state, 'completed'); assert.equal(google.executed, 1);
   if (result.state !== 'completed' || result.payload.state !== 'available') throw Error('missing real slow read');
   const grant = runtime.registry.currentGrant('google'); assert.ok(grant);

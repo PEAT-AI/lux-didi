@@ -20,7 +20,7 @@ import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 import { fixture as voiceFixture } from './live-voice-fixture.js';
 
 const endpoints = [
-  { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_knowledge', task: 'search_knowledge', args: { query: 'synthetic', mode: null } },
+  { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_insights', task: 'search_insights', args: { query: 'synthetic', mode: null } },
   { id: 'gmail', connector: 'google', tool: 'gmail_search_messages', task: 'search_mail', args: { query: 'synthetic', cursor: null } },
   { id: 'calendar', connector: 'google', tool: 'calendar_list_events', task: 'calendar_events', args: { start: '2026-11-03T00:00:00Z', end: '2026-11-04T00:00:00Z' } },
   { id: 'mattermost', connector: 'mattermost', tool: 'mattermost_search', task: 'search_chat', args: { query: 'synthetic' } },
@@ -138,8 +138,8 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const initial = await h.start(); const run = await h.accept(initial);
   assert.deepEqual(run.acceptance.connectionIds, pair);
   const probe = canonicalTaskFixture(h.store, initial.owner, run.host.runId, 'Read synthetic knowledge', run.acceptance.connectionIds);
-  const definition = probe.tools.find(d => d.name === 'search_knowledge')!;
-  const intent: ToolCallIntent = { runId: run.host.runId, actorId: run.host.actorId, authorityEpoch: run.host.authorityEpoch, revision: run.host.revision, executionId: `${run.host.runId}:probe`, toolName: 'search_knowledge', accountId: definition.accountId, resourceId: definition.resourceId, callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
+  const definition = probe.tools.find(d => d.name === 'search_insights')!;
+  const intent: ToolCallIntent = { runId: run.host.runId, actorId: run.host.actorId, authorityEpoch: run.host.authorityEpoch, revision: run.host.revision, executionId: `${run.host.runId}:probe`, toolName: 'search_insights', accountId: definition.accountId, resourceId: definition.resourceId, callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
   // At the base this throws intent_policy_denied, before any connector is invoked.
   assert.equal(initial.owner.journal.intent(intent), 'fresh');
   const completed = await definition.execute(endpoints[0]!.args, { ...intent, signal });
@@ -218,13 +218,13 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
   assert.equal(observed.outcome.status, 'complete'); assert.equal(observed.outcome.reason, 'stop', 'the helper can continue after a verified connector failure');
   const logs = h.logRows(); assert.equal(logs.length, 1);
   assert.equal(logs[0]!['event'], 'tool_failure'); assert.equal(logs[0]!['code'], expected);
-  assert.equal(logs[0]!['tool'], 'search_knowledge'); assert.equal(logs[0]!['connector'], 'lux-knowledge');
+  assert.equal(logs[0]!['tool'], 'search_insights'); assert.equal(logs[0]!['connector'], 'lux-knowledge');
   assert.equal(logs[0]!['errorClass'], 'Error'); assert.equal(logs[0]!['messageHead'], expected);
   assert(!('payload' in logs[0]!));
 });
 
 test('host log accepts only bounded tool-failure metadata and drops extra payload fields', () => {
-  const event = { event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'invalid_result' };
+  const event = { event: 'tool_failure', code: 'invalid_result', tool: 'search_insights', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'invalid_result' };
   assert.deepEqual(safeEvent({ ...event, payload: 'synthetic forbidden content' }), event);
   assert.equal(safeEvent({ ...event, code: 'arbitrary_code' }), undefined);
   assert.equal(safeEvent({ ...event, messageHead: 'x'.repeat(121) }), undefined);
@@ -249,7 +249,7 @@ test('Live knowledge SSE response completes with one result and no unclassified 
 test('bounded tool_failure metadata is written to host.log without an attached payload', t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-tool-failure-log-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const log = new HostLog(dir);
-  log.event({ event: 'tool_failure', code: 'child_exited', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'child_exited', payload: 'synthetic-private-payload' });
+  log.event({ event: 'tool_failure', code: 'child_exited', tool: 'search_insights', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'child_exited', payload: 'synthetic-private-payload' });
   const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8');
   const row = JSON.parse(text);
   assert.equal(row.event, 'tool_failure'); assert.equal(row.code, 'child_exited');

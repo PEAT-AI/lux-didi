@@ -33,24 +33,24 @@ test('task replay: barge-in and finalized correction replace the stale result wi
 test('task replay: parallel reads with mixed outcomes preserve both operations and produce one answer', async t => {
   const release = deferred<void>(); t.after(() => release.resolve()); let steps = 0, reads = 0;
   const f = await liveTaskFixture(t, async () => ++steps === 1
-    ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic parallel' , mode: null } }, { id: 'synthetic-read_mail',  name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } }] }
+    ? { text: '', calls: [{ id: 'synthetic-search_insights',  name: 'search_insights', args: { query: 'synthetic parallel' , mode: null } }, { id: 'synthetic-read_mail',  name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } }] }
     : { text: 'One synthetic source was available; the other failed.', calls: [] }, { executors: {
-      search_knowledge: async () => { reads++; await release.promise; return documentResult('Synthetic knowledge evidence.', 'synthetic-knowledge'); },
+      search_insights: async () => { reads++; await release.promise; return documentResult('Synthetic knowledge evidence.', 'synthetic-knowledge'); },
       read_mail: async () => { reads++; release.resolve(); return failed('Synthetic mail source refused the read.'); },
     } });
   f.finalize('Compare the two synthetic sources.'); f.bind(); await f.answer();
   assert.equal(reads, 2); assert.equal(f.voice.taskAnswers.length, 2);
   const rows = f.store.transaction(tx => tx.all('SELECT tool,state FROM task_operations ORDER BY tool'));
-  assert.deepEqual(rows.map(row => [row.tool, row.state]), [['read_mail', 'failed'], ['search_knowledge', 'committed']]);
+  assert.deepEqual(rows.map(row => [row.tool, row.state]), [['read_mail', 'failed'], ['search_insights', 'committed']]);
 });
 
 test('task replay: a newer completed owner turn starts fresh work rather than repeating an old result', async t => {
   let steps = 0, reads = 0;
   const f = await liveTaskFixture(t, async () => {
     steps++;
-    return steps % 2 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: steps === 1 ? 'first synthetic query' : 'second synthetic query' , mode: null } }] }
+    return steps % 2 ? { text: '', calls: [{ id: 'synthetic-search_insights',  name: 'search_insights', args: { query: steps === 1 ? 'first synthetic query' : 'second synthetic query' , mode: null } }] }
       : { text: steps === 2 ? 'The first synthetic answer.' : 'The second synthetic answer.', calls: [] };
-  }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic evidence.', `synthetic-${reads}`); } } });
+  }, { executors: { search_insights: async () => { reads++; return documentResult('Synthetic evidence.', `synthetic-${reads}`); } } });
   f.finalize('Find the first synthetic record.'); f.bind('first'); const first = await f.answer();
   f.voice.emit({ type: 'outputTranscription', text: first.text, finished: true }); f.voice.emit({ type: 'turnComplete' }); await f.flush();
   f.finalize('Find the second synthetic record.'); f.bind('second'); await fixtureUntil(() => f.voice.taskAnswers.length === 3, 'second owner answer header');
@@ -118,7 +118,7 @@ test('the sanitizer replaces every free text field and keeps the frame order and
   const recorded = [
     { at_ms: 0, direction: 'in', event: { type: 'session.input_transcript.delta', delta: 'She said my private words', start_ms: 0, end_ms: 900 } },
     { at_ms: 1_000, direction: 'in', event: { type: 'response.event', delegation_id: 'd_1', event: { type: 'response.output_item.done',
-      item: { type: 'function_call', call_id: 'call_1', name: 'search_knowledge', arguments: '{"query":"private query","limit":2}' } } } },
+      item: { type: 'function_call', call_id: 'call_1', name: 'search_insights', arguments: '{"query":"private query","limit":2}' } } } },
   ];
   const steps = sanitize(recorded);
   const text = JSON.stringify(steps);

@@ -4,7 +4,7 @@ import { projectTaskPayload } from '../tasks/connectors.js';
 
 export const vaultEnvelope = `# Knowledge Search: 'orchid watering'
 
-_confidence: medium · mode: reranked · low_confidence: yes_ · top score: 0.45 · relevant candidate: yes · top ranker score: 0.45
+_confidence: medium · mode: reranked · candidate_match: yes_ · top score: 0.45 · relevant candidate: yes · top ranker score: 0.45
 
 _sensitive rows excluded from this search; pass include_sensitive=true to include them_
 
@@ -32,9 +32,9 @@ const twelveHitEnvelope = vaultEnvelope + Array.from({ length: 10 }, (_, index) 
 `.padEnd(300, ' ')).join('');
 
 test('vault semantic hits retain evidence and are successful without exact titles', () => {
-  const result = projectTaskPayload('search_knowledge', vaultEnvelope, { query: 'orchid watering' });
+  const result = projectTaskPayload('search_insights', vaultEnvelope, { query: 'orchid watering' });
   assert.equal(result.status, 'ok');
-  for (const evidence of ['_confidence: medium', 'low_confidence: yes', 'sensitive rows excluded', '[PATTERN]', 'valid from 2026-02-01', 'once a week', 'Score: 0.518', 'Score: 0.348', 'superseded', '#90213']) {
+  for (const evidence of ['_confidence: medium', 'candidate_match: yes', 'sensitive rows excluded', '[PATTERN]', 'valid from 2026-02-01', 'once a week', 'Score: 0.518', 'Score: 0.348', 'superseded', '#90213']) {
     assert.ok(result.text.includes(evidence), evidence);
   }
   assert.deepEqual(result.references.map(ref => ref.id), ['115', '89969']);
@@ -42,12 +42,12 @@ test('vault semantic hits retain evidence and are successful without exact title
 });
 
 test('vault absence is empty while malformed source text is not evidence of absence', () => {
-  assert.equal(projectTaskPayload('search_knowledge', '# Knowledge Search\n\nNo results found.', { query: 'absent' }).status, 'empty');
-  assert.notEqual(projectTaskPayload('search_knowledge', 'upstream response missing', { query: 'absent' }).status, 'empty');
+  assert.equal(projectTaskPayload('search_insights', '# Knowledge Search\n\nNo results found.', { query: 'absent' }).status, 'empty');
+  assert.notEqual(projectTaskPayload('search_insights', 'upstream response missing', { query: 'absent' }).status, 'empty');
 });
 
 test('vault shaping is bounded and does not change company exact-name matching', () => {
-  const result = projectTaskPayload('search_knowledge', vaultEnvelope + 'x'.repeat(100000), { query: 'orchid watering' });
+  const result = projectTaskPayload('search_insights', vaultEnvelope + 'x'.repeat(100000), { query: 'orchid watering' });
   assert.ok(result.text.length <= 24000);
   assert.equal(projectTaskPayload('search_company', vaultEnvelope, { query: 'orchid watering' }).status, 'no_match');
 });
@@ -56,7 +56,7 @@ test('vault exposes only the reviewed read catalogue with bounded valid lookup a
   const { CONNECTOR_DESCRIPTORS } = await import('../connectors/index.js');
   const policy = { bounds: { maxSearchLimit: 25, maxGetIds: 10 } } as import('../tools/types.js').ConnectionPolicy;
   const descriptor = CONNECTOR_DESCRIPTORS['lux-knowledge']!;
-  assert.deepEqual([...descriptor.envelope], ['search_knowledge', 'get_insight', 'list_meetings', 'get_meeting', 'list_insights']);
+  assert.deepEqual([...descriptor.envelope], ['search_insights', 'get_insight', 'list_meetings', 'get_meeting', 'list_insights']);
   const tools = descriptor.declarations(policy);
   for (const [name, valid, invalid] of [
     ['list_meetings', { participant: 'Synthetic', date_from: '2026-01-01', limit: 10 }, { date_from: '2026-02-30' }],
@@ -98,7 +98,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   const { runWorker } = await import('../tasks/worker.js');
   const policy: import('../tools/types.js').ConnectionPolicy = {
     schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true,
-    connector: 'lux-knowledge', toolNames: ['search_knowledge', 'get_insight'], schemaDigest: 'fixture',
+    connector: 'lux-knowledge', toolNames: ['search_insights', 'get_insight'], schemaDigest: 'fixture',
     endpoint: { id: 'fixture', url: 'https://fixture.invalid/mcp', account: 'fixture', resource: 'fixture', credentialRef: null },
     sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'sensitive', allowedClasses: ['sensitive'] },
     route: { identity: 'fixture', allowedClasses: ['sensitive'] },
@@ -108,7 +108,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   const read = '#89969 Old watering plan\n⚠ superseded by #90213\nLinked rationale: #90213 Current watering plan\nSYNTHETIC PRIVATE ROW';
   const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader: { async call(tool, args) {
     seen.push({ tool, args });
-    return { state: 'completed', decodedResult: tool === 'search_knowledge' ? twelveHitEnvelope : read } as import('../connectors/index.js').ConnectorResult;
+    return { state: 'completed', decodedResult: tool === 'search_insights' ? twelveHitEnvelope : read } as import('../connectors/index.js').ConnectorResult;
   } } }]);
   const registry = createRegistry({ execute, authority: new FakeAuthority() });
   let hop = 0, size = 0;
@@ -116,7 +116,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   const result = await runWorker({ registry, identity: { task_id: 'fixture-vault', task_revision: 1, connection_generation: 1 },
     input: 'orchid watering', signal: new AbortController().signal,
     infer: async request => {
-      if (++hop === 1) return { text: '', calls: [{ id: 'search', name: 'search_knowledge', args: { query: 'orchid watering' , mode: null } }] };
+      if (++hop === 1) return { text: '', calls: [{ id: 'search', name: 'search_insights', args: { query: 'orchid watering' , mode: null } }] };
       if (hop === 2) {
         assert.equal(request.outputs[0]?.result.status, 'ok');
         assert.match(request.outputs[0]!.result.text, /Score: 0.518/);
@@ -132,7 +132,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
     } });
   assert.equal(result.status, 'complete');
   assert.deepEqual(seen, [
-    { tool: 'search_knowledge', args: { query: 'orchid watering', limit: 12, detail: 'snippets' } },
+    { tool: 'search_insights', args: { query: 'orchid watering', limit: 12, detail: 'snippets' } },
     { tool: 'get_insight', args: { ids: [115, 89969, 90213], include_links: true } },
   ]);
   console.info('VAULT_FIXTURE_METRICS', JSON.stringify({ helperTurnMs: performance.now() - started, searchShapedBytes: size, searchSourceChars: twelveHitEnvelope.length }));
@@ -140,7 +140,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
 
 test('real short weak-candidate rows retain their id and rank without invented evidence', () => {
   const wire = '**#115** [PATTERN] Current plan\n  Score: 0.518\n- **#89969** [TECHNICAL_DECISION] Old watering plan · superseded by #90213';
-  const result = projectTaskPayload('search_knowledge', wire, { query: 'orchid watering' });
+  const result = projectTaskPayload('search_insights', wire, { query: 'orchid watering' });
   assert.deepEqual(result.references.map(ref => [ref.id, ref.rank]), [['115', 1], ['89969', 2]]);
   assert.equal(result.text, wire);
   assert.equal((result.references[1] as unknown as Record<string, unknown>)?.snippet_status, 'not_supplied');

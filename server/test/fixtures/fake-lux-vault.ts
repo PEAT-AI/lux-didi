@@ -25,7 +25,7 @@ export async function fakeLux(t: TestContext, mode: FakeLuxMode, insightId = 'in
         calls.push(message.params ?? {});
         if (mode === 'drop') { request.socket.destroy(); return; }
         if (mode === 'fail') { reply({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: 'vault refused' } }); return; }
-        const payload = mode === 'duplicate' ? { action: 'duplicate' } : { action: 'inserted', insight_id: insightId };
+        const payload = mode === 'duplicate' ? { disposition: 'duplicate_of', insight_id: insightId } : { disposition: 'created', insight_id: insightId };
         reply({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } });
         return;
       }

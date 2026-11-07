@@ -12,7 +12,7 @@ import { FakeAuthority } from '../tasks/authority.js';
 // FR5: the vault search's own two modes. `fast` is keyword-only titles and snippets; `full` is the
 // ranked hybrid search the owner's server runs by default.
 const tools: ToolDefinition[] = [
-  { name: 'search_knowledge', description: 'Synthetic search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, mode: { type: 'string' } }, required: ['query'] } },
+  { name: 'search_insights', description: 'Synthetic search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, mode: { type: 'string' } }, required: ['query'] } },
   { name: 'get_insight', description: 'Synthetic by-id read', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } } }, required: ['ids'] } },
 ];
 const CONFIG: LuxKnowledgeConfig = { endpointId: 'vault', account: 'account-a', resource: 'resource-a', generation: 1, maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200 };
@@ -22,11 +22,11 @@ function vault() {
   registry.register({ id: 'vault', url: 'https://vault.example.test/mcp', account: 'account-a', resource: 'resource-a' });
   registry.enable('vault'); registry.allowEgress('vault');
   const schemaDigest = registry.observed('vault', tools, registry.revision('vault'));
-  registry.approve({ endpointId: 'vault', schemaDigest, toolNames: ['search_knowledge', 'get_insight'], effect: 'read', account: 'account-a', resource: 'resource-a', generation: 1 });
+  registry.approve({ endpointId: 'vault', schemaDigest, toolNames: ['search_insights', 'get_insight'], effect: 'read', account: 'account-a', resource: 'resource-a', generation: 1 });
   const calls: CallRequest[] = [];
   const result = (): CallResult => ({
     state: 'completed', decodedResult: { content: [] },
-    source: { endpointId: 'vault', url: 'https://vault.example.test/mcp', schemaDigest, toolName: 'search_knowledge', generation: 1, account: 'account-a', resource: 'resource-a' },
+    source: { endpointId: 'vault', url: 'https://vault.example.test/mcp', schemaDigest, toolName: 'search_insights', generation: 1, account: 'account-a', resource: 'resource-a' },
     coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
     freshness: { receivedAt: 1, sourceVersion: 'unknown' },
     projection: { text: 'synthetic hit', omitted: false, originalCharacters: 12, omittedCharacters: 0 },
@@ -53,7 +53,7 @@ test('search forwards mode fast and full and keeps the old wire shape when no mo
   // The server's own default is full, so an unstated mode travels as no field at all.
   assert.equal((await reader.search({ query: 'orchard plan', limit: 3 })).state, 'completed');
   assert.equal(Object.hasOwn(calls.at(-1)!.arguments, 'mode'), false);
-  assert.deepEqual(calls.map(call => call.toolName), ['search_knowledge', 'search_knowledge', 'search_knowledge']);
+  assert.deepEqual(calls.map(call => call.toolName), ['search_insights', 'search_insights', 'search_insights']);
 });
 
 test('search refuses any mode other than fast or full before dispatch', async () => {
@@ -65,14 +65,14 @@ test('search refuses any mode other than fast or full before dispatch', async ()
 
 test('the helper tool declares mode, and a mode the model chose reaches the connector', async () => {
   const registry = createRegistry({ execute: async () => documentResult('fixture', 'f'), authority: new FakeAuthority() });
-  const parameters = registry.get('search_knowledge')!.parameters.properties as Record<string, { type: unknown; enum?: unknown[] }>;
+  const parameters = registry.get('search_insights')!.parameters.properties as Record<string, { type: unknown; enum?: unknown[] }>;
   assert.deepEqual(parameters['mode']!.enum, ['fast', 'full', null]);
-  assert.match(registry.get('search_knowledge')!.description, /fast/i);
+  assert.match(registry.get('search_insights')!.description, /fast/i);
 
   const policy: ConnectionPolicy = {
     schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'lux-knowledge',
     endpoint: { id: 'vault', url: 'https://vault.example.test/mcp', account: 'account-a', resource: 'resource-a', credentialRef: null },
-    toolNames: ['search_knowledge'], schemaDigest: 'fixture',
+    toolNames: ['search_insights'], schemaDigest: 'fixture',
     sourcePolicy: { id: 'fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] }, route: { identity: 'fixture', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
   };
@@ -83,10 +83,10 @@ test('the helper tool declares mode, and a mode the model chose reaches the conn
   } };
   const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader }]);
   const signal = new AbortController().signal;
-  assert.notEqual((await execute('search_knowledge', { query: 'orchard plan', limit: 4, mode: 'fast' }, signal)).status, 'failed', 'a chosen fast mode is forwarded, not refused');
+  assert.notEqual((await execute('search_insights', { query: 'orchard plan', limit: 4, mode: 'fast' }, signal)).status, 'failed', 'a chosen fast mode is forwarded, not refused');
   assert.equal(seen.at(-1)!.args['mode'], 'fast');
   // An unstated mode arrives as the declared null, is pruned, and keeps the ranked default.
-  assert.notEqual((await execute('search_knowledge', { query: 'orchard plan', limit: 4, mode: null }, signal)).status, 'failed');
+  assert.notEqual((await execute('search_insights', { query: 'orchard plan', limit: 4, mode: null }, signal)).status, 'failed');
   assert.equal(Object.hasOwn(seen.at(-1)!.args, 'mode'), false, 'no chosen mode keeps the ranked default');
-  assert.equal((await execute('search_knowledge', { query: 'orchard plan', limit: 4, mode: 'quick' }, signal)).status, 'failed', 'an invented mode is refused, never forwarded');
+  assert.equal((await execute('search_insights', { query: 'orchard plan', limit: 4, mode: 'quick' }, signal)).status, 'failed', 'an invented mode is refused, never forwarded');
 });

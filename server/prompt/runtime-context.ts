@@ -161,7 +161,7 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
     else if (name.startsWith('gmail_')) add('mail');
     else if (name.startsWith('calendar_')) add('calendar');
     else if (name.startsWith('mattermost_')) add('team chat');
-    else if (name === 'search_knowledge' || name === 'get_insight') add('his private notes');
+    else if (name === 'search_insights' || name === 'get_insight') add('his private notes');
     else if (name === 'remember_note') add('memory');
     else if (name.startsWith('trello_')) add('Trello board');
     else { const mongooseGroup = mongooseToolGroup(name); if (mongooseGroup !== undefined) add(mongooseGroup); }

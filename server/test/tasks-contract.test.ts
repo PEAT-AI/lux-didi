@@ -138,9 +138,9 @@ test('real connector wire shapes retain thread bodies, event times and ranked Ma
   assert.match(thread.text, /whole thread body/);
   const event = projectTaskPayload('calendar_events', { events: [{ id: 'e', summary: 'Synthetic meeting', start: { dateTime: '2026-01-01T10:00:00Z' }, end: { dateTime: '2026-01-01T11:00:00Z' } }] }, {});
   assert.match(event.text, /Synthetic meeting/); assert.match(event.text, /10:00:00Z/);
-  const ranked = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Orchid' });
+  const ranked = projectTaskPayload('search_insights', '**#42** [PATTERN] Orchid', { query: 'Orchid' });
   assert.equal(ranked.references[0]?.rank, 1);
-  const neighbour = projectTaskPayload('search_knowledge', '**#42** [PATTERN] Orchid', { query: 'Cedar' });
+  const neighbour = projectTaskPayload('search_insights', '**#42** [PATTERN] Orchid', { query: 'Cedar' });
   assert.equal(neighbour.status, 'ok'); assert.match(neighbour.text, /Orchid/);
 });
 
@@ -201,7 +201,7 @@ test('default model and effort are applied without provider-specific caller code
 test('review-owned worker instructions are short and preserve absence after widening', async () => {
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   // 10.11: the mandated worker rules re-pin the block to its measured size (TR-R5).
-assert.ok(WORKER_INSTRUCTIONS.length === 8170);
+assert.ok(WORKER_INSTRUCTIONS.length === 8701);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
   assert.match(WORKER_INSTRUCTIONS, /Absence\./);
 });
@@ -496,7 +496,7 @@ test('task cancellation still aborts reads and emits a cancelled terminal event'
   } finally { reply.resolve(documentResult('synthetic', 'entry:1')); await work; detach(); }
 });
 
-test('invalid insight identifiers name search_knowledge and valid insight ids reach the reader', async () => {
+test('invalid insight identifiers name search_insights and valid insight ids reach the reader', async () => {
   const { connectorExecutor } = await import('../tasks/connectors.js');
   const policy: import('../tools/types.js').ConnectionPolicy = {
     schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'lux-knowledge',
@@ -510,7 +510,7 @@ test('invalid insight identifiers name search_knowledge and valid insight ids re
   const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader }]);
   const invalid = await execute('read_knowledge', { id: 'memory:synthetic' }, new AbortController().signal);
   assert.equal(invalid.failure_category, 'invalid_argument');
-  assert.match(invalid.repair!, /search_knowledge/);
+  assert.match(invalid.repair!, /search_insights/);
   assert.equal(seen.length, 0);
   const valid = await execute('read_knowledge', { id: '63' }, new AbortController().signal);
   assert.equal(valid.text, 'synthetic insight');

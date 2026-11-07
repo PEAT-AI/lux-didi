@@ -721,7 +721,7 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
   const shapedHits = hits.map(knowledgeExcerpt);
-  const body = listed(shapedHits.map(hit => hit.text), Number.POSITIVE_INFINITY, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
+  const body = listed(shapedHits.map(hit => hit.text), Number.POSITIVE_INFINITY, 'hits', `call search_insights again with limit=${hits.length} for the rest`);
   const omitted = body.omitted + shapedHits.reduce((sum, hit) => sum + hit.omitted, 0);
   return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted, sources: hits.flatMap(hit => bodySourceLinks(field(hit, 'content', 'excerpt', 'snippet', 'summary'))) });
 }

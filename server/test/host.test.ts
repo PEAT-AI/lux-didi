@@ -530,7 +530,7 @@ for (const releaseNineCatalogue of [true, false]) {
     const config = join(dir, 'provider-config');
     await mkdir(config, { mode: 0o700 });
     const tools = [
-      'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
+      'search_insights', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
       'calendar_list_calendars', 'calendar_list_events', 'mattermost_whoami', 'mattermost_get_channel_history',
       'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels',
       'search', 'read', 'list_companies', 'get_company', 'list_tickets', 'get_metadata',
@@ -550,7 +550,7 @@ for (const releaseNineCatalogue of [true, false]) {
       const response = reply(JSON.parse(Buffer.concat(chunks).toString()));
       if (response && req.url && 'tools' in response.result) {
         const family = req.url.slice(1);
-        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('calendar_') : family === 'lux-knowledge' ? ['search_knowledge', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('calendar_') && !['search_knowledge', 'get_insight'].includes(tool.name));
+        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('calendar_') : family === 'lux-knowledge' ? ['search_insights', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('calendar_') && !['search_insights', 'get_insight'].includes(tool.name));
       }
       res.writeHead(response ? 200 : 202, { 'content-type': 'application/json' });
       res.end(response ? JSON.stringify(response) : undefined);
@@ -1739,7 +1739,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
             const loaded = loadLiveConfig({ configDir, ownerId: options.ownerId });
             if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');
             const specs = [
-              { id: 'fixture-search', at: 0, name: 'search_knowledge', properties: { query: { type: 'string' } } },
+              { id: 'fixture-search', at: 0, name: 'search_insights', properties: { query: { type: 'string' } } },
               { id: 'fixture-read', at: recoveredAt!, name: 'get_insight', properties: { ids: { type: 'array', items: { type: 'integer' } } } },
             ];
             const connected = new Set<string>();
@@ -1782,7 +1782,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       assert.equal(Number(row['created_at']), Math.max(requestedAt!, Math.min(recoveredAt!, 25_000)));
       const task = canonicalTaskFixture(host.store, host.tools.owner, session.liveSessionId, 'Read the synthetic knowledge source', recoveredAt === Infinity ? ['fixture-search'] : ['fixture-search', 'fixture-read']);
       try {
-        assert.ok(task.tools.some(tool => tool.name === 'search_knowledge'));
+        assert.ok(task.tools.some(tool => tool.name === 'search_insights'));
         const read = task.tools.find(tool => tool.name === 'read_knowledge');
         assert.ok(read, 'the canonical registry is stable while connector publication gates execution');
         if (recoveredAt === Infinity) {

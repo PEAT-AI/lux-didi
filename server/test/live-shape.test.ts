@@ -145,14 +145,14 @@ test('Lux read and search projections retain complete received text without spee
   assert.equal(shaped.partial, false);
   assert.equal(shaped.text.includes('[omitted:'), false);
   assert.equal(shaped.text.includes(content), true, 'the whole insight body must reach the model');
-  const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 7, insight_title: 'Deep body', content }] }));
+  const excerpt = shapeLuxKnowledge('search_insights', JSON.stringify({ results: [{ id: 7, insight_title: 'Deep body', content }] }));
   assert.equal(excerpt.partial, false);
   // ROUTE-1022 K15: the live session reaches a stored note through research, never get_insight.
   assert.doesNotMatch(excerpt.text, /ask research/);
 });
 
 test('plain non-JSON knowledge payloads pass through untouched', () => {
-  const shaped = shapeLuxKnowledge('search_knowledge', 'nonempty synthetic α insight');
+  const shaped = shapeLuxKnowledge('search_insights', 'nonempty synthetic α insight');
   assert.equal(shaped.text, 'nonempty synthetic α insight');
   assert.equal(shaped.partial, false);
   assert.equal(shaped.omittedCharacters, 0);
@@ -300,7 +300,7 @@ const SEARCH_MARKDOWN = [
 ].join('\n');
 
 test('a markdown knowledge search never carries its header or retrieval metadata', () => {
-  const shaped = shapeLuxKnowledge('search_knowledge', SEARCH_MARKDOWN);
+  const shaped = shapeLuxKnowledge('search_insights', SEARCH_MARKDOWN);
   assert.equal(/Knowledge Search/.test(shaped.text), false, 'the search header is stripped');
   assert.equal(/confidence|top score|relevant candidate|mode:/.test(shaped.text), false, 'the retrieval metadata line is stripped');
   assert.equal(shaped.text.startsWith('#'), false, 'a tool result never starts with a markdown heading');
@@ -310,7 +310,7 @@ test('a markdown knowledge search never carries its header or retrieval metadata
 
 test('a knowledge tool result never starts with an H1 or H2', () => {
   const hits = [{ id: 1, insight_title: 'Insight 1', insight_type: 'PATTERN', updated_at: '2026-10-14', content: 'Body.' }];
-  const shaped = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: hits }));
+  const shaped = shapeLuxKnowledge('search_insights', JSON.stringify({ results: hits }));
   assert.equal(/^#{1,2} /m.test(shaped.text), false, 'no H1/H2 heading survives shaping');
   assert.match(shaped.text, /### Insight 1 \(PATTERN \| 2026-10-14\) \[id 1\]/);
 });
@@ -338,10 +338,10 @@ function ranked(parts: readonly string[]): string {
 // and the coverage line takes the hit count the server states rather than the count that fit.
 test('ROUTE-1022 K15: complete knowledge evidence never instructs the helper to call retired live tools', () => {
   const body = 'Sentence about the prep call. '.repeat(40);
-  const excerpt = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 4242, insight_title: 'Prep', content: body }] }));
+  const excerpt = shapeLuxKnowledge('search_insights', JSON.stringify({ results: [{ id: 4242, insight_title: 'Prep', content: body }] }));
   assert.equal(excerpt.text.includes('get_insight'), false, 'the live session has no get_insight tool');
   assert.doesNotMatch(excerpt.text, /ask research/);
-  const rankedText = shapeLuxKnowledge('search_knowledge', ranked([
+  const rankedText = shapeLuxKnowledge('search_insights', ranked([
     rankedHit(91001, 'First', body), rankedHit(91002, 'Second', body),
   ]));
   assert.equal(rankedText.text.includes('get_insight'), false);
@@ -349,7 +349,7 @@ test('ROUTE-1022 K15: complete knowledge evidence never instructs the helper to 
 });
 
 test('ROUTE-1022 K17: the coverage line uses the hit count the server states', () => {
-  const shaped = shapeLuxKnowledge('search_knowledge', [
+  const shaped = shapeLuxKnowledge('search_insights', [
     "# Knowledge Search: 'ocp prep call' (6 hits)",
     '',
     '_confidence: high | top score: 1.01 | relevant candidate: yes',
@@ -362,7 +362,7 @@ test('ROUTE-1022 K17: the coverage line uses the hit count the server states', (
 
 test('one long received knowledge body reaches the helper in full', () => {
   const body = 'Synthetic plain long note. '.repeat(1000) + 'SYNTHETIC_KNOWLEDGE_TAIL';
-  const shaped = shapeLuxKnowledge('search_knowledge', body);
+  const shaped = shapeLuxKnowledge('search_insights', body);
   assert.ok(shaped.text.includes('SYNTHETIC_KNOWLEDGE_TAIL'));
   assert.equal(shaped.omittedCharacters, 0);
 });
@@ -387,7 +387,7 @@ function voiceReply(topBody: string): string {
 
 test('MED-1022: a voice knowledge reply reaches the model as every hit, the top body whole', () => {
   const body = `${'Sentence about the prep call. '.repeat(60)}Final sentence marker.`;
-  const shaped = shapeLuxKnowledge('search_knowledge', voiceReply(body));
+  const shaped = shapeLuxKnowledge('search_insights', voiceReply(body));
   assert.ok(shaped.text.includes('Final sentence marker.'), 'the top hit body is not cut at the ranked excerpt bound');
   assert.match(shaped.text, /\*\*#91293\*\*/u);
   for (let index = 0; index < 5; index += 1) assert.match(shaped.text, new RegExp(`\\*\\*#${91100 + index}\\*\\*`, 'u'), `hit ${index} reaches the model`);
@@ -431,9 +431,9 @@ test('C-DEPTH11: an event whose source sent no attendee data says so, and never 
 });
 
 test('#6: the confidence line never reaches the model text but is carried for research', () => {
-  const ok = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 1, insight_title: 'Release plan', insight_type: 'PATTERN', updated_at: '2026-10-14', content: 'Body.' }] }));
+  const ok = shapeLuxKnowledge('search_insights', JSON.stringify({ results: [{ id: 1, insight_title: 'Release plan', insight_type: 'PATTERN', updated_at: '2026-10-14', content: 'Body.' }] }));
   assert.equal(ok.knowledgeConfidence, undefined, 'a JSON reply carries no ranker preamble to read');
-  const marked = shapeLuxKnowledge('search_knowledge', '# Knowledge Search\n\n_confidence: low top score: 0.11 relevant candidate: no_\n\n- **#7** Release plan\nBody.');
+  const marked = shapeLuxKnowledge('search_insights', '# Knowledge Search\n\n_confidence: low top score: 0.11 relevant candidate: no_\n\n- **#7** Release plan\nBody.');
   assert.equal(/_confidence:/.test(marked.text), false, 'the preamble line stays out of the model text');
   assert.deepEqual(marked.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' });
 });

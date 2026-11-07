@@ -12,9 +12,9 @@
       "tool": "search_mail"
     },
     {
-      "id": "invalid-search_knowledge",
+      "id": "invalid-search_insights",
       "case": "invalid-read",
-      "tool": "search_knowledge"
+      "tool": "search_insights"
     },
     {
       "id": "invalid-read_thread",

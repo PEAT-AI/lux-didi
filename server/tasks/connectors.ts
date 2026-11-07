@@ -102,7 +102,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   if (name === LUX_TOOLS.search) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name);
 
   if (typeof data === 'string' && !name.startsWith('read_')) {
-    const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
+    const rows = name === 'search_insights' || name === 'search_company' ? rankedText(data) : [];
     return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
   }
   if (name.startsWith('read_')) {
@@ -134,7 +134,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     const subject = name === 'search_mail' ? (Array.isArray(item.headers) ? item.headers.map(record).find(header => text(header.name).toLowerCase() === 'subject')?.value : record(item.headers).Subject) : undefined;
     return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
   });
-  if (name === 'search_knowledge' || name === 'search_company') return rankedResult(text(args.query), items);
+  if (name === 'search_insights' || name === 'search_company') return rankedResult(text(args.query), items);
   const next = text(root.nextPageToken ?? root.next_cursor);
   const cursor = name === 'search_mail' ? next : '';
   const incomplete = !!next || root.sourceIncomplete === true;

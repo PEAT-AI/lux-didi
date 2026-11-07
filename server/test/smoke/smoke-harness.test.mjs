@@ -131,12 +131,12 @@ test('probe5 accepts only the four drivers and fails on a missing one', () => {
 
 // #260: the failure note keeps the not-called metadata, so a skipped research call is explainable.
 test('probe5 failure note keeps the not-called metadata', () => {
-  const note = researchFailureNote({ stage: 'call', calls: 0, runs: 0, outputFragments: 3, outputChars: 120, otherToolNames: ['search_knowledge'], otherToolCalls: 1, turnCompleteMs: 412 });
+  const note = researchFailureNote({ stage: 'call', calls: 0, runs: 0, outputFragments: 3, outputChars: 120, otherToolNames: ['search_insights'], otherToolCalls: 1, turnCompleteMs: 412 });
   assert.match(note, /stage=call/);
   assert.match(note, /calls=0/);
   assert.match(note, /output_fragments=3/);
   assert.match(note, /output_chars=120/);
-  assert.match(note, /other_tools=search_knowledge/);
+  assert.match(note, /other_tools=search_insights/);
   assert.match(note, /other_tool_calls=1/);
   assert.match(note, /turn_complete_ms=412/);
 });

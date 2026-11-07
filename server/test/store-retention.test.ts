@@ -93,7 +93,7 @@ test('a 31 day old chat call loses its result and input in place and keeps its h
       tx.run(`INSERT INTO tool_calls(owner_id,run_id,execution_id,call_id,intent_json,state,result_id,result_json,
         result_sha256,input_json,input_sha256,input_fidelity,input_key_count,created_at)
         VALUES(?,?,?,?,?,'completed',?,?,?,?,?,'complete_v1',?,?)`,
-        [OWNER, RUN, 'exec-call', 'call-1', JSON.stringify({ toolName: 'search_knowledge' }), 'result-1', result,
+        [OWNER, RUN, 'exec-call', 'call-1', JSON.stringify({ toolName: 'search_insights' }), 'result-1', result,
           sha256(result), '{"query":"x"}', sha256('{"query":"x"}'), 1, T0]);
     });
     store.transaction(tx => pruneTraceContent(tx, T0 + 31 * DAY));
@@ -184,7 +184,7 @@ test('a 91 day old chat call is deleted unless it still owns a dispatch row', ()
     seedDispatch(store, 'd-keep', 'exec-keep', T0);
     store.transaction(tx => {
       tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,call_id,intent_json,state,created_at) VALUES(?,?,?,?,?,'intent',?)",
-        [OWNER, RUN, 'exec-gone', 'call-gone', JSON.stringify({ toolName: 'search_knowledge' }), T0]);
+        [OWNER, RUN, 'exec-gone', 'call-gone', JSON.stringify({ toolName: 'search_insights' }), T0]);
     });
     store.transaction(tx => pruneTraceContent(tx, T0 + 91 * DAY));
     const calls = store.transaction(tx => tx.all('SELECT execution_id FROM tool_calls ORDER BY execution_id').map(row => row['execution_id']));

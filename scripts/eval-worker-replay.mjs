@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 // Use the shipped public worker instruction, not a second replay-only prompt.
 const instructionSource = readFileSync(new URL('../server/tasks/instructions.ts', import.meta.url), 'utf8');
 export const WORKER_INSTRUCTIONS = JSON.parse(instructionSource.match(/export const WORKER_INSTRUCTIONS = ("[^\n]*");/)[1]);
-if (WORKER_INSTRUCTIONS.length !== 8170) throw new Error('Worker instruction length changed: expected 8170 characters');
+if (WORKER_INSTRUCTIONS.length !== 8701) throw new Error('Worker instruction length changed: expected 8701 characters');
 
 // Synthetic Gmail fixtures and semantics from probe/worker-replay-110.
 // Offline only. A canned replay does not establish real model behaviour.
@@ -387,8 +387,8 @@ export const VAULT_FAST_ROWS = Object.freeze([
 // The rule in the tool calls a real call would produce: fast at a small limit first, full only when
 // fast was empty or ambiguous, then the body read the fact comes from.
 export function vaultFastPlan(row) {
-  const calls = [{ name: 'search_knowledge', args: { query: row.owner_words, limit: 4, mode: 'fast' } }];
-  if (row.expect_full) calls.push({ name: 'search_knowledge', args: { query: row.owner_words, limit: 8 } });
+  const calls = [{ name: 'search_insights', args: { query: row.owner_words, limit: 4, mode: 'fast' } }];
+  if (row.expect_full) calls.push({ name: 'search_insights', args: { query: row.owner_words, limit: 8 } });
   if (row.record_id !== null) calls.push({ name: 'get_insight', args: { ids: [row.record_id] } });
   return calls;
 }
@@ -396,7 +396,7 @@ export function vaultFastPlan(row) {
 export function scoreVaultFast(row, result = {}) {
   const calls = result.calls ?? [];
   const spoken = result.spoken ?? '';
-  const searches = calls.filter(call => call.name === 'search_knowledge' && call.args);
+  const searches = calls.filter(call => call.name === 'search_insights' && call.args);
   const fast = searches.findIndex(call => call.args.mode === 'fast');
   const full = searches.findIndex(call => call.args.mode !== 'fast');
   const read = row.record_id === null ? undefined : calls.find(call => call.name === 'get_insight' && (call.args?.ids ?? []).includes(row.record_id));

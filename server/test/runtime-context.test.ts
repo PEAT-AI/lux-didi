@@ -88,7 +88,7 @@ test('W4: every credential or identity code the host reports reads as a sign-in,
 });
 
 test('tool and connector names map to the human group names', () => {
-  assert.deepEqual(toolGroupNames(['search_knowledge', 'get_insight', 'gmail_search_messages', 'calendar_list_events', 'mattermost_search', 'remember_note', 'search']),
+  assert.deepEqual(toolGroupNames(['search_insights', 'get_insight', 'gmail_search_messages', 'calendar_list_events', 'mattermost_search', 'remember_note', 'search']),
     ['his private notes', 'mail', 'calendar', 'team chat', 'memory', 'company knowledge']);
   assert.deepEqual(connectorGroupNames('google'), ['calendar', 'mail']);
   assert.deepEqual(connectorGroupNames('mattermost'), ['team chat']);
@@ -98,7 +98,7 @@ test('tool and connector names map to the human group names', () => {
 
 test('#623: the mongoose reads are grouped by the endpoint that serves them, so company knowledge is named', () => {
   // The served names themselves, not a retired prefix: search and read are the knowledge endpoint's own.
-  assert.deepEqual(toolGroupNames(['search', 'read', 'search_knowledge']), ['company knowledge', 'his private notes']);
+  assert.deepEqual(toolGroupNames(['search', 'read', 'search_insights']), ['company knowledge', 'his private notes']);
   assert.deepEqual(toolGroupNames(['ask_data_agent', 'data_agent_job']), ['company numbers'],
     'the numbers endpoint is company numbers, never company knowledge');
   assert.deepEqual(toolGroupNames(['get_company', 'list_inbound_leads']), ['customers']);
@@ -109,8 +109,8 @@ test('#623: the mongoose reads are grouped by the endpoint that serves them, so 
 });
 
 test('L8-10: a session that can search the web names it among what it can reach', () => {
-  assert.deepEqual(toolGroupNames(['search_knowledge', 'gmail_search_messages', 'remember_note', 'web_search']), ['his private notes', 'mail', 'memory', 'web search']);
-  assert.deepEqual(toolGroupNames(['search_knowledge']), ['his private notes'], 'no web group without the web read');
+  assert.deepEqual(toolGroupNames(['search_insights', 'gmail_search_messages', 'remember_note', 'web_search']), ['his private notes', 'mail', 'memory', 'web search']);
+  assert.deepEqual(toolGroupNames(['search_insights']), ['his private notes'], 'no web group without the web read');
 });
 
 test('C-LUXSAVE11: Runtime context never duplicates the generated save capability', () => {
@@ -136,7 +136,7 @@ test('C-LUXSAVE11: Runtime context never duplicates the generated save capabilit
 
 test('a Trello read or write names the board group, so a declared board is never read as not connected', () => {
   assert.deepEqual(toolGroupNames(['trello_read', 'trello_write']), ['Trello board']);
-  assert.ok(!toolGroupNames(['search_knowledge', 'trello_read']).some(group => /Rob/u.test(group)), 'no owner name in a public group label');
+  assert.ok(!toolGroupNames(['search_insights', 'trello_read']).some(group => /Rob/u.test(group)), 'no owner name in a public group label');
 });
 
 test('M2: the 2026-11-06 call reads the owner morning, never the UTC hour she said', () => {

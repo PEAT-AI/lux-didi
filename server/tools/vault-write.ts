@@ -44,7 +44,7 @@ export type VaultTransportResult =
   | { readonly outcome: 'unknown' }
   | { readonly outcome: 'unavailable' };
 
-export interface VaultSaveArgs { readonly content: string; readonly title: string; readonly insightType: string; readonly project: string }
+export interface VaultSaveArgs { readonly content: string; readonly title: string; readonly insightType: string; readonly project: string; readonly source?: Record<string, unknown> }
 
 /** One MCP write attempt. The client owns the wire; nothing above it retries. */
 export interface VaultWriteResult {
@@ -224,9 +224,12 @@ export class VaultWriter {
   }
 
   async dispatch(claim: { opId: string; content: string; title: string }): Promise<VaultReceipt> {
+    const sourceRow = this.#store.transaction(tx => tx.get('SELECT live_session_id,utterance_id,created_at FROM vault_writes WHERE op_id=?', [claim.opId]));
+    const source = sourceRow ? { source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: String(sourceRow.live_session_id), turn_start_id: String(sourceRow.utterance_id), turn_end_id: String(sourceRow.utterance_id), spoken_at: new Date(Number(sourceRow.created_at)).toISOString() }, idempotency_key: claim.opId } : undefined;
+
     const started = this.#now();
     let result: VaultTransportResult;
-    try { result = await this.#transport.save({ content: claim.content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT }); }
+    try { result = await this.#transport.save({ content: claim.content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT, ...(source ? { source } : {}) }); }
     catch { result = { outcome: 'unknown' }; }
     let retried = false;
     if (result.outcome === 'unavailable') {
@@ -236,7 +239,7 @@ export class VaultWriter {
       if (retry === 1) {
         retried = true;
         await this.#backoff(250);
-        try { result = await this.#transport.save({ content: claim.content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT }); }
+        try { result = await this.#transport.save({ content: claim.content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT, ...(source ? { source } : {}) }); }
         catch { result = { outcome: 'unknown' }; }
       }
     }

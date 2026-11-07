@@ -230,7 +230,7 @@ test('C-LUXSAVE11 W12-R1: outbound save obeys the upstream schema and accepts it
     if (call['method'] === 'notifications/initialized') return new Response(null, { status: 202, headers });
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: call['id'], result: call['method'] === 'initialize'
       ? { protocolVersion: '2025-06-18', capabilities: {} }
-      : { content: [{ type: 'text', text: JSON.stringify({ action: 'inserted', insight_id: 81, candidates: [] }) }] } }), { headers });
+      : { content: [{ type: 'text', text: JSON.stringify({ disposition: 'created', insight_id: 81, candidates: [] }) }] } }), { headers });
   };
   const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fakeFetch);
   const result = await transport.save({ content: 'Synthetic candidate.', title: 'Synthetic title', insightType: 'UNCATEGORIZED', project: 'didi-voice' });
@@ -266,7 +266,7 @@ for (const phase of ['initialize_http', 'initialize_transport', 'initialized_not
           if (call.method === 'notifications/initialized') return new Response(null, { status: 202, headers });
           const result = call.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: {} }
             : { content: [{ type: 'text', text: JSON.stringify(refuse && phase === 'schema_rejected'
-              ? { unrelated: true } : { action: 'inserted', insight_id: 81 }) }] };
+              ? { unrelated: true } : { disposition: 'created', insight_id: 81 }) }] };
           return new Response(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }), { headers });
         };
         const transport = createLuxWriteTransport({ url: refuse && phase === 'endpoint_rejected'
@@ -333,4 +333,20 @@ test('startup retries a legacy unavailable row only once across restarts', async
   assert.equal(calls, 1);
   assert.deepEqual(delays, [250]);
   assert.equal(h.store.transaction(tx => tx.get("SELECT state FROM vault_writes WHERE utterance_id='legacy-unavailable'"))?.state, 'confirmed');
+});
+
+test('live migration 16 preserves old vault receipts and permits all new write operations', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'vault-v16-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const old = new Store(directory, liveMigrations.filter(migration => migration.owner !== 'live' || migration.version < 16));
+  old.transaction(tx => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at,insight_id) VALUES('old','synthetic','old','save_insight','synthetic','synthetic','Synthetic','confirmed',1,'42')"));
+  old.close();
+  const migrated = new Store(directory, liveMigrations);
+  t.after(() => migrated.close());
+  const row = migrated.transaction(tx => tx.get("SELECT operation,insight_id,state FROM vault_writes WHERE op_id='old'"));
+  assert.deepEqual(row, { operation: 'create_insight', insight_id: '42', state: 'confirmed' });
+  migrated.transaction(tx => {
+    for (const operation of ['create_insight', 'update_insight', 'create_insight_link', 'record_search_feedback']) tx.run('INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES(?,?,?,?,?,?,?,?,?)', [operation, 'synthetic', operation, operation, 'synthetic', 'synthetic', 'Synthetic', 'authorized', 1]);
+    assert.throws(() => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES('forbidden','synthetic','forbidden','purge_insight','synthetic','synthetic','Synthetic','authorized',1)"));
+  });
 });

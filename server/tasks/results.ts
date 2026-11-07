@@ -91,7 +91,6 @@ export function failureCategory(reason: unknown): FailureCategory {
 export function readerFailure(name: string, category: FailureCategory, reason: ReasonCode = reasonForCategory(category)): ToolResult {
   const identifier = category === 'wrong_source_id' ? 'Search again and read an id the search returned.'
     : name === 'read_memory' ? 'Use an entry id returned by search_memory, passed as ref.'
-    : name === 'read_knowledge' ? 'Use an insight id returned by search_knowledge, passed as id.'
     : name === 'read_company' ? 'Use the ref returned by search_company and pass that ref verbatim, never a numeric record id.'
     : 'Search this source again and use its returned identifier verbatim.';
   const action = category === 'unauthorized' ? 'Check this source permission or use another approved source.'

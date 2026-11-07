@@ -22,7 +22,7 @@ import type { LiveAuthority, ConnectionPolicy } from '../tools/types.js';
 import type { ModelPort, ModelRequest, DataClass } from '../adapters/model/types.js';
 
 const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, snippet_chars: { type: 'integer', minimum: 100, maximum: 6000 } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
-const tools: { name: string; inputSchema: Record<string, unknown> }[] = [{ name: 'search_knowledge', inputSchema: schema }];
+const tools: { name: string; inputSchema: Record<string, unknown> }[] = [{ name: 'search_insights', inputSchema: schema }];
 const ACCEPTED = 'ACCEPTED [Überblick 🌱](https://example.com/evidence) insight 42';
 const REJECTED = 'REJECTED [diagnostic](https://example.com/rejected) insight 99';
 const UNCLASSIFIED = '[unclassified](https://example.com/unclassified) insight 100';
@@ -44,8 +44,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
-    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { ids: [42], include_links: true, cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived', mode: null }, id: randomUUID() } }] } };
+    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_insights')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_insights', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { ids: [42], include_links: true, cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived', mode: null }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);
@@ -58,7 +58,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     if (illegalFinal) {
       control.onEvent?.({ type: 'text', text: 'PROVISIONAL', provisional: true });
       return { ...result(request, 'complete', 'PROVISIONAL'), providerContent: { role: 'model', parts: [
-        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_knowledge', args: { query: 'one more', limit: 1 , mode: null }, id: randomUUID() } },
+        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_insights', args: { query: 'one more', limit: 1 , mode: null }, id: randomUUID() } },
       ] } };
     }
     if (finalStatus !== 'complete') return result(request, finalStatus, '');
@@ -153,7 +153,7 @@ test('real chat declares task reads, journals execution, and discloses only gate
   t.diagnostic(JSON.stringify({ outcome: run.outcome, requests: f.requests.length, executions: f.executions() }));
   assert.equal(run.outcome, 'complete', 'task registry composition must reach the model, not compile_failed');
   const declarations = f.requests[0]?.declarations ?? [];
-  assert.ok(declarations.some(tool => tool.name === 'search_knowledge'));
+  assert.ok(declarations.some(tool => tool.name === 'search_insights'));
   assert.ok(declarations.some(tool => tool.name === 'read_knowledge'));
   assert.equal(declarations.some(tool => tool.name === 'get_insight' || tool.name === 'read_received_body'), false);
   assert.equal(f.executions(), 1);
@@ -173,7 +173,7 @@ test('real chat declares task reads, journals execution, and discloses only gate
   assert.equal(proof.entitySha256, createHash('sha256').update(capturedEntity).digest('hex'));
   const grant = f.registry.currentGrant('fixture-endpoint')!;
   assert.deepEqual(proof.source, { endpointId: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', schemaDigest: grant.schemaDigest,
-    toolName: 'search_knowledge', generation: grant.generation, account: 'fixture-account', resource: 'fixture-resource' });
+    toolName: 'search_insights', generation: grant.generation, account: 'fixture-account', resource: 'fixture-resource' });
   const expectedSources = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence' }, { title: 'KB: 42' }];
   assert.deepEqual(run.toolEvidence?.flatMap(value => value.sources), expectedSources, 'completed run retains exact gated source metadata');
   assert.deepEqual(f.chat.get(run.runId, f.context)?.toolEvidence?.flatMap(value => value.sources), expectedSources, 'Chat.get projects the same exact source metadata');
@@ -221,7 +221,7 @@ test('tool results are redacted before the model, storage and evidence', async t
   const receipt = f.logEvents.filter(event => event['event'] === 'tool_redaction');
   assert.equal(receipt.length, 1, 'one receipt per redacted tool result');
   assert.deepEqual(Object.keys(receipt[0] as object).sort(), ['count', 'event', 'tool']);
-  assert.equal(receipt[0]?.['tool'], 'search_knowledge');
+  assert.equal(receipt[0]?.['tool'], 'search_insights');
   assert.ok(Number(receipt[0]?.['count']) >= SECRETS.length);
   assert.equal(JSON.stringify(f.logEvents).includes('alpha-bravo-charlie'), false, 'a receipt never carries a value');
 });
@@ -272,7 +272,7 @@ test('route class filter excludes private-only envelopes from ordinary classes',
 test('private-permitted route admits the private-only envelope through the same class filter', async t => {
   const f = await fixture(t); await f.privateOnly();
   const session = f.session(); await f.turn(session);
-  assert.ok(f.admission(session).some(d => d.name === 'search_knowledge'));
+  assert.ok(f.admission(session).some(d => d.name === 'search_insights'));
 });
 
 
@@ -390,7 +390,7 @@ test('configured Chat consent preserves independent connector class denial', asy
   const run = await f.turn(f.session());
   assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 0);
   assert.equal(f.requests.length, 1);
-  assert.ok(!f.requests[0]!.declarations?.some(d => d.name === 'search_knowledge'));
+  assert.ok(!f.requests[0]!.declarations?.some(d => d.name === 'search_insights'));
 });
 
 
@@ -607,7 +607,7 @@ test('the task facade is stable across newly approved source tools and owner rev
   const first = await f.turn(session);
   assert.equal(first.outcome, 'complete');
   const names = f.requests[0]?.declarations?.map(tool => tool.name) ?? [];
-  assert.ok(names.includes('search_knowledge') && names.includes('read_knowledge'));
+  assert.ok(names.includes('search_insights') && names.includes('read_knowledge'));
   await f.approveY(); f.noCalls();
   const next = await f.turn(session);
   assert.equal(next.outcome, 'denied', 'an accepted conversation cannot silently widen its source policy');

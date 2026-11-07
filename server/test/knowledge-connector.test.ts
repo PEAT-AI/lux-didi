@@ -23,7 +23,7 @@ import type { ConnectionPolicy } from '../tools/types.js';
 // M21-R2: LK5 declares every read tool with `readOnlyHint: true`, and that annotation is the whole
 // admission. Anything else the endpoint publishes is never callable.
 const searchTool: ToolDefinition = {
-  name: 'search_knowledge', description: 'Synthetic search',
+  name: 'search_insights', description: 'Synthetic search',
   inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query'] },
   annotations: { readOnlyHint: true },
 };
@@ -136,7 +136,7 @@ test('search round trip: exact arguments, opaque unknown/local-only evidence, ex
     const result = complete(await reader.search({ query: 'synthetic query', limit: 3 }));
     assert.equal(result.classification, 'unknown');
     assert.equal(result.capability, 'local-only');
-    assert.equal(result.tool, 'search_knowledge');
+    assert.equal(result.tool, 'search_insights');
     assert.equal(result.source.endpointId, 'source');
     const source = result.source;
     assert.equal('transport' in source, false, 'expected an HTTP-transport source');
@@ -146,7 +146,7 @@ test('search round trip: exact arguments, opaque unknown/local-only evidence, ex
     assert.equal(result.coverage.basis, 'single-tool-result');
     assert.equal(result.coverage.remoteSideEffects, 'unverified');
     assert.equal(result.requestedIds, undefined);
-    assert.deepEqual(f.calls, [{ name: 'search_knowledge', arguments: { query: 'synthetic query', limit: 3, include_sensitive: false } }]);
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'synthetic query', limit: 3, include_sensitive: false } }]);
     assert.equal(result.response.state, 'available');
     if (result.response.state !== 'available') throw new Error('missing response handle');
     assert.equal(result.response.encoding, 'http-response-entity');
@@ -171,24 +171,24 @@ test('3r voice search: the bounded-body fields reach the wire exactly, and no ot
   try {
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.search({ query: 'synthetic query', limit: 6, detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 }));
-    assert.equal(result.tool, 'search_knowledge');
-    assert.deepEqual(f.calls, [{ name: 'search_knowledge', arguments: { query: 'synthetic query', limit: 6, include_sensitive: false, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 } }]);
+    assert.equal(result.tool, 'search_insights');
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'synthetic query', limit: 6, include_sensitive: false, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 } }]);
     // A snippet search keeps the old wire shape: the 3r fields travel only when asked for.
     await reader.search({ query: 'synthetic query', limit: 3 });
-    assert.deepEqual(f.calls[1], { name: 'search_knowledge', arguments: { query: 'synthetic query', limit: 3, include_sensitive: false } });
+    assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'synthetic query', limit: 3, include_sensitive: false } });
   } finally { await adapter.close(); await f.close(); }
 });
 
-test('K4: a project hint reaches the wire as project_hint, and an unknown search key is still refused', async () => {
+test('K4: a project hint reaches the wire as project_boost, and an unknown search key is still refused', async () => {
   const f = await fixture();
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.search({ query: 'wriggler pipeline', limit: 6, projectHint: 'Wriggler' }));
-    assert.equal(result.tool, 'search_knowledge');
-    assert.deepEqual(f.calls, [{ name: 'search_knowledge', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project_hint: 'Wriggler' } }]);
+    assert.equal(result.tool, 'search_insights');
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project_boost: 'Wriggler' } }]);
     await reader.search({ query: 'wriggler pipeline', limit: 6, project: 'Wriggler' });
-    assert.deepEqual(f.calls[1], { name: 'search_knowledge', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project: 'Wriggler' } });
+    assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project: 'Wriggler' } });
     const refused = await reader.search({ query: 'wriggler pipeline', limit: 6, sort: 'score' } as unknown as Parameters<typeof reader.search>[0]);
     assert.equal('state' in refused ? refused.state : 'completed', 'refused');
     assert.equal((refused as { reason?: string }).reason, 'invalid-search-input');
@@ -216,7 +216,7 @@ test('3r fields outside the server range are refused before dispatch', async () 
 });
 
 test('3r: an older server that rejects a field fails loudly with its own message and no retry', async () => {
-  const message = 'Error executing tool search_knowledge: unexpected keyword argument deadline_ms';
+  const message = 'Error executing tool search_insights: unexpected keyword argument deadline_ms';
   const f = await fixture({ call: () => ({ isError: true, content: [{ type: 'text', text: message }] }) });
   const { adapter, registry } = setup(f.url);
   try {
@@ -242,12 +242,12 @@ test('a larger native search limit returns and preserves the next slice without 
     };
     assert.equal(JSON.parse(text(first)).results.length, 20);
     assert.equal(JSON.parse(text(second)).results.length, 25, 'the named larger limit returns the next slice');
-    assert.deepEqual(f.calls.at(-1), { name: 'search_knowledge', arguments: { query: 'q', limit: 25, include_sensitive: false } });
-    const shaped = shapeLuxKnowledge('search_knowledge', text(second));
+    assert.deepEqual(f.calls.at(-1), { name: 'search_insights', arguments: { query: 'q', limit: 25, include_sensitive: false } });
+    const shaped = shapeLuxKnowledge('search_insights', text(second));
     assert.equal(shaped.partial, false, 'the formatter did not discard returned source bodies');
     assert.equal((shaped.text.match(/^### /gm) ?? []).length, 25);
     assert.match(shaped.text, /Insight 25/);
-    assert.equal(shaped.text.includes('call search_knowledge again'), false, 'no self-repeating follow-up for a host-invented cut');
+    assert.equal(shaped.text.includes('call search_insights again'), false, 'no self-repeating follow-up for a host-invented cut');
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -258,7 +258,7 @@ test('a completed native search preserves all returned hits and their bodies in 
   try {
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.search({ query: 'q', limit: 12 }));
-    const shaped = shapeLuxKnowledge('search_knowledge', (result.decodedResult as { content?: { text?: string }[] }).content?.[0]?.text ?? '');
+    const shaped = shapeLuxKnowledge('search_insights', (result.decodedResult as { content?: { text?: string }[] }).content?.[0]?.text ?? '');
     assert.equal((shaped.text.match(/^### /gm) ?? []).length, 12, 'all twelve actual native hits survive shaping');
     assert.match(shaped.text, /Body of insight 1\./);
     assert.match(shaped.text, /Body of insight 12\./, 'the last actual native body is retained too');
@@ -327,7 +327,7 @@ test('K2: a multi-id string drops unreadable tokens, dedupes and caps like a lis
 // 3r K1: the research path sends the bounded-body fields through the declaration's validator.
 test('3r: the search declaration accepts the bounded-body fields and still refuses anything else', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
-  const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'search_knowledge')!;
+  const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'search_insights')!;
   assert.equal(declaration.validate({ query: 'lux didi', limit: 6, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 }), true);
   assert.equal(declaration.validate({ query: 'lux didi', limit: 6 }), true, 'the old two-key chat shape stays valid');
   assert.equal(declaration.validate({ query: 'lux didi', limit: 6, detail: 'full' }), false);
@@ -413,8 +413,8 @@ test('a granted write tool is refused: readOnlyHint false is never callable', as
   const { adapter, registry } = setup(f.url);
   try {
     assert.equal(LUX_KNOWLEDGE_TOOLS.includes('save_insight' as never), false);
-    await approve(adapter, registry, ['search_knowledge', 'get_insight', 'save_insight']);
-    assert.deepEqual(adapter.visibleTools('source').map(tool => tool.name).sort(), ['get_insight', 'save_insight', 'search_knowledge']);
+    await approve(adapter, registry, ['search_insights', 'get_insight', 'save_insight']);
+    assert.deepEqual(adapter.visibleTools('source').map(tool => tool.name).sort(), ['get_insight', 'save_insight', 'search_insights']);
     const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
     const result = await reader.search({ query: 'x', limit: 1 });
     assert.equal(result.state, 'refused');
@@ -438,7 +438,7 @@ test('M21-R2: an annotated read tool is callable, an unannotated, destructive or
   const { adapter, registry } = setup(f.url);
   try {
     // The host grants exactly the annotated reads, so the widened read is in the grant.
-    const discovery = await approve(adapter, registry, ['search_knowledge', 'get_insight', 'list_projects']);
+    const discovery = await approve(adapter, registry, ['search_insights', 'get_insight', 'list_projects']);
     assert.equal(discovery.state, 'discovered');
     const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
     const widenedRead = complete(await reader.lookup('list_projects', { status: 'active' }));
@@ -452,7 +452,7 @@ test('M21-R2: an annotated read tool is callable, an unannotated, destructive or
     const g = await fixture({ list: () => ({ tools: [searchTool, getTool, widened, bare, purge, writerTool] }) });
     const { adapter, registry } = setup(g.url);
     try {
-      await approve(adapter, registry, ['search_knowledge', 'get_insight', name]);
+      await approve(adapter, registry, ['search_insights', 'get_insight', name]);
       const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
       const refused = await reader.lookup(name, {});
       assert.equal(refused.state, 'refused', `${name} must be refused`);
@@ -497,7 +497,7 @@ test('a grant matching every gate field dispatches the call the drift cases refu
     const { reader } = await readerFor(adapter, registry);
     const search = complete(await reader.search({ query: 'x', limit: 1 }));
     assert.equal(search.response.state, 'available', 'the approved, undrifted grant reaches the endpoint');
-    assert.deepEqual(f.calls.map(call => call.name), ['search_knowledge'], 'exactly the one call the refusal cases never make');
+    assert.deepEqual(f.calls.map(call => call.name), ['search_insights'], 'exactly the one call the refusal cases never make');
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -512,13 +512,13 @@ test('sensitive-shaped and hostile markdown stays unknown/local-only and trigger
     assert.equal(result.capability, 'local-only');
     assert.equal('sensitivity' in result, false);
     assert.match(result.projection.text, /personnel/);
-    assert.deepEqual(f.calls, [{ name: 'search_knowledge', arguments: { query: 'ordinary query', limit: 1, include_sensitive: false } }]);
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'ordinary query', limit: 1, include_sensitive: false } }]);
     assert.equal(f.calls.length, 1);
   } finally { await adapter.close(); await f.close(); }
 });
 
 test('a changed response between search and fetch gets a new original-byte hash with no inherited classification', async () => {
-  const f = await fixture({ call: name => ({ content: [{ type: 'text', text: name === 'search_knowledge' ? 'first synthetic payload' : 'second synthetic payload' }] }) });
+  const f = await fixture({ call: name => ({ content: [{ type: 'text', text: name === 'search_insights' ? 'first synthetic payload' : 'second synthetic payload' }] }) });
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
@@ -687,7 +687,7 @@ test('budgets are captured stably at construction and never silently capped or d
 test('F1/F2: a search withheld count and by-ID sensitivity-shaped markdown are never classification authority', async () => {
   const searchMarkdown = '_3 sensitive row(s) withheld; pass include_sensitive=true to see them_\n## #1 [note] ordinary\n';
   const byIdMarkdown = '## #7 [personnel]\nSensitivity: compensation\nfull sensitive-shaped content\n';
-  const f = await fixture({ call: name => ({ content: [{ type: 'text', text: name === 'search_knowledge' ? searchMarkdown : byIdMarkdown }] }) });
+  const f = await fixture({ call: name => ({ content: [{ type: 'text', text: name === 'search_insights' ? searchMarkdown : byIdMarkdown }] }) });
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
@@ -700,7 +700,7 @@ test('F1/F2: a search withheld count and by-ID sensitivity-shaped markdown are n
     assert.deepEqual(search.requestedIds, undefined);
     assert.deepEqual(fetched.requestedIds, [7]);
     assert.deepEqual(f.calls, [
-      { name: 'search_knowledge', arguments: { query: 'ordinary query', limit: 5, include_sensitive: false } },
+      { name: 'search_insights', arguments: { query: 'ordinary query', limit: 5, include_sensitive: false } },
       { name: 'get_insight', arguments: { ids: [7], include_links: false } },
     ]);
     // The by-ID path has no upstream sensitivity gate (knowledge-boundary F4/F5): the connector
@@ -826,7 +826,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
       // M21: the trust is the endpoint, not the profile, so even an explicit-mode profile grants
       // exactly the annotated reads this endpoint publishes, and never its write.
       const explicitGrant = explicit.registry.currentGrant('source')!;
-      assert.deepEqual([...explicitGrant.toolNames].sort(), ['get_insight', 'search_knowledge']);
+      assert.deepEqual([...explicitGrant.toolNames].sort(), ['get_insight', 'search_insights']);
       assert.equal(explicit.status().endpoints[0]!.state, 'connected');
       assert.equal(explicit.status().endpoints[0]!.tools, 2);
     } finally { await explicit.close(); explicitStore.close(); }
@@ -836,7 +836,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
     const trusted = await composeMcpRuntime({ store: trustedStore, ownerId: trustedStore.assistantId, configDir, lookupAuthority: async () => null, lifecycleLog: event => lifecycle.push('reason' in event ? String(event.event) + ':' + String(event.reason) : String(event.event)) });
     try {
       const grant = trusted.registry.currentGrant('source')!;
-      assert.deepEqual([...grant.toolNames].sort(), ['get_insight', 'search_knowledge']);
+      assert.deepEqual([...grant.toolNames].sort(), ['get_insight', 'search_insights']);
       assert.equal(grant.toolNames.includes('save_insight'), false);
       assert.equal(grant.effect, 'read');
       assert.deepEqual(trusted.connectionIds(), ['source']);
@@ -854,7 +854,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
       const after = trusted.registry.currentGrant('source')!;
       assert.notEqual(after.schemaDigest, before);
       assert.ok(after.generation > grant.generation);
-      assert.deepEqual([...after.toolNames].sort(), ['get_insight', 'list_topics', 'search_knowledge'], 'the annotated read joins the grant, the write never does');
+      assert.deepEqual([...after.toolNames].sort(), ['get_insight', 'list_topics', 'search_insights'], 'the annotated read joins the grant, the write never does');
       assert.equal(after.toolNames.includes('save_insight'), false);
       assert.match(after.schemaDigest, /^[0-9a-f]{64}$/u, 'the grant rides the digest just observed');
       assert.deepEqual(lifecycle.filter(name => name === 'mcp_trusted_rediscovered'), ['mcp_trusted_rediscovered'], 'the rediscovery is logged once per digest change');
@@ -862,7 +862,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
       const reader = createLuxKnowledgeReader({ port: trusted.port, registry: trusted.registry, config: { ...baseConfig(), generation: after.generation } });
       assert.equal((await reader.search({ query: 'synthetic', limit: 1 })).state, 'completed');
       assert.equal((await reader.get({ ids: [1] })).state, 'completed');
-      assert.deepEqual(f.calls.map(call => call.name), ['search_knowledge', 'get_insight']);
+      assert.deepEqual(f.calls.map(call => call.name), ['search_insights', 'get_insight']);
     } finally { await trusted.close(); trustedStore.close(); }
   } finally { await explicitFixture.close(); await f.close(); }
 });
@@ -894,7 +894,7 @@ test('MED-1022: the voice bound and the meeting day reach the wire, and a bad va
   try {
     const { reader } = await readerFor(adapter, registry);
     complete(await reader.search({ query: 'ocp prep call', limit: 6, detail: 'voice', maxChars: 3_000, snippetChars: 300, meetingDateFrom: '2026-10-21', meetingDateTo: '2026-10-21' }));
-    assert.deepEqual(f.calls, [{ name: 'search_knowledge', arguments: {
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: {
       query: 'ocp prep call', limit: 6, include_sensitive: false, detail: 'voice', max_chars: 3_000, snippet_chars: 300,
       meeting_date_from: '2026-10-21', meeting_date_to: '2026-10-21',
     } }]);

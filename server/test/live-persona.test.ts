@@ -206,7 +206,7 @@ test('no declarations retain the public work policy and stable hash', () => {
 
 test('declarations add the tools section verbatim between base and overlay with a stable hash', () => {
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'Local overlay persona' };
-  const tools = ['search_knowledge', 'get_insight'];
+  const tools = ['search_insights', 'get_insight'];
   const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay, language: 'en', tools });
   assert.deepEqual(result.sections.map(s => s.id), ['voice-head', 'overlay', 'base', 'tools', 'voice']);
   const baseAt = result.text.indexOf(NAYA_LIVE_BASE);
@@ -225,13 +225,13 @@ test('declarations add the tools section verbatim between base and overlay with 
 test('withToolsSection splices the block after the base and is a no-op without declarations', () => {
   const composed = composeLiveInstruction({ base: NAYA_LIVE_BASE, overlay: { schemaVersion: 1, text: 'Overlay text' }, language: 'en' });
   assert.equal(withToolsSection(composed.text, []), composed.text, 'no declarations leaves the text byte-identical');
-  const spliced = withToolsSection(composed.text, ['search_knowledge']);
+  const spliced = withToolsSection(composed.text, ['search_insights']);
   const baseAt = spliced.indexOf(NAYA_LIVE_BASE);
   const toolsAt = spliced.indexOf(NAYA_WORK_DELIVERY);
   const overlayAt = spliced.indexOf('Overlay text');
   assert.ok(overlayAt >= 0 && overlayAt < baseAt && toolsAt > baseAt, 'overlay then base then the spliced tools');
   assert.equal(spliced, composed.text, 'already-composed work policy is not duplicated');
-  assert.equal(withToolsSection('Synthetic system', ['search_knowledge']), `Synthetic system\n\n${NAYA_WORK_DELIVERY}`);
+  assert.equal(withToolsSection('Synthetic system', ['search_insights']), `Synthetic system\n\n${NAYA_WORK_DELIVERY}`);
 });
 
 test('overlay validation is strict and bounded', () => {
@@ -278,7 +278,7 @@ test('M11: tool-enabled CREATE preserves fixed owner style and selects whole ide
   const style = 'Synthetic fixed style. '.repeat(300);
   const entries = Array.from({ length: 20 }, (_, index) => ({ id: String(index), text: `Note ${index} ${'word '.repeat(80)}` }));
   const result = m11Session({ ownerProfile: syntheticOwner(style, 'A short synthetic lore paragraph.'), records: entries,
-    memoryBlockInput: m11Context({ entries }), tools: ['search_knowledge'] });
+    memoryBlockInput: m11Context({ entries }), tools: ['search_insights'] });
   assert.ok(result.text.includes(style));
   assert.ok(result.selectedIds.length > 0 && result.selectedIds.length < entries.length);
   for (const id of result.selectedIds) assert.ok(result.text.includes(entries.find(entry => entry.id === id)!.text));
@@ -287,7 +287,7 @@ test('M11: tool-enabled CREATE preserves fixed owner style and selects whole ide
 
 test('runtime context is inserted right after the base and before the tools', () => {
   const runtimeContext = '# Runtime context\n\nNow: Wed, 2026-10-14, 18:05 Asia/Kolkata (UTC+05:30)';
-  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, runtimeContext, language: 'en', tools: ['search_knowledge'] });
+  const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, runtimeContext, language: 'en', tools: ['search_insights'] });
   assert.deepEqual(result.sections.map(section => section.id), ['voice-head', 'base', 'tools', 'runtime', 'voice']);
   assert.ok(result.text.indexOf(NAYA_LIVE_BASE) < result.text.indexOf(NAYA_WORK_DELIVERY));
   assert.ok(result.text.indexOf(NAYA_WORK_DELIVERY) < result.text.indexOf(runtimeContext));
@@ -302,7 +302,7 @@ function syntheticOwner(styleText: string, loreText: string): OwnerProfileSnapsh
 test('P1: persona leads, facts sit in the middle and the anchor closes the instruction', () => {
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'OVERLAY PERSONA BLOCK', accent: 'strong Indian accent' };
   const result = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile: syntheticOwner('OWNER STYLE BLOCK', 'OWNER LORE BLOCK'),
-    overlay, language: 'en', tools: ['search_knowledge'], runtimeContext: 'RUNTIME CONTEXT BLOCK', memory: 'MEMORY BLOCK' });
+    overlay, language: 'en', tools: ['search_insights'], runtimeContext: 'RUNTIME CONTEXT BLOCK', memory: 'MEMORY BLOCK' });
   assert.deepEqual(result.sections.map(section => section.id),
     ['voice-head', 'owner-style', 'overlay', 'base', 'tools', 'runtime', 'owner-lore', 'memory', 'voice']);
   const order = ['VOICE AND ACCENT', 'OWNER STYLE BLOCK', 'OVERLAY PERSONA BLOCK', NAYA_LIVE_BASE, NAYA_WORK_DELIVERY,
@@ -405,7 +405,7 @@ test('M11: fixed text above target composes below hard admission and reports the
 
 test('P1: session composition reports the composed size per section', () => {
   const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'],
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_insights'],
     records: [{ id: 'a', text: 'Synthetic retained note' }], trustedChars: LIVE_INSTRUCTION_HARD_LIMIT });
   assert.ok(Array.isArray(composed.sections), 'section sizes are reported');
   assert.ok(composed.sections.every(section => typeof section.id === 'string' && typeof section.chars === 'number' && section.chars >= 0));
@@ -508,7 +508,7 @@ const FIXTURE_OWNER: OwnerProfileSnapshot = { schemaVersion: 1, kind: 'profile',
 
 test('session composition emits the owner style and lore once in every path', () => {
   const [style, lore] = ownerProfileSections(FIXTURE_OWNER).map(section => section.text);
-  const session = (text: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'], ownerProfile: FIXTURE_OWNER, records: [],
+  const session = (text: string) => composeLiveSessionInstruction({ text, tools: ['search_insights'], ownerProfile: FIXTURE_OWNER, records: [],
     overlay: { schemaVersion: 1, text: 'Fixture overlay' }, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   const native = session(composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accent: 'warm', ownerProfile: FIXTURE_OWNER }).text);
   assert.equal(occurrence(native.text, style!), 1, 'owner style appears once on the native accent path');
@@ -524,9 +524,9 @@ test('session composition emits the owner style and lore once in every path', ()
 test('every composed section id is on the LIVE_INSTRUCTION_SECTION_IDS allowlist', () => {
   const allowed = new Set<string>(LIVE_INSTRUCTION_SECTION_IDS);
   const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', accent: 'warm', ownerProfile: FIXTURE_OWNER,
-    tools: ['search_knowledge'], memory: 'Fixture note', runtimeContext: 'Fixture runtime' });
+    tools: ['search_insights'], memory: 'Fixture note', runtimeContext: 'Fixture runtime' });
   for (const section of instruction.sections) assert.ok(allowed.has(section.id), `${section.id} is listed`);
-  const session = composeLiveSessionInstruction({ text: instruction.text, tools: ['search_knowledge'], ownerProfile: FIXTURE_OWNER,
+  const session = composeLiveSessionInstruction({ text: instruction.text, tools: ['search_insights'], ownerProfile: FIXTURE_OWNER,
     records: [{ id: 'a', text: 'Fixture note' }], pickupNote: 'Fixture pickup', memoryBlockInput: m11Context({ summaries: [{ id: 'fixture-summary', sessionId: 'fixture-session', startedAt: M11_NOW, text: 'Fixture summary' }] }),
     trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT });
   for (const section of session.sections) assert.ok(allowed.has(section.id), `${section.id} is listed`);
@@ -707,7 +707,7 @@ test('593: the persona carries one rule about still and loops not seen in the la
 // the session composer had no calendar input and no calendar section id. It is its own measured section.
 test('R7: the session composition carries the warm calendar digest after the runtime context', () => {
   const text = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  const session = (calendar?: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'],
+  const session = (calendar?: string) => composeLiveSessionInstruction({ text, tools: ['search_insights'],
     records: [{ id: 'a', text: 'Fixture note' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, runtimeContext: 'Fixture runtime',
     ...(calendar === undefined ? {} : { calendar }) });
   const composed = session('09:00 standup, 15:00 review');
@@ -726,7 +726,7 @@ test('R7: the session composition carries the warm calendar digest after the run
 
 test('R7: no digest and an empty digest both leave the calendar section out', () => {
   const text = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
-  const session = (calendar?: string) => composeLiveSessionInstruction({ text, tools: ['search_knowledge'], records: [],
+  const session = (calendar?: string) => composeLiveSessionInstruction({ text, tools: ['search_insights'], records: [],
     trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, runtimeContext: 'Fixture runtime', ...(calendar === undefined ? {} : { calendar }) });
   for (const absent of [undefined, '', '   ']) {
     const composed = session(absent);
@@ -736,10 +736,10 @@ test('R7: no digest and an empty digest both leave the calendar section out', ()
 });
 
 test('R7: a full-length digest keeps the composed instruction inside its limits', () => {
-  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['search_knowledge'],
+  const baseline = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['search_insights'],
     memory: 'Fixture note', runtimeContext: 'Fixture runtime' });
   const digest = '09:00 ' + 'x'.repeat(394);
-  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_knowledge'],
+  const composed = composeLiveSessionInstruction({ text: baseline.text, tools: ['search_insights'],
     records: [{ id: 'a', text: 'Fixture note' }], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     runtimeContext: 'Fixture runtime', calendar: digest });
   assert.ok(composed.text.includes(digest), 'the digest is carried in full');

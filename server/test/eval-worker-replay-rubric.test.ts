@@ -57,7 +57,7 @@ test('FR5 fast-first replay: a clear fast hit is read, a miss falls back to full
   const leaked = replay.scoreVaultFast(rows[1], { calls: replay.vaultFastPlan(rows[1]), spoken: 'Orchard Road bus lane buses stop at 23:00.' });
   assert.equal(leaked.unrelated_absent, false, 'the unrelated keyword hit is not the answer');
   assert.equal(leaked.fact_supported, false);
-  const fullFirst = replay.scoreVaultFast(named, { calls: [{ name: 'search_knowledge', args: { query: named.owner_words, limit: 8 } }, { name: 'get_insight', args: { ids: [named.record_id] } }], spoken: named.answer });
+  const fullFirst = replay.scoreVaultFast(named, { calls: [{ name: 'search_insights', args: { query: named.owner_words, limit: 8 } }, { name: 'get_insight', args: { ids: [named.record_id] } }], spoken: named.answer });
   assert.equal(fullFirst.fast_first, false, 'a ranked search first is not fast-first');
   const skippedFull = replay.scoreVaultFast(rows[1], { calls: [replay.vaultFastPlan(rows[1])[0], { name: 'get_insight', args: { ids: [rows[1].record_id] } }], spoken: rows[1].answer });
   assert.equal(skippedFull.full_when_needed, false, 'an unclear fast result still needs the full search');

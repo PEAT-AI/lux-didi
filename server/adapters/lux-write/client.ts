@@ -78,7 +78,7 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
   };
 
   const write = async (tool: string, args: Record<string, unknown>): Promise<VaultWriteResult> => {
-    if (!allowed || !(LUX_WRITE_TOOLS as readonly string[]).includes(tool)) return { disposition: 'refused', reason: 'tool_not_allowed' };
+    if (!allowed || !(LUX_WRITE_TOOLS as readonly string[]).includes(tool)) { phase('endpoint_rejected'); return { disposition: 'refused', reason: 'tool_not_allowed' }; }
     if (!(await initialize())) return { disposition: 'refused', reason: 'transport_unavailable' };
     try {
       const call = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } });
@@ -90,12 +90,12 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
       const receipt = payload as VaultWriteResult;
       if (tool === LUX_TOOLS.create && !['created', 'duplicate_of', 'refused'].includes(receipt.disposition)) return { disposition: 'refused', reason: 'invalid_receipt' };
       return receipt;
-    } catch { return { disposition: 'refused', reason: 'outcome_unknown' }; }
+    } catch { phase('call_transport'); return { disposition: 'refused', reason: 'outcome_unknown' }; }
   };
 
   return {
     write,
-    /** A read probe only: search_knowledge is asked, and nothing is ever written here. */
+    /** A read probe only: search_insights is asked, and nothing is ever written here. */
     async nearDuplicate(text: string): Promise<number | undefined> {
       if (!allowed) return undefined;
       if (!(await initialize())) return undefined;
@@ -117,7 +117,7 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
       return closest;
     },
     async save(args: VaultSaveArgs): Promise<VaultTransportResult> {
-      const receipt = await write(LUX_TOOLS.create, { content: args.content, insight_title: args.title, insight_type: args.insightType, project: args.project });
+      const receipt = await write(LUX_TOOLS.create, { content: args.content, insight_title: args.title, insight_type: args.insightType, project: args.project, ...args.source });
       if (receipt.disposition === 'created' && Number.isSafeInteger(receipt.insight_id) && Number(receipt.insight_id) > 0) return { outcome: 'inserted', insightId: String(receipt.insight_id) };
       if (receipt.disposition === 'duplicate_of') return { outcome: 'duplicate' };
       return { outcome: receipt.reason === 'outcome_unknown' ? 'unknown' : receipt.reason === 'transport_unavailable' ? 'unavailable' : 'failed' };

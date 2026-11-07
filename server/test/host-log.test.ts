@@ -82,7 +82,7 @@ test('live_state keeps a closed transition shape for the orb timeline', () => {
   assert.equal(safeEvent({ ...event, at: -1 }), undefined, 'a negative timestamp is refused');
 });
 test('live_tool_turn admits a closed per-endpoint peak in-flight field', () => {
-  const base = { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'search_knowledge', ms: 12 }], toolResponseWhileGenerating: false };
+  const base = { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'search_insights', ms: 12 }], toolResponseWhileGenerating: false };
   const withPeak = { ...base, peakInFlight: [{ endpoint: 'lux', peak: 2 }] };
   assert.deepEqual(safeEvent(withPeak), withPeak);
   assert.equal(safeEvent(base)?.event, 'live_tool_turn', 'the field stays optional');

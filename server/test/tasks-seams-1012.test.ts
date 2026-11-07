@@ -40,12 +40,12 @@ const vault = `# Knowledge Search: 'shade house routine'
 test('10.12: real tool results reach the helper without losing mail, vault evidence, company outcomes or owner lore', async () => {
   const execute = connectorExecutor([
     binding('google', ['gmail_read_message'], { id: 'synthetic-mail', headers: { From: 'Dana Example <dana@example.invalid>', Subject: 'Synthetic plan' }, body: 'The synthetic mooring plan is ready.', bodyCoverage: { complete: true } }),
-    binding('lux-knowledge', ['search_knowledge'], vault),
+    binding('lux-knowledge', ['search_insights'], vault),
     binding('mongoose', ['search'], { outcome: 'no_match', items: [], coverage: { complete: true } }),
   ]);
   const calls = [
     { id: 'mail', name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } },
-    { id: 'vault', name: 'search_knowledge', args: { query: 'shade house routine' , mode: null } },
+    { id: 'vault', name: 'search_insights', args: { query: 'shade house routine' , mode: null } },
     { id: 'company', name: 'search_company', args: { query: 'synthetic absent record', mode: 'answer', cursor: null } },
   ];
   let hop = 0;

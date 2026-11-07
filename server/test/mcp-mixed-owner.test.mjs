@@ -88,7 +88,7 @@ test('40 mixed owner reads in one fake minute, then one more of every kind', asy
       ['attention', 'mattermost_attention', {}],
       ['calendar', 'calendar_list_events', { calendarId: 'primary', timeMin: new Date(start).toISOString(), timeMax: new Date(start + 86400000).toISOString() }],
       ['search', 'drive_search_files', { query: 'synthetic' }],
-      ['knowledge', 'search_knowledge', { query: 'synthetic', limit: 3 }],
+      ['knowledge', 'search_insights', { query: 'synthetic', limit: 3 }],
     ];
     const seen = new Map();
     for (let index = 0; index < 46; index++) {

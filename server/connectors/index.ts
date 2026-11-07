@@ -217,7 +217,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           // widens the text-chat call shape, because neither key is offered in `parameters`.
           // MED-1022: the voice shape and the meeting day travel the same way, accepted here and never
           // offered in `parameters`, so the text-chat call shape is unchanged.
-          if (!keys.every(key => key === 'query' || key === 'limit' || key === 'detail' || key === 'max_chars' || key === 'deadline_ms' || key === 'project' || key === 'project_hint'
+          if (!keys.every(key => key === 'query' || key === 'limit' || key === 'detail' || key === 'max_chars' || key === 'deadline_ms' || key === 'project' || key === 'project_boost'
             || key === 'snippet_chars' || key === 'meeting_date_from' || key === 'meeting_date_to' || key === 'mode')) return false;
           if (!keys.includes('query') || !keys.includes('limit')) return false;
           const query = args['query']; const limit = args['limit'];
@@ -228,7 +228,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return false;
           // K4: a tag is one corpus project name, never a pattern the model composed.
           const projectName = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^[\w.@-]{1,64}$/u.test(value));
-          if (!projectName(args['project']) || !projectName(args['project_hint'])) return false;
+          if (!projectName(args['project']) || !projectName(args['project_boost'])) return false;
           const snippetChars = args['snippet_chars'];
           if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return false;
           // MED-1022: the day bounds are two calendar days, never a date expression.

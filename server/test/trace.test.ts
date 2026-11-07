@@ -78,7 +78,7 @@ test('two parallel calls settle in reverse order and share one continuation', ()
   withStore(store => {
     openTurn(store, 't1', 1, T0);
     completedResponse(store, 'r1', 't1', T0 + 100);
-    for (const [callKey, name, intent] of [['c1', 'calendar_window', T0 + 110], ['c2', 'search_knowledge', T0 + 120]] as const) {
+    for (const [callKey, name, intent] of [['c1', 'calendar_window', T0 + 110], ['c2', 'search_insights', T0 + 120]] as const) {
       record(store, 'call.intent', { liveSessionId: SESSION, turnId: 't1', responseKey: 'r1', callKey }, { name, argsChars: 12, intentAt: intent });
       record(store, 'call.executed', { liveSessionId: SESSION, callKey }, { executedAt: intent + 5 });
       record(store, 'call.output_prepared', { liveSessionId: SESSION, callKey }, { outputPreparedAt: intent + 9 });

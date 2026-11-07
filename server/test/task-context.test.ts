@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as memory from '../domain/memory.js';
+import * as labels from '../domain/labels.js';
 import type { Inference } from '../tasks/worker.js';
 import { taskLiveFixture, flushTaskLive } from './task-live-fixture.js';
 test('helper source text stays out of voice context across an in-flight ordinary provider rebuild', async t => {
@@ -16,8 +17,12 @@ test('helper source text stays out of voice context across an in-flight ordinary
   const now = Date.now(), clock = { now: () => now };
   f.store.transaction(tx => {
     const session = memory.createSession(tx, { title: 'syntheticcontext', startedAt: now, timeZone: 'UTC' }, clock);
-    memory.appendEntry(tx, { sessionId: session.id, text: `syntheticcontext ${marker}`, capturedAt: now, timeZone: 'UTC',
+    const recorded = memory.appendEntry(tx, { sessionId: session.id, text: `syntheticcontext ${marker}`, capturedAt: now, timeZone: 'UTC',
       source: { label: 'synthetic fixture', provider: 'unit-test', accountId: 'synthetic', externalId: 'synthetic-entry', sourceTimestamp: now, availability: 'present', note: 'kind:fact' } }, clock);
+    // D3: a memory search is admitted by the route's classes, so a synthetic entry needs its label.
+    for (const subject of [{ kind: 'session', id: session.id }, { kind: 'entry', id: recorded.id }] as const) {
+      labels.correct(tx, { subject, expectedRevision: 0, dataClass: 'ordinary' }, now);
+    }
   });
   await f.emit({ type: 'inputTranscription', text: 'Find the syntheticcontext note.', finished: true, finalOrigin: 'provider' });
   assert.equal(calls, 2); assert.ok(outputs[0]?.includes(marker), 'the helper actually read the populated source');

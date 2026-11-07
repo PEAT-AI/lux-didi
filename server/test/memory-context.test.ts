@@ -16,6 +16,10 @@ import { Outbox } from '../runtime/outbox.js';
 import { createDomainPort } from '../domain/facade.js';
 import { chatMigrations, ChatError, type ChatConfig, type RunSnapshot } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
+import type { Transaction } from '../contracts/storage.js';
+import { hostTaskFactory } from '../tasks/host.js';
+import { FakeDelivery } from '../tasks/controller.js';
+import { resolveTaskModels } from '../config/tasks.js';
 import type { ModelPort, ModelRequest, ModelControl, ModelResult } from '../adapters/model/types.js';
 import { GeminiAdapter } from '../adapters/model/index.js';
 import { liveMigrations } from '../live/schema.js';
@@ -680,4 +684,94 @@ test('the resolver does not truncate active typed facts before authority and bud
   const records = f.store.transaction(tx => resolveLiveMemory(tx)).filter(record => record.memoryItem);
   assert.equal(records.length, ids.length);
   assert.ok(records.some(record => record.id === ids[200]), 'lower salience cannot exclude an active fact before the compiler sees it');
+});
+
+// --- M19 D6: the start-block read is indexed and batched ----------------------
+
+test('M19 D6: the resolver reads a 500-entry store in a bounded number of queries at equal output', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-resolve-'));
+  const store = new Store(dir, domainMigrations);
+  try {
+    store.transaction(tx => {
+      for (let i = 0; i < 500; i += 1) {
+        tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', [`s-${i}`, 'Synthetic', 1000 + i, 'UTC', 1000, 1000]);
+        tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?,?,1)', [`e-${i}`, `s-${i}`, 'user', `Synthetic note ${i}`, 2000 + i, 'UTC']);
+        tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', ['entry', `e-${i}`, 'ordinary', 'owner_review', 1000]);
+        tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', ['session', `s-${i}`, 'ordinary', 'owner_review', 1000]);
+      }
+      for (let i = 0; i < 3; i += 1) {
+        tx.run('INSERT INTO history_sessions VALUES (?,?,?,?,?)', [`src-${i}`, store.assistantId, 'private', 1, 1000]);
+        tx.run('INSERT INTO history_turns(live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?)',
+          [`src-${i}`, 1, 1, 'owner', `Synthetic turn ${i}`, 1000 + i]);
+      }
+      const turns = tx.all('SELECT id,live_session_id FROM history_turns ORDER BY live_session_id')
+        .map(row => [String(row['live_session_id']), Number(row['id'])] as const);
+      for (let i = 0; i < 40; i += 1) {
+        tx.run(`INSERT INTO memory_items
+            (id,kind,text,subject,valid_from,valid_until,event_at,event_tz,event_text,place,authority,status,superseded_by,salience,created_at,created_by,generation)
+            VALUES(?,'durable_fact',?,?,?,NULL,NULL,NULL,NULL,NULL,'derived','active',NULL,1,?,?,1)`,
+          [`m-${String(i).padStart(3, '0')}`, `Synthetic fact ${i}`, `subject ${String(i).padStart(2, '0')}`, 3000 + i, 3000 + i, 'dreaming:v1']);
+        // Three source sessions per item, each one already walked and remembered once per create.
+        for (const [session, turn] of turns) {
+          tx.run('INSERT INTO memory_sources(memory_id,session_id,turn_start_id,turn_end_id) VALUES(?,?,?,?)',
+            [`m-${String(i).padStart(3, '0')}`, session, turn, turn]);
+        }
+      }
+    });
+    const { seen, result: records } = store.transaction(outer => {
+      const counted = { queries: 0 };
+      const proxy: Transaction = {
+        run: (sql, params) => outer.run(sql, params),
+        get: (sql, params) => { counted.queries += 1; return outer.get(sql, params); },
+        all: (sql, params) => { counted.queries += 1; return outer.all(sql, params); },
+      };
+      return { seen: counted, result: resolveLiveMemory(proxy) };
+    });
+    const plain = records.filter(record => !record.memoryItem);
+    assert.equal(plain.length, 500);
+    assert.deepEqual(plain.map(record => record.id), Array.from({ length: 500 }, (_, i) => `e-${499 - i}`), 'capture order is unchanged');
+    assert.ok(plain.every(record => record.dataClass === 'ordinary'));
+    assert.deepEqual(plain.map(record => record.text).slice(0, 2), ['Synthetic note 499', 'Synthetic note 498']);
+    const typed = records.filter(record => record.memoryItem);
+    assert.deepEqual(typed.map(record => record.id), Array.from({ length: 40 }, (_, i) => `m-${String(i).padStart(3, '0')}`), 'subject order is unchanged');
+    assert.ok(typed.every(record => record.dataClass === 'private'), 'the most restrictive source class wins');
+    assert.deepEqual(typed[0]!.sourceSessionIds, ['src-0', 'src-1', 'src-2']);
+    // The pre-M19 resolver issued more than 500 statements on this same store: 48 batched entry
+    // reads, a statement per subject and item, then a walk per item source. The memo and the four
+    // batched reads make the count independent of the corpus.
+    assert.ok(seen.queries <= 30, `the resolver issues a bounded number of queries, issued ${seen.queries}`);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- M19 B1: the connected composition's helper search is route-filtered ------
+
+test('M19 B1: the connected task runtime withholds a narrower entry on a non-ordinary route', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-connected-'));
+  const store = new Store(dir, domainMigrations);
+  try {
+    store.transaction(tx => {
+      for (const [id, label] of [['e-ordinary', 'ordinary'], ['e-private', 'private'], ['e-sensitive', 'sensitive']] as const) {
+        tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', [`parent-${id}`, 'Synthetic', 1000, 'UTC', 1000, 1000]);
+        tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?,?,1)', [id, `parent-${id}`, 'user', `Synthetic keycard note ${label}`, 2000, 'UTC']);
+        tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', ['entry', id, label, 'owner_review', 1000]);
+        tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', ['session', `parent-${id}`, 'ordinary', 'owner_review', 1000]);
+      }
+    });
+    const search = async (dataClasses?: readonly ('ordinary' | 'private' | 'sensitive')[]) => {
+      // The same call server/host/connected.ts:34 makes, with its route's own set.
+      const factory = hostTaskFactory({
+        store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
+        bindings: () => [], executors: () => ({}), timeZone: 'UTC', effectCheck: async () => true,
+        ...(dataClasses === undefined ? {} : { dataClasses }),
+      });
+      const runtime = factory('synthetic-connected-session', new FakeDelivery());
+      const tool = runtime.registry.get('search_memory');
+      assert.ok(tool, 'the connected task runtime exposes search_memory');
+      const result = await tool.run({ query: 'keycard' }, {} as never, new AbortController().signal, false);
+      return JSON.parse(String(result.text)).hits.map((hit: { id: string }) => hit.id).sort();
+    };
+    assert.deepEqual(await search(['ordinary', 'private']), ['e-ordinary', 'e-private'], 'the narrower entry is withheld');
+    assert.deepEqual(await search(), ['e-ordinary'], 'a runtime with no route falls through to ordinary only, never every class');
+    assert.deepEqual(await search([]), [], 'a route with no class admits nothing');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

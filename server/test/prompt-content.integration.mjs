@@ -86,7 +86,7 @@ const fullLive = openAiInstructions(prompt.composeLiveSessionInstruction({ text:
   delegatedBackend: true, records: [], trustedChars: 60000 }).text);
 const excluded = JSON.parse(readFileSync(new URL('./fixtures/prompt-character-excluded.json', import.meta.url)));
 assert.equal(createHash('sha256').update(prompt.NAYA_CHARACTER).digest('hex'),
-  'bad845bb5b3f62d33cdfb0fadee1154919fe07b4c5e56658d5cbb205e318a2e9', 'release character contains only the authorized wording changes');
+  '75ef7d06b57faecefaead3f7427037059c22cd708e5687dd18dfe967e7fec15e', 'release character contains only the authorized wording changes');
 assert.notEqual(prompt.NAYA_CHARACTER, excluded.NAYA_CHARACTER);
 for (const system of [ownerText.system, fullLive, openAiInstructions(none.text)]) {
   assert.equal(system.split(prompt.NAYA_CHARACTER).length - 1, 1);
@@ -94,7 +94,7 @@ for (const system of [ownerText.system, fullLive, openAiInstructions(none.text)]
   assert.equal(system.includes(unknownRule), false);
 }
 // M3 (#908): the numeric short default is retired; the whole answer is spoken on a substantive ask.
-assert.match(fullLive, /never cut an answer short/);
+assert.match(fullLive, /not brevity/);
 assert.equal(fullLive.includes('thirty seconds'), false, 'no numeric duration default in the composed live instruction');
 assert.equal(fullLive.includes('two spoken numbers'), false, 'no numeric count of spoken numbers in the composed live instruction');
 
@@ -152,8 +152,8 @@ for (const retired of ['Actually, the bicycle is balancing itself only', 'See, t
   assert.equal(accented.text.includes(retired), false, `the live instruction never recites the retired example: ${retired}`);
 }
 
-assert.match(prompt.NAYA_LIVE_BASE, /Open from OPENING_FACTS/);
-assert.match(prompt.NAYA_LIVE_BASE, /Never open on a subject in exclude_topics/);
+assert.match(prompt.NAYA_LIVE_BASE, /Open from usable OPENING_FACTS/);
+assert.match(prompt.NAYA_LIVE_BASE, /Exclude exclude_topics from openings/);
 assert.doesNotMatch(prompt.NAYA_LIVE_BASE, /Pick one of these|Never invent beyond these options/);
 const openingFacts = prompt.buildOpeningFacts({ now: Date.UTC(2026, 10, 5), timeZone: 'UTC', familyNames: [], floorSubjects: [] });
 assert.match(openingFacts.section, /OPENING_FACTS/);

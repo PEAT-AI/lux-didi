@@ -250,4 +250,30 @@ export const domainMigrations: SchemaMigration[] = [
        END`,
     ],
   },
+  {
+    owner: 'domain', version: 11,
+    statements: [
+      // D6: the start block and the dependency walk were scanning what they could seek.
+      // `entries` had no index at all: the resolver sorts it by capture time.
+      `CREATE INDEX ix_entries_captured ON entries(captured_at DESC, id)`,
+      // The resolver reads every source session of an item by item id, not by session.
+      `CREATE INDEX ix_memory_sources_memory ON memory_sources(memory_id)`,
+      // The evidence walk follows this edge from a child session to its parents.
+      `CREATE INDEX ix_history_dependencies_parent ON history_dependencies(parent_session_id)`,
+      // D8: keyword memory recall over the whole entries table becomes an index lookup.
+      `CREATE VIRTUAL TABLE entries_fts USING fts5(text, content='entries', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2', prefix='2 3')`,
+      `CREATE TRIGGER entries_fts_insert AFTER INSERT ON entries BEGIN
+         INSERT INTO entries_fts(rowid, text) VALUES (new.rowid, new.text);
+       END`,
+      `CREATE TRIGGER entries_fts_delete AFTER DELETE ON entries BEGIN
+         INSERT INTO entries_fts(entries_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+       END`,
+      `CREATE TRIGGER entries_fts_update AFTER UPDATE ON entries BEGIN
+         INSERT INTO entries_fts(entries_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+         INSERT INTO entries_fts(rowid, text) VALUES (new.rowid, new.text);
+       END`,
+      // Existing rows predate the index; the rebuild reads the table once here.
+      `INSERT INTO entries_fts(entries_fts) VALUES('rebuild')`,
+    ],
+  },
 ];

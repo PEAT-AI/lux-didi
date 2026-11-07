@@ -12,15 +12,15 @@ export const CONTEXT_BUDGET = {
     runtime: { ceiling: 150, floor: 150 },
     calendar: { ceiling: 300, floor: 150 },
     people: { ceiling: 500, floor: 200 },
-    memory: { ceiling: 2_000, floor: 1_500 },
+    memory: { ceiling: 2_500, floor: 1_800 },
     pickup: { ceiling: 200, floor: 200 },
     openings: { ceiling: 250, floor: 100 },
   },
   memory: {
     now: { ceiling: 100, floor: 100 },
-    identity: { ceiling: 600, floor: 400 },
-    loops: { ceiling: 500, floor: 300 },
-    conversations: { ceiling: 800, floor: 700 },
+    identity: { ceiling: 800, floor: 500 },
+    loops: { ceiling: 600, floor: 350 },
+    conversations: { ceiling: 1_000, floor: 800 },
   },
 } as const;
 
@@ -29,6 +29,15 @@ export interface BudgetSelection {
   readonly text: string;
   readonly selectedIds: readonly string[];
   readonly omitted: readonly { readonly id: string; readonly reason: 'budget' }[];
+}
+
+/**
+ * The same acceptance test `selectWholeItems` applies, charged against an already selected part:
+ * chapter + separator + item, plus the leading separator it measures. Keeping it as arithmetic is
+ * what makes the memory-block accumulation linear in candidates.
+ */
+export function wholeItemFits(prefixChars: number, itemText: string, budget: number): boolean {
+  return Math.ceil((prefixChars + 4 + itemText.length) / ESTIMATED_CHARS_PER_TOKEN) <= budget;
 }
 
 /** Caller supplies ranked whole items. Headings and separators consume the same budget as content. */

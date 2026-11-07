@@ -1717,11 +1717,15 @@ test('SILENCE c: an audible frame stands the silent-continuation deadline down',
   assert.equal(silentContinuations(opened).length, 0, 'the response is answering, so nothing is stuck');
 });
 
-
-
-
-
-
+test('SILENCE #924/#802: the silent-continuation window is 1.5 seconds, not the old dead-air rung', async t => {
+  const opened = await continuation(t);
+  opened.clock.advance(1_400);
+  await quiet();
+  assert.equal(silentContinuations(opened).length, 0, '1.4 s of open silence is still inside the window');
+  opened.clock.advance(100);
+  await quiet();
+  assert.equal(silentContinuations(opened).length, 1, 'the report lands at 1.5 s, not at the 7 s or 8 s wait Rob hears');
+});
 
 
 

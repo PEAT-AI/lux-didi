@@ -647,7 +647,7 @@ const KNOWLEDGE_SCORE_LINE = /^\s*Score:/u;
 /** ROUTE-1022 K17: the hit count the digest states above its hits, so the coverage line is the server's. */
 const KNOWLEDGE_HIT_COUNT = /\b(\d{1,3})\s+(?:hits?|results?|insights?|entries|matches)\b/iu;
 function statedHitCount(raw: string): number | undefined {
-  const header = raw.split('\n').map(line => line.trim()).find(line => KNOWLEDGE_HEADER.test(line));
+  const header = raw.split('\n').map(line => line.trim()).find(line => line.length > 0);
   if (header === undefined) return undefined;
   const count = Number(KNOWLEDGE_HIT_COUNT.exec(header)?.[1] ?? Number.NaN);
   return Number.isSafeInteger(count) && count > 0 ? count : undefined;

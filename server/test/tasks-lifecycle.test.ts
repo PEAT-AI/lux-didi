@@ -4,10 +4,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runWorker, INFERENCE_DEADLINE_MS, type Infer, type Inference, type InferRequest, type WorkerResult } from '../tasks/worker.js';
 import { createRegistry, type TaskTool } from '../tasks/tools.js';
-import { FakeAuthority } from '../tasks/authority.js';
+import { Authority, FakeAuthority } from '../tasks/authority.js';
 import { documentResult } from '../tasks/results.js';
 import { TaskController, FakeDelivery, type Revision } from '../tasks/controller.js';
 import { projectTaskPayload } from '../tasks/connectors.js';
+import { TaskCall } from '../tasks/call.js';
+import { TaskRuntime } from '../tasks/runtime.js';
 
 test('worker concurrently dedupes identical reads and repairs unknown calls', async () => {
   let executed = 0; let inferred = 0;
@@ -371,4 +373,29 @@ test('#902: a completed calendar read with no events list is an honest empty, no
   const mail = projectTaskPayload('search_mail', envelope({ nothing: true }), {});
   assert.equal(mail.status, 'failed');
   assert.equal(mail.reason_code, 'invalid_result');
+});
+
+test('#1016: a correction that arrives during the wait answers his corrected words', async () => {
+  const pending = deferred<Inference>(); let runs = 0;
+  const sent: string[] = [];
+  const store = { saveTaskRevision: () => {}, saveTaskOperation: () => {}, saveTaskDelivery: () => {}, finishTask: () => true } as unknown as import('../runtime/store.js').Store;
+  const infer: Infer = async () => (++runs === 1 ? pending.promise : { text: 'Corrected synthetic answer.', calls: [] });
+  const call = new TaskCall({ provider: 'openai',
+    createRuntime: delivery => new TaskRuntime({ store, delivery, infer,
+      authority: new Authority({ checkEffect: async () => true, journal: { get: async () => undefined, put: async () => {} }, log: () => {} }),
+      execute: async () => { throw new Error('Unexpected connector I/O'); } }),
+    append: (_generation, _id, text) => { sent.push(text); return `c${sent.length}`; },
+    respond: () => 'sent',
+    state: () => {} });
+  call.socket(1);
+  try {
+    call.delegation('d1');
+    const old = call.input('First request', 1);
+    const correction = call.input('Correction', 2);
+    pending.resolve({ text: 'Stale synthetic answer.', calls: [] });
+    await Promise.all([old, correction]);
+    assert.equal(runs, 2, 'the hop finishes and re-hops once at the boundary with his latest words');
+    assert.match(sent.join(' '), /Corrected synthetic answer/);
+    assert.doesNotMatch(sent.join(' '), /Stale synthetic answer/, 'an answer to words he already revised never reaches the wire');
+  } finally { pending.resolve({ text: '', calls: [] }); call.close(); }
 });

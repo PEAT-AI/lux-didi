@@ -183,6 +183,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     // A revision is waiting for this hop's boundary: only a declared read still earns its cache.
     // Any other effect is fenced, because his words may already have replaced the request for it.
     if (waiting() && tool.effect !== 'none') return { id: call.id, name: call.name, result: failed('He kept talking while this action waited, so it was not run. Decide again from his latest words.', 'cancelled') };
+    // A progress note describes the work of the words it was written for, so it is dropped rather than
+    // spoken for a request he has already revised. Its effect is none, so the fence above cannot see it.
+    if (waiting() && tool.name === REPORT_PROGRESS_TOOL.name) return { id: call.id, name: call.name, result: failed('He kept talking, so this progress note was not spoken.', 'cancelled') };
     const key = canonical([tool.name, validation.args]);
     const operationId = randomUUID(), toolStart = clock.now();
     let cache: 'miss' | 'hit' | 'join' = 'miss';

@@ -85,8 +85,11 @@ test('a superseded inference cannot report progress', async t => {
   });
   const first = f.call.input('Synthetic old ask', 1);
   await started.promise;
-  await f.call.input('Synthetic revised ask', 1);
-  old.resolve({ text: '', calls: [progress] }); await first;
+  // A correction no longer aborts the running inference (#1016): it is recorded, and the hop's own
+  // provider answer is what releases both calls, so the revision's answer settles after this.
+  const second = f.call.input('Synthetic revised ask', 1);
+  old.resolve({ text: '', calls: [progress] });
+  await Promise.all([first, second]);
   assert.doesNotMatch(f.sent.map(item => item.text).join(' '), /Provisional/);
 });
 

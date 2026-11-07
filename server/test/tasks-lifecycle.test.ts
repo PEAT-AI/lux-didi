@@ -333,7 +333,7 @@ test('#901: the final composition draws from the same revision deadline and neve
     infer: async (request, signal): Promise<Inference> => {
       if (request.tools.length > 0) {
         hopSeen += 1;
-        if (hopSeen > 1) return { text: 'the read is done', calls: [] };
+        if (hopSeen > 1) return { text: '', calls: [] };
         // The hop spends 30 of the 36 s: only 6 s of the revision budget are left for the composition.
         clock.advance(30_000);
         return { text: '', calls: [{ id: '1', name: 'read_mail', args: { id: 'm', cursor: null } }] };

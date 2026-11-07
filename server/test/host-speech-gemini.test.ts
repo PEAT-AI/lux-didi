@@ -72,7 +72,10 @@ test('an adapter with no commentary channel announces the alarm opening through 
   assert.equal(commentaryCalls.length > 0, true, 'the host prefers the commentary channel it is offered');
   assert.ok(texts.length > 0, 'the note reaches an adapter that has no commentary channel');
   assert.match(texts.join('\n'), /\[alarm mode\]/, 'the opening names the alarm mode the voice must speak');
-  for (const text of texts) assert.ok(text.length <= 450, 'each host text stays inside the provider\'s command bound');
+  for (const text of texts) {
+    assert.ok(text.length <= 4000, 'each host text stays inside the provider text turn bound');
+    assert.doesNotMatch(text, /COMMENTARY/, 'an adapter with no commentary channel never receives the commentary envelope');
+  }
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800).fill(1), rate: 24_000, audible: true, rmsDbfs: -20 });
   await flush();
   assert.equal(events('alarm_announced').length, 1, 'her first audio after the opening announces the alarm');

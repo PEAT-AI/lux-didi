@@ -229,7 +229,9 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   const setup = f.frames.slice(setupStart).find(frame => frame.setup);
   assert.match(JSON.stringify(setup), /\[alarm mode\]/);
   assert.match(JSON.stringify(setup), /Synthetic Owner/);
-  assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup)), /Synthetic Owner/);
+  // FR4 (#928): the opening leaves the system prompt as its own host note, so the owner's display name it
+  // addresses them by travels in that one note; every other provider frame stays free of it.
+  assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup && !JSON.stringify(frame).includes('[alarm mode]'))), /Synthetic Owner/);
   // #928: the new session's opening announces at her first audio after it too, and only once.
   assert.equal(announcedCount(await alarmLog(), 'new_session'), 0, 'a new session installs the opening without announcing it');
   audibleTurn();

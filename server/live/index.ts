@@ -1483,9 +1483,11 @@ export class LiveSessionOwner {
   }
 
   #sendHostSpeech(handle: ActiveSession, text: string, point: string): number {
-    const items = text.length <= 450 ? [text] : commentaryItems({
+    // The commentary envelope is the OpenAI channel's format. An adapter with no such channel takes the plain
+    // note, and its text turn is bounded at 4000 characters, so a long note travels as plain slices.
+    const items = handle.session.sendSessionCommentary !== undefined && text.length > 450 ? commentaryItems({
       kind: 'result', exact: [], cause: point, what_failed: '', next_step: '', content: `${point} ${text}`,
-    });
+    }) : text.match(/[\s\S]{1,4000}/g) ?? [text];
     let sent = 0;
     for (const item of items) {
       if (!this.#sendHostNote(handle, item)) break;

@@ -1575,9 +1575,27 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
       })]);
       await started?.close();
     });
-    await generating;
-    elapsed = SUMMARY_START_SETTLE_BUDGET_MS;
-    t.mock.timers.tick(elapsed);
+    // #896 / CHECKS-R1: the boot pass this test waits on can itself wait on a timer, and the clock here is
+    // mocked, so awaiting the summary request before any tick waits for a timer only this test can advance.
+    // The wait therefore drives the clock: real macrotask turns first, so real I/O still wins, and a 100 ms
+    // virtual step only when the loop has genuinely stalled. The budget is the product's own 2 s start
+    // settle, so a boot that needs more than that fails here by name instead of timing the test out.
+    let requested = false;
+    void generating.then(() => { requested = true; });
+    while (!requested && elapsed < SUMMARY_START_SETTLE_BUDGET_MS) {
+      for (let turn = 0; turn < 20 && !requested; turn += 1) await new Promise<void>(resolve => setImmediate(resolve));
+      if (requested) break;
+      const step = Math.min(100, SUMMARY_START_SETTLE_BUDGET_MS - elapsed);
+      elapsed += step;
+      t.mock.timers.tick(step);
+    }
+    assert.ok(requested, `the start pass reached the summary request inside ${SUMMARY_START_SETTLE_BUDGET_MS} virtual ms`);
+    // The settle budget elapses in full, exactly as the single tick it replaces did, so the eight-second
+    // summary timer still lands 6 s after it.
+    if (elapsed < SUMMARY_START_SETTLE_BUDGET_MS) {
+      t.mock.timers.tick(SUMMARY_START_SETTLE_BUDGET_MS - elapsed);
+      elapsed = SUMMARY_START_SETTLE_BUDGET_MS;
+    }
     const host = await starting;
     let audio: WebSocket | undefined;
     try {

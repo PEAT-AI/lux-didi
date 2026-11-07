@@ -401,3 +401,35 @@ test('#1016: a correction that arrives during the wait answers his corrected wor
     assert.doesNotMatch(sent.join(' '), /Stale synthetic answer/, 'an answer to words he already revised never reaches the wire');
   } finally { pending.resolve({ text: '', calls: [] }); call.close(); }
 });
+
+test('#1016: the correction promise settles only with the answer it corrects, never before it', async () => {
+  const pending = deferred<Inference>(); let runs = 0;
+  const sent: string[] = [];
+  const store = { saveTaskRevision: () => {}, saveTaskOperation: () => {}, saveTaskDelivery: () => {}, finishTask: () => true } as unknown as import('../runtime/store.js').Store;
+  const infer: Infer = async () => (++runs === 1 ? pending.promise : { text: 'Corrected synthetic answer.', calls: [] });
+  const call = new TaskCall({ provider: 'openai',
+    createRuntime: delivery => new TaskRuntime({ store, delivery, infer,
+      authority: new Authority({ checkEffect: async () => true, journal: { get: async () => undefined, put: async () => {} }, log: () => {} }),
+      execute: async () => { throw new Error('Unexpected connector I/O'); } }),
+    append: (_generation, _id, text) => { sent.push(text); return `c${sent.length}`; },
+    respond: () => 'sent',
+    state: () => {} });
+  call.socket(1);
+  try {
+    call.delegation('d1');
+    const old = call.input('First request', 1);
+    // The boundary harness awaits the correction before it releases the running provider, so this
+    // ordering is part of the contract: the awaited call must not settle while the hop still runs.
+    let settled = false;
+    const correction = call.input('Correction', 2).then(value => { settled = true; return value; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false, 'a correction is answered by the hop, not before it');
+    assert.equal(runs, 1);
+    pending.resolve({ text: 'Stale synthetic answer.', calls: [] });
+    await Promise.all([old, correction]);
+    for (let index = 0; index < sent.length; index += 1) call.delivery.accepted(`c${index + 1}`);
+    assert.equal(runs, 2, 'the hop re-hops once at the boundary with his latest words');
+    assert.match(sent.join(' '), /Corrected synthetic answer/);
+    assert.doesNotMatch(sent.join(' '), /Stale synthetic answer/);
+  } finally { pending.resolve({ text: '', calls: [] }); call.close(); }
+});

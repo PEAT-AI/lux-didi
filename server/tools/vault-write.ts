@@ -16,7 +16,6 @@ export function validateVaultSave(args: unknown): args is { content: string } {
 }
 
 /** The one remote tool a vault write may ever call, and the only arguments it is given. */
-export const VAULT_REMOTE_TOOL = 'save_insight';
 export const VAULT_INSIGHT_TYPE = 'UNCATEGORIZED';
 export const VAULT_PROJECT = 'didi-voice';
 /** Spoken guidance, never a save claim. */
@@ -98,9 +97,9 @@ export type SaveCommand = { readonly content: string; readonly refers: boolean }
  * row is keyed by the stage, so a second settlement of the same stage inserts nothing and dispatches
  * nothing. Everything after this point is the one dictation path: claim, dispatch, settle.
  */
-export function authorizeComposedWrite(tx: Transaction, options: { liveSessionId: string; stageId: string; content: string; title: string; now: number; externalContextPresent?: boolean; payloadSha?: string }): VaultClaim {
+export function authorizeComposedWrite(tx: Transaction, options: { liveSessionId: string; stageId: string; content: string; title: string; now: number; externalContextPresent?: boolean; payloadSha?: string; operation?: string }): VaultClaim {
   tx.run('INSERT OR IGNORE INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    [randomUUID(), options.liveSessionId, options.stageId, VAULT_REMOTE_TOOL, options.content, vaultContentKey(options.content), options.title, 'authorized', options.now]);
+    [randomUUID(), options.liveSessionId, options.stageId, options.operation ?? LUX_TOOLS.create, options.content, vaultContentKey(options.content), options.title, 'authorized', options.now]);
   tx.run('UPDATE vault_writes SET external_context_present=?,candidate_digest=? WHERE live_session_id=? AND utterance_id=? AND state=\'authorized\'', [options.externalContextPresent ? 1 : 0, options.payloadSha ?? null, options.liveSessionId, options.stageId]);
   const row = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND utterance_id=?', [options.liveSessionId, options.stageId]);
   if (!row) return { state: 'settled', receipt: refusal('outcome_unknown') };
@@ -178,8 +177,11 @@ export class VaultWriter {
 
   /** Helper writes use persisted owner turns, never model claims of consent or session identity. */
   async writeTask(input: { sessionId: string; tool: 'vault_save' | 'vault_update'; args: Record<string, unknown> }): Promise<VaultWriteResult> {
-    const args = input.args, turnId = String(args.requested_turn_id ?? '');
+    const turnId = String(input.args.requested_turn_id ?? '');
     const refused = (reason: string): VaultWriteResult => ({ disposition: 'refused', reason });
+    const raw = input.args.payload;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return refused('payload must match the discovered write schema');
+    const payload = structuredClone(raw) as Record<string, unknown>;
     const turn = this.#store.transaction(tx => tx.get('SELECT id,role,text,at FROM history_turns WHERE live_session_id=? AND id=?', [input.sessionId, turnId]));
     if (!turn || turn.role !== 'owner') return refused('requested_turn_id must name a persisted owner turn in this call');
     const used = this.#helperTurns.get(input.sessionId) ?? new Set<string>();
@@ -187,26 +189,20 @@ export class VaultWriter {
     if (used.size >= 10) return refused('ten writes per call');
     if (!this.#transport.write) return refused('vault write transport unavailable');
     used.add(turnId); this.#helperTurns.set(input.sessionId, used);
-    const source = { source_kind: 'voice_call', source_ref: { app: 'didi-call', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString() } };
+    const tool = input.tool === 'vault_save' ? LUX_TOOLS.create : Object.hasOwn(payload, 'source_insight_id') ? LUX_TOOLS.link : Object.hasOwn(payload, 'verdict') ? LUX_TOOLS.feedback : LUX_TOOLS.update;
     const provenance = `\n\nProvenance: didi-call; speaker=owner; confidence=1; session=${input.sessionId}; requested_turn_id=${turnId}.`;
+    if (tool === LUX_TOOLS.create || tool === LUX_TOOLS.update) {
+      payload.source_kind = 'voice_call';
+      payload.source_ref = { app: 'didi-call', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString() };
+      if (typeof payload.content === 'string') payload.content += provenance;
+      if (tool === LUX_TOOLS.create) {
+        payload.idempotency_key = `${input.sessionId}:${turnId}:${turnId}`;
+        if (payload.quote === undefined) payload.quote = String(turn.text).slice(0, 600);
+      } else payload.revision_reason = provenance.trim();
+    }
     let receipt: VaultWriteResult;
-    try {
-      if (input.tool === 'vault_save') {
-        receipt = await this.#transport.write(LUX_TOOLS.create, { ...source, content: String(args.content) + provenance,
-          insight_title: args.title, insight_type: args.category, project: args.project ?? null,
-          quote: String(turn.text).slice(0, 600), idempotency_key: `${input.sessionId}:${turnId}:${turnId}`,
-          follow_up_state: args.follow_up_state ?? 'none' });
-      } else if (args.content != null || args.follow_up_state != null) {
-        receipt = await this.#transport.write(LUX_TOOLS.update, { ...source, insight_id: args.insight_id,
-          ...(args.content != null ? { content: String(args.content) + provenance } : {}),
-          ...(args.follow_up_state != null ? { follow_up_state: args.follow_up_state } : {}), revision_reason: provenance.trim() });
-      } else receipt = { disposition: 'updated', insight_id: Number(args.insight_id) };
-      const id = receipt.insight_id;
-      if (args.link_target != null && id && receipt.disposition !== 'refused' && receipt.disposition !== 'duplicate_of') {
-        const link = await this.#transport.write(LUX_TOOLS.link, { source_insight_id: id, target_insight_id: args.link_target, relation_type: 'PART_OF', provenance_source: 'TRANSCRIPT' });
-        receipt = { ...receipt, link };
-      }
-    } catch { receipt = refused('outcome_unknown'); }
+    try { receipt = await this.#transport.write(tool, payload); }
+    catch { receipt = refused('outcome_unknown'); }
     hostLogEvent({ event: 'vault_write', tool: input.tool, outcome: receipt.disposition ?? 'completed', insight_id_prefix: receipt.insight_id ? String(receipt.insight_id).slice(0, 8) : '' });
     return receipt;
   }

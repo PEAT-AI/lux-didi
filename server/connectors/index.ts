@@ -50,6 +50,7 @@ export interface ConnectorEvidence extends SourceDispatchEvidence {
 export type ConnectorResult = ConnectorEvidence | { state: 'refused' | 'unknown'; reason: string };
 
 export interface ConnectorReader {
+  discovery?(): readonly import('../adapters/mcp/port.js').ToolDefinition[];
   call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ConnectorResult>;
 }
 export interface ConnectorToolDeclaration {
@@ -265,29 +266,8 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
       config: { endpointId: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource, generation: policy.generation, includeSensitive: policy.sourcePolicy.unknownClass === 'sensitive' && policy.sourcePolicy.allowedClasses.includes('sensitive') && policy.route.allowedClasses.includes('sensitive'), ...policy.bounds },
     });
     return {
-      async call(tool, args, signal) {
-        // Ruling M21-R1: any other read the endpoint publishes is a lookup with its own arguments;
-        // only the two pinned reads take the connector's own validated shapes.
-        if (tool !== LUX_TOOLS.search && tool !== LUX_TOOLS.get) return await reader.lookup(tool, args, signal);
-        if (tool !== LUX_TOOLS.search) return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
-        // The declaration speaks the wire names; the reader takes the connector's own field names.
-        const search = args as {
-          query: string; limit: number; detail?: 'snippets' | 'bodies' | 'voice'; max_chars?: number; deadline_ms?: number;
-          project?: string; project_hint?: string; snippet_chars?: number; meeting_date_from?: string; meeting_date_to?: string; mode?: 'fast' | 'full';
-        };
-        return await reader.search({
-          query: search.query, limit: search.limit,
-          ...(search.detail === undefined ? {} : { detail: search.detail }),
-          ...(search.max_chars === undefined ? {} : { maxChars: search.max_chars }),
-          ...(search.deadline_ms === undefined ? {} : { deadlineMs: search.deadline_ms }),
-          ...(search.project === undefined ? {} : { project: search.project }),
-          ...(search.project_hint === undefined ? {} : { projectHint: search.project_hint }),
-          ...(search.snippet_chars === undefined ? {} : { snippetChars: search.snippet_chars }),
-          ...(search.meeting_date_from === undefined ? {} : { meetingDateFrom: search.meeting_date_from }),
-          ...(search.meeting_date_to === undefined ? {} : { meetingDateTo: search.meeting_date_to }),
-          ...(search.mode === undefined ? {} : { mode: search.mode }),
-        }, signal);
-      },
+      discovery: () => registry.visibleTools(policy.endpoint.id).filter(luxToolAdmitted),
+      call: (tool, args, signal) => reader.call(tool, args, signal),
     };
   },
   project(evidence, port, policy) {

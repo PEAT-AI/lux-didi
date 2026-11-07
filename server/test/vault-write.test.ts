@@ -1,3 +1,4 @@
+import { LUX_TOOLS } from '../connectors/lux-names.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
 import { Store } from '../runtime/store.js';
-import { VAULT_REMOTE_TOOL, VaultWriter, authorizeComposedWrite, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
+import { VaultWriter, authorizeComposedWrite, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
 
 const NOW = 1_700_000_000_000;
 const SESSION = 'live-vault-write';
@@ -139,7 +140,7 @@ test('a duplicate refusal is never reported as saved', async t => {
 });
 
 test('the write surface is one tool and no other remote name exists', async () => {
-  assert.equal(VAULT_REMOTE_TOOL, 'save_insight');
+  assert.equal('save_insight');
   for (const tool of LUX_KNOWLEDGE_TOOLS) assert.ok(!/^(save|delete|purge|update|link)_insight$/.test(tool));
   const client = await import('../adapters/lux-write/client.js');
   assert.deepEqual(Object.keys(client).sort(), ['createLuxWriteTransport', 'luxWriteEndpoint'],
@@ -292,7 +293,7 @@ test('C-LUXSAVE11 W12-R4: arbitrary transport phases cannot enter host.log', () 
 
 test('startup claims an authorized operation by its execution identity exactly once', async t => {
   const h = harness(t, 'http://127.0.0.1:1');
-  h.store.transaction(tx => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES ('restart-op',?,'restart',?,?,?,?, 'authorized',?)", [SESSION, VAULT_REMOTE_TOOL, NOTE, vaultContentKey(NOTE), NOTE, NOW]));
+  h.store.transaction(tx => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES ('restart-op',?,'restart',?,?,?,?, 'authorized',?)", [SESSION, NOTE, vaultContentKey(NOTE), NOTE, NOW]));
   const calls: string[] = [];
   const options = { store: h.store, now: () => NOW, log: () => {},
     transport: { save: async (args: { content: string }) => { calls.push(args.content); return { outcome: 'inserted' as const, insightId: 'restart-7' }; } } };

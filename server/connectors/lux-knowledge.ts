@@ -1,3 +1,4 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -140,6 +141,7 @@ export type LuxKnowledgeResult =
   | LuxKnowledgeUnknown;
 
 export interface LuxKnowledgeReader {
+  call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
   lookup(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
   search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
   get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
@@ -345,7 +347,21 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       : { state: result.state, ...evidence, requestedIds: [...requestedIds] };
   }
 
+  const validator = new AjvJsonSchemaValidator();
+  const call = async (tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult> => {
+    const denied = preflight(registry, settings, tool);
+    if (denied) return { state: 'refused', reason: denied };
+    const declaration = registry.visibleTools(settings.endpointId).find(item => item.name === tool);
+    if (!declaration || !luxToolAdmitted(declaration)) return { state: 'refused', reason: 'tool_missing_or_forbidden' };
+    const properties = declaration.inputSchema.properties as Record<string, unknown> | undefined;
+    if (Object.keys(args).some(key => !properties || !Object.hasOwn(properties, key))) return { state: 'refused', reason: 'unknown_wire_parameter' };
+    const wire = { ...args, ...(properties && Object.hasOwn(properties, 'include_sensitive') ? { include_sensitive: true } : {}) };
+    if (!validator.getValidator(declaration.inputSchema)(wire).valid) return { state: 'refused', reason: 'invalid_arguments' };
+    if (typeof wire.limit === 'number' && wire.limit > settings.maxSearchLimit) return { state: 'refused', reason: 'request_bound_exceeded' };
+    return dispatch(tool, wire, signal);
+  };
   return {
+    call,
     async lookup(tool, args, signal) {
       if (!validateKnowledgeLookup(tool, args, settings.maxSearchLimit)) return { state: 'refused', reason: 'invalid_arguments' };
       const denied = preflight(registry, settings, tool);

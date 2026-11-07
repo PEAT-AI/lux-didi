@@ -1,3 +1,4 @@
+import { LUX_TOOLS, luxWriteAdmitted } from '../connectors/lux-names.js';
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
@@ -170,6 +171,14 @@ function companySignInRepair(binding: BoundConnector): string {
 }
 /** Typed company steps preserve each endpoint's published schema and authoritative grants. */
 export function configuredCompanyTools(bindings: readonly BoundConnector[], catalogues: readonly PublishedCatalogue[] = []): Definition[] {
+  const discovered = bindings.filter(binding => binding.connector === 'lux-knowledge').flatMap(binding => (binding.reader.discovery?.() ?? []).filter(tool => binding.policy.toolNames.includes(tool.name)));
+  const unique = [...new Map(discovered.map(tool => [tool.name, tool])).values()];
+  const lux: Definition[] = unique.filter(tool => !luxWriteAdmitted(tool)).map(tool => ({ name: tool.name, description: tool.description ?? tool.name, fields: {}, parameters: tool.inputSchema, outside: true }));
+  const envelope = (payload: Record<string, unknown>): Record<string, unknown> => ({ type: 'object', properties: { requested_turn_id: { type: 'string', minLength: 1 }, payload }, required: ['requested_turn_id', 'payload'], additionalProperties: false });
+  const create = unique.find(tool => tool.name === LUX_TOOLS.create && luxWriteAdmitted(tool));
+  if (create) lux.push({ name: 'vault_save', description: `Save only when the owner asks or confirms. Name that owner turn. ${create.description ?? ''}`, fields: {}, parameters: envelope(create.inputSchema), outside: false });
+  const updates = unique.filter(tool => tool.name !== LUX_TOOLS.create && luxWriteAdmitted(tool));
+  if (updates.length) lux.push({ name: 'vault_update', description: 'Correct an insight, link to a hub or record search feedback only on an owner-requested turn. Use the discovered payload shape; say what changed.', fields: {}, parameters: envelope(updates.length === 1 ? updates[0]!.inputSchema : { oneOf: updates.map(tool => tool.inputSchema) }), outside: false });
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy).filter(item => nativeTaskReadGranted(binding.policy, item.name)));
   const typed = Object.entries(companySteps).flatMap<Definition>(([name, description]) => {
     const declaration = capabilities.find(item => item.name === name);
@@ -196,8 +205,8 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[], cata
   });
   // Explores and saved content are navigation only, never a route to compute or verify metrics.
   const navigation = capabilities.filter(item => ['search', 'read', 'list_companies', 'search_content', 'read_content', 'list_content', 'list_explores', 'get_metadata', 'list_verified_content'].includes(item.name));
-  if (!navigation.length) return typed;
-  return [...typed, { outside: true, name: 'query_company', description: 'Browse company records, explores and saved content with declared filters. Never use this to answer or check metrics: use ask_data_agent. Customer records belong to get_company; coverage belongs to check_data_capability.', fields: {
+  if (!navigation.length) return [...lux, ...typed];
+  return [...lux, ...typed, { outside: true, name: 'query_company', description: 'Browse company records, explores and saved content with declared filters. Never use this to answer or check metrics: use ask_data_agent. Customer records belong to get_company; coverage belongs to check_data_capability.', fields: {
     resource: { type: 'string', enum: [...new Set(navigation.map(item => item.name))] },
     filters: { anyOf: navigation.map(item => strictSchema(item.parameters)) },
   }, validate: args => navigation.some(item => item.name === args.resource && item.validate(args.filters)) }];
@@ -212,6 +221,13 @@ export function nativeTaskReadTool(name: string, connector: string, args?: Recor
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}, handoffsRemaining = 2): ToolPorts['execute'] {
   return async (name, args, signal, outsideTextSeen = false, identity) => {
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
+    const discovered = bindings.find(binding => binding.connector === 'lux-knowledge' && binding.policy.toolNames.includes(name) && binding.reader.discovery?.().some(tool => tool.name === name && !luxWriteAdmitted(tool)));
+    if (discovered) {
+      const result = await discovered.reader.call(name, args, signal);
+      if (result.state !== 'completed') return failed(`The vault refused ${name}: ${'reason' in result ? result.reason : result.state}. No fields were silently dropped.`);
+      return documentResult(typeof result.decodedResult === 'string' ? result.decodedResult : JSON.stringify(result.decodedResult), name);
+    }
+
     const mapping = mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.', 'upstream_error', 'not_configured');
     const candidates = bindings.filter(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool));

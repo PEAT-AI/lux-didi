@@ -15,7 +15,7 @@ const tools: ToolDefinition[] = [
   { name: 'search_knowledge', description: 'Synthetic search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, mode: { type: 'string' } }, required: ['query'] } },
   { name: 'get_insight', description: 'Synthetic by-id read', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } } }, required: ['ids'] } },
 ];
-const CONFIG: LuxKnowledgeConfig = { endpointId: 'vault', account: 'account-a', resource: 'resource-a', schemaDigest: '', generation: 1, maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200 };
+const CONFIG: LuxKnowledgeConfig = { endpointId: 'vault', account: 'account-a', resource: 'resource-a', generation: 1, maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200 };
 
 function vault() {
   const registry = new McpRegistry();
@@ -40,7 +40,7 @@ function vault() {
     whenSuspended: async () => {},
     close: async () => {},
   };
-  const reader = createLuxKnowledgeReader({ port, registry, config: { ...CONFIG, schemaDigest } });
+  const reader = createLuxKnowledgeReader({ port, registry, config: { ...CONFIG } });
   return { calls, reader };
 }
 

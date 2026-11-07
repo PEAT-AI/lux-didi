@@ -949,10 +949,10 @@ export async function composeMcpRuntime(options: {
         // M21: the trusted first-party endpoint is granted at the digest just observed, under the
         // generation this host advanced, never under the stored owner approval's digest.
         if (trustedFirstParty) {
-          registry.approve({ endpointId: stored.endpoint.id, schemaDigest: discovery.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name) || writes.includes(name)), effect: 'read' });
+          registry.approve({ endpointId: stored.endpoint.id, schemaDigest: discovery.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name) || writes.includes(name)), effect: stored.connector === 'lux-knowledge' ? 'read-write' : 'read' });
           return true;
         }
-        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name) || writes.includes(name)), effect: 'read' });
+        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name) || writes.includes(name)), effect: stored.connector === 'lux-knowledge' ? 'read-write' : 'read' });
         return true;
       });
       if (!published) {

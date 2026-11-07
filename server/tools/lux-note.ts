@@ -1,3 +1,4 @@
+import { LUX_TOOLS } from '../connectors/lux-names.js';
 import type { SchemaMigration } from '../contracts/storage.js';
 import { canonicalJSON, sha256 } from './canonical.js';
 
@@ -39,7 +40,7 @@ export function freezeNote(note: { readonly title: string; readonly body: string
     return { state: 'refused', code: 'too_long' };
   }
   const payload = canonicalJSON({ content: body, insight_title: title, insight_type: VAULT_TYPE, project: VAULT_PROJECT });
-  return { state: 'frozen', payload, payloadSha: sha256(payload) };
+  return { state: 'frozen', payload, payloadSha: sha256(`${LUX_TOOLS.create}\n${payload}`) };
 }
 
 export const luxNoteMigrations: readonly SchemaMigration[] = [{

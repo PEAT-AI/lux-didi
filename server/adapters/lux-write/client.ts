@@ -1,6 +1,6 @@
 import { LUX_TOOLS, LUX_WRITE_TOOLS } from '../../connectors/lux-names.js';
 import { hostLogEvent } from '../../tools/host-events.js';
-import { validInsightId, VAULT_REMOTE_TOOL, type VaultTransportPhase, type VaultSaveArgs, type VaultTransport, type VaultTransportResult, type VaultWriteResult } from '../../tools/vault-write.js';
+import { type VaultTransportPhase, type VaultSaveArgs, type VaultTransport, type VaultTransportResult, type VaultWriteResult } from '../../tools/vault-write.js';
 
 /** The local lux-knowledge MCP endpoint a vault write may reach, and nothing else. */
 export interface LuxWriteEndpoint { readonly url: string; readonly token?: string }
@@ -27,25 +27,6 @@ function parseMessage(text: string): unknown {
   for (const line of body.split('\n')) {
     const data = line.startsWith('data:') ? line.slice(5).trim() : '';
     if (data.startsWith('{')) { try { return JSON.parse(data); } catch { return undefined; } }
-  }
-  return undefined;
-}
-
-interface VaultPayload { action: string; insight_id?: unknown }
-function vaultPayload(result: unknown): VaultPayload | undefined {
-  if (!result || typeof result !== 'object') return undefined;
-  const value = result as { structuredContent?: unknown; content?: unknown; isError?: unknown };
-  if (value.isError === true) return undefined;
-  const candidates: unknown[] = [value.structuredContent];
-  if (Array.isArray(value.content)) {
-    for (const item of value.content) {
-      if (item && typeof item === 'object' && (item as { type?: unknown }).type === 'text') candidates.push(parseMessage(String((item as { text?: unknown }).text ?? '')));
-    }
-  }
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
-    const payload = candidate as Record<string, unknown>;
-    if (typeof payload['action'] === 'string') return { action: payload['action'], ...(payload['insight_id'] === undefined ? {} : { insight_id: payload['insight_id'] }) };
   }
   return undefined;
 }
@@ -119,7 +100,7 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
       if (!allowed) return undefined;
       if (!(await initialize())) return undefined;
       let call: { ok: boolean; json: unknown };
-      try { call = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'search_knowledge', arguments: { query: text, limit: 5 } } }); }
+      try { call = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: LUX_TOOLS.search, arguments: { query: text, limit: 5 } } }); }
       catch { return undefined; }
       if (!call.ok) return undefined;
       const bodies: string[] = [];
@@ -136,23 +117,10 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
       return closest;
     },
     async save(args: VaultSaveArgs): Promise<VaultTransportResult> {
-      if (!allowed || VAULT_REMOTE_TOOL !== 'save_insight') { phase('endpoint_rejected'); return { outcome: 'unavailable' }; }
-      if (!(await initialize())) return { outcome: 'unavailable' };
-      let call: { ok: boolean; json: unknown };
-      try {
-        call = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: VAULT_REMOTE_TOOL, arguments: { content: args.content, insight_title: args.title, insight_type: args.insightType, project: args.project } } });
-      } catch { phase('call_transport'); return { outcome: 'failed' }; }
-      if (!call.ok) { phase('call_http'); return { outcome: 'failed' }; }
-      if (!call.json || typeof call.json !== 'object' || 'error' in (call.json as Record<string, unknown>)) { phase('schema_rejected'); return { outcome: 'failed' }; }
-      const payload = vaultPayload((call.json as { result?: unknown }).result);
-      if (!payload) { phase('schema_rejected'); return { outcome: 'failed' }; }
-      // lux-knowledge returns an integer id; retain string ids from older transports.
-      const insightId = typeof payload.insight_id === 'number' && Number.isSafeInteger(payload.insight_id) && payload.insight_id > 0
-        ? String(payload.insight_id) : payload.insight_id;
-      if (payload.action === 'inserted' && validInsightId(insightId)) return { outcome: 'inserted', insightId };
-      if (payload.action === 'duplicate') return { outcome: 'duplicate' };
-      phase('schema_rejected');
-      return { outcome: 'failed' };
+      const receipt = await write(LUX_TOOLS.create, { content: args.content, insight_title: args.title, insight_type: args.insightType, project: args.project });
+      if (receipt.disposition === 'created' && Number.isSafeInteger(receipt.insight_id) && Number(receipt.insight_id) > 0) return { outcome: 'inserted', insightId: String(receipt.insight_id) };
+      if (receipt.disposition === 'duplicate_of') return { outcome: 'duplicate' };
+      return { outcome: receipt.reason === 'outcome_unknown' ? 'unknown' : receipt.reason === 'transport_unavailable' ? 'unavailable' : 'failed' };
     },
   };
 }

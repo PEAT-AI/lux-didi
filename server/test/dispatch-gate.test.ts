@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
 import { createDispatchOwner, SOURCE_TOOL_GATE } from '../tools/dispatch.js';
-import { CONNECTOR_ENVELOPES, connectorDescriptor } from '../connectors/index.js';
+import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { MATTERMOST_PERSON_TOOLS } from '../connectors/mattermost.js';
 import { sha256 } from '../tools/canonical.js';
 
@@ -99,9 +99,6 @@ test('every read tool a connector module publishes is in the capture gate list',
   assert.ok(connectors.length > 0, 'the connector modules publish read envelopes');
   for (const connector of connectors) {
     const published = CONNECTOR_ENVELOPES[connector]!;
-    // Ruling M21-R3: a connector with an admission hook is gated on the discovered catalogue, so it
-    // keeps no static entry and names no tool outside its own module.
-    if (connectorDescriptor(connector)?.admits) { assert.equal(SOURCE_TOOL_GATE[connector], undefined, `${connector} is gated by its hook`); continue; }
     const admitted = SOURCE_TOOL_GATE[connector] ?? [];
     assert.ok(admitted.length > 0, `${connector} publishes ${published.length} read tools but the capture gate has no list for it`);
     for (const tool of published) {

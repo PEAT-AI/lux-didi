@@ -64,7 +64,6 @@ const NAMED: Readonly<Record<string, Severity>> = {
   connector_retry: { level: 'info', cause: 'connector' },
   connector_envelope_widened: { level: 'info', cause: 'connector' },
   connector_endpoint_changed: { level: 'info', cause: 'connector' },
-  mcp_trusted_rediscovered: { level: 'info', cause: 'connector' },
   connector_approval_refused: { level: 'warn', cause: 'connector' },
 };
 

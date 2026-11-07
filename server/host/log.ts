@@ -109,8 +109,6 @@ const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', '
   // HTTP status is a bounded integer, never response text, a path or an account value.
   ...['tool_error', 'credential_revoked', 'rate_limited', 'unavailable'].flatMap(code => Array.from({ length: 200 }, (_, offset) => `server_${code}:http_${400 + offset}`))];
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
-/** M21: the first 12 hex characters of one discovery digest, so a digest line carries no schema. */
-const digestPrefix = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{12}$/.test(value);
 /**
  * #689: the live owner stamps a research event's callKey with `scopedTraceKey`, `call:` plus the 64 lowercase hex
  * of a sha256. That shape is closed, so it can carry no text and no provider id can imitate it; SAFE_ID stays as it
@@ -747,13 +745,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['endpointId', 'event', 'fields']) || !isSafeId(value.endpointId)) return;
     if (!isSafeMembers(value.fields, ['command', 'args', 'env']) || value.fields.length < 1) return;
     return { event: 'connector_endpoint_changed', endpointId: value.endpointId, fields: value.fields };
-  }
-  if (value.event === 'mcp_trusted_rediscovered') {
-    // M21: a trusted first-party endpoint came back at a new discovery digest. Prefixes only, so no
-    // schema, description or declaration can ride out of the endpoint that sent it.
-    if (!closedKeys(value, ['endpointId', 'event', 'observedDigest', 'previousDigest']) || !isSafeId(value.endpointId)) return;
-    if (!digestPrefix(value.previousDigest) || !digestPrefix(value.observedDigest)) return;
-    return { event: 'mcp_trusted_rediscovered', endpointId: value.endpointId, previousDigest: value.previousDigest, observedDigest: value.observedDigest };
   }
   if (value.event === 'connector_approval_refused') {
     // W2-R1: one closed refusal reason, so the install gate and an owner read which condition held.

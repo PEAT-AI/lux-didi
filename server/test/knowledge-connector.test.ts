@@ -20,19 +20,16 @@ import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeResult } fro
 import type { ConnectionPolicy } from '../tools/types.js';
 
 // Explicitly synthetic public protocol fixture: no real accounts, corpus or credentials.
-// M21-R2: LK5 declares every read tool with `readOnlyHint: true`, and that annotation is the whole
-// admission. Anything else the endpoint publishes is never callable.
 const searchTool: ToolDefinition = {
   name: 'search_knowledge', description: 'Synthetic search',
   inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query'] },
-  annotations: { readOnlyHint: true },
 };
 const getTool: ToolDefinition = {
   name: 'get_insight', description: 'Synthetic by-id read',
   inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids'] },
-  annotations: { readOnlyHint: true },
 };
-const writerTool: ToolDefinition = { name: 'save_insight', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } };
+// Advisory annotations must never become authority for this connector.
+const writerTool: ToolDefinition = { name: 'save_insight', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } };
 
 interface WireCall { name: unknown; arguments: unknown }
 interface FixtureOptions {
@@ -111,15 +108,15 @@ async function approve(adapter: McpPort, registry: McpRegistry, names?: readonly
   registry.approve({ endpointId: 'source', schemaDigest: discovery.schemaDigest, toolNames: names ?? discovery.tools.map(tool => tool.name).filter(name => LUX_KNOWLEDGE_TOOLS.includes(name as never)), effect: 'read', account: 'account-a', resource: 'resource-a', generation });
   return discovery;
 }
-function baseConfig(overrides: Partial<LuxKnowledgeConfig> = {}): LuxKnowledgeConfig {
+function baseConfig(schemaDigest: string, overrides: Partial<LuxKnowledgeConfig> = {}): LuxKnowledgeConfig {
   return {
-    endpointId: 'source', account: 'account-a', resource: 'resource-a', generation: 1,
+    endpointId: 'source', account: 'account-a', resource: 'resource-a', schemaDigest, generation: 1,
     maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200, ...overrides,
   };
 }
 async function readerFor(adapter: McpPort, registry: McpRegistry, overrides: Partial<LuxKnowledgeConfig> = {}, names?: readonly string[]) {
   const discovery = await approve(adapter, registry, names);
-  const config = baseConfig(overrides);
+  const config = baseConfig(discovery.schemaDigest, overrides);
   return { reader: createLuxKnowledgeReader({ port: adapter, registry, config }), config, discovery };
 }
 type CompletedEvidence = LuxKnowledgeEvidence & { state: 'completed' | 'tool-error' | 'protocol-error'; requestedIds?: readonly number[] };
@@ -399,7 +396,7 @@ test('no approved grant refuses before dispatch', async () => {
   registry.enable('source'); registry.allowEgress('source');
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
   try {
-    const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
+    const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig('0'.repeat(64)) });
     const result = await reader.search({ query: 'x', limit: 1 });
     assert.equal(result.state, 'refused');
     if (result.state !== 'refused') throw new Error('expected refusal');
@@ -408,14 +405,14 @@ test('no approved grant refuses before dispatch', async () => {
   } finally { await adapter.close(); await f.close(); }
 });
 
-test('a granted write tool is refused: readOnlyHint false is never callable', async () => {
+test('only the two read tools are eligible; a granted writer is refused despite readOnlyHint', async () => {
   const f = await fixture();
   const { adapter, registry } = setup(f.url);
   try {
     assert.equal(LUX_KNOWLEDGE_TOOLS.includes('save_insight' as never), false);
-    await approve(adapter, registry, ['search_knowledge', 'get_insight', 'save_insight']);
+    const discovery = await approve(adapter, registry, ['search_knowledge', 'get_insight', 'save_insight']);
     assert.deepEqual(adapter.visibleTools('source').map(tool => tool.name).sort(), ['get_insight', 'save_insight', 'search_knowledge']);
-    const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
+    const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig(discovery.schemaDigest) });
     const result = await reader.search({ query: 'x', limit: 1 });
     assert.equal(result.state, 'refused');
     if (result.state !== 'refused') throw new Error('expected refusal');
@@ -424,60 +421,22 @@ test('a granted write tool is refused: readOnlyHint false is never callable', as
   } finally { await adapter.close(); await f.close(); }
 });
 
-test('M21-R2: an annotated read tool is callable, an unannotated, destructive or write tool is not', async () => {
-  const widened: ToolDefinition = {
-    name: 'list_projects', inputSchema: { type: 'object', properties: { status: { type: 'string' } } },
-    annotations: { readOnlyHint: true },
-  };
-  const bare: ToolDefinition = { name: 'list_bare', inputSchema: { type: 'object' } };
-  const purge: ToolDefinition = {
-    name: 'purge_knowledge', inputSchema: { type: 'object' },
-    annotations: { readOnlyHint: true, destructiveHint: true },
-  };
-  const f = await fixture({ list: () => ({ tools: [searchTool, getTool, widened, bare, purge, writerTool] }) });
-  const { adapter, registry } = setup(f.url);
-  try {
-    // The host grants exactly the annotated reads, so the widened read is in the grant.
-    const discovery = await approve(adapter, registry, ['search_knowledge', 'get_insight', 'list_projects']);
-    assert.equal(discovery.state, 'discovered');
-    const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
-    const widenedRead = complete(await reader.lookup('list_projects', { status: 'active' }));
-    assert.equal(widenedRead.response.state, 'available');
-    assert.deepEqual(f.calls.map(call => call.name), ['list_projects'], 'the widened read reached the wire once');
-    assert.deepEqual(f.calls[0]?.arguments, { status: 'active' }, 'its own arguments, with no injected key');
-  } finally { await adapter.close(); await f.close(); }
-
-  // An unannotated tool, a destructive tool and a write tool are each refused, and none is dispatched.
-  for (const name of ['list_bare', 'purge_knowledge', 'save_insight']) {
-    const g = await fixture({ list: () => ({ tools: [searchTool, getTool, widened, bare, purge, writerTool] }) });
-    const { adapter, registry } = setup(g.url);
-    try {
-      await approve(adapter, registry, ['search_knowledge', 'get_insight', name]);
-      const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
-      const refused = await reader.lookup(name, {});
-      assert.equal(refused.state, 'refused', `${name} must be refused`);
-      if (refused.state !== 'refused') throw new Error('expected refusal');
-      assert.equal(refused.reason, 'ineligible-tool-granted', name);
-      assert.equal(g.calls.length, 0, `${name} never reached the wire`);
-    } finally { await adapter.close(); await g.close(); }
-  }
-});
-
-test('wrong scope or generation refuse before dispatch', async () => {
+test('schema drift and wrong scope or generation refuse before dispatch', async () => {
   const cases: [keyof LuxKnowledgeConfig, string][] = [
-    ['generation', 'grant-generation-mismatch'],
+    ['schemaDigest', 'schema-drift'], ['generation', 'grant-generation-mismatch'],
     ['account', 'grant-scope-mismatch'], ['resource', 'grant-scope-mismatch'],
   ];
   for (const [field, reason] of cases) {
     const f = await fixture();
     const { adapter, registry } = setup(f.url);
     try {
-      await approve(adapter, registry);
-      const config = baseConfig();
+      const discovery = await approve(adapter, registry);
+      const config = baseConfig(discovery.schemaDigest);
       const drifted: LuxKnowledgeConfig =
-        field === 'generation' ? { ...config, generation: 2 }
-          : field === 'account' ? { ...config, account: 'account-b' }
-            : { ...config, resource: 'resource-b' };
+        field === 'schemaDigest' ? { ...config, schemaDigest: 'f'.repeat(64) }
+          : field === 'generation' ? { ...config, generation: 2 }
+            : field === 'account' ? { ...config, account: 'account-b' }
+              : { ...config, resource: 'resource-b' };
       const reader = createLuxKnowledgeReader({ port: adapter, registry, config: drifted });
       const result = await reader.search({ query: 'x', limit: 1 });
       assert.equal(result.state, 'refused');
@@ -654,14 +613,14 @@ test('configured budgets must be positive finite safe integers at construction; 
   const f = await fixture();
   const { adapter, registry } = setup(f.url);
   try {
-    await approve(adapter, registry);
+    const digest = (await approve(adapter, registry)).schemaDigest;
     const invalid: Partial<LuxKnowledgeConfig>[] = [
       { maxSearchLimit: 0 }, { maxSearchLimit: -1 }, { maxSearchLimit: 1.5 },
       { maxSearchLimit: Number.POSITIVE_INFINITY }, { maxSearchLimit: Number.NaN },
       { maxGetIds: 0 }, { maxQueryChars: 0 }, { generation: 0 }, { generation: 1.5 },
     ];
     for (const override of invalid) {
-      assert.throws(() => createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig(override) }), /invalid-connector-config/);
+      assert.throws(() => createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig(digest, override) }), /invalid-connector-config/);
     }
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); await f.close(); }
@@ -671,8 +630,8 @@ test('budgets are captured stably at construction and never silently capped or d
   const f = await fixture();
   const { adapter, registry } = setup(f.url);
   try {
-    await approve(adapter, registry);
-    const config = baseConfig({ maxSearchLimit: 123_456_789 });
+    const digest = (await approve(adapter, registry)).schemaDigest;
+    const config = baseConfig(digest, { maxSearchLimit: 123_456_789 });
     const reader = createLuxKnowledgeReader({ port: adapter, registry, config });
     config.maxSearchLimit = 1; // later caller mutation must not change the captured budget
     const result = await reader.search({ query: 'x', limit: 123_456_789 });
@@ -810,9 +769,8 @@ function mcpEndpointFile(configDir: string, url: string, grantMode: 'explicit' |
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [entry] }), { mode: 0o600 });
 }
 
-test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux catalogue re-approves itself', async t => {
+test('owner-trusted-reads grants exactly the connector envelope; explicit grants nothing and writes stay unapproved', async t => {
   let catalog: ToolDefinition[] = [searchTool, getTool, writerTool];
-  const lifecycle: string[] = [];
   const explicitFixture = await fixture();
   const f = await fixture({ list: () => ({ tools: catalog }) });
   const dir = mkdtempSync(join(tmpdir(), 'didi-mcp-runtime-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -823,17 +781,14 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
     const explicitStore = new Store(join(dir, 'explicit-data'), toolsMigrations);
     const explicit = await composeMcpRuntime({ store: explicitStore, ownerId: explicitStore.assistantId, configDir, lookupAuthority: async () => null });
     try {
-      // M21: the trust is the endpoint, not the profile, so even an explicit-mode profile grants
-      // exactly the annotated reads this endpoint publishes, and never its write.
-      const explicitGrant = explicit.registry.currentGrant('source')!;
-      assert.deepEqual([...explicitGrant.toolNames].sort(), ['get_insight', 'search_knowledge']);
+      assert.equal(explicit.registry.currentGrant('source'), undefined);
       assert.equal(explicit.status().endpoints[0]!.state, 'connected');
-      assert.equal(explicit.status().endpoints[0]!.tools, 2);
+      assert.equal(explicit.status().endpoints[0]!.tools, 0);
     } finally { await explicit.close(); explicitStore.close(); }
 
     mcpEndpointFile(configDir, f.url, 'owner-trusted-reads');
     const trustedStore = new Store(join(dir, 'trusted-data'), toolsMigrations);
-    const trusted = await composeMcpRuntime({ store: trustedStore, ownerId: trustedStore.assistantId, configDir, lookupAuthority: async () => null, lifecycleLog: event => lifecycle.push('reason' in event ? String(event.event) + ':' + String(event.reason) : String(event.event)) });
+    const trusted = await composeMcpRuntime({ store: trustedStore, ownerId: trustedStore.assistantId, configDir, lookupAuthority: async () => null });
     try {
       const grant = trusted.registry.currentGrant('source')!;
       assert.deepEqual([...grant.toolNames].sort(), ['get_insight', 'search_knowledge']);
@@ -843,26 +798,13 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
       assert.equal(trusted.status().endpoints[0]!.tools, 2);
       // A changed remote catalog re-approves only the local envelope at the next generation.
       const before = grant.schemaDigest;
-      // M21: the next lux release changes descriptions and adds a read tool. No approve call runs.
-      catalog = [
-        { ...searchTool, description: 'Synthetic search, reworded by the next lux release' },
-        getTool, writerTool,
-        { name: 'list_topics', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
-      ];
+      catalog = [searchTool, getTool, writerTool, { name: 'list_topics', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }];
       await trusted.refresh();
-      assert.equal(trusted.status().endpoints[0]!.state, 'connected', JSON.stringify({ report: trusted.status().endpoints[0], lifecycle }));
       const after = trusted.registry.currentGrant('source')!;
       assert.notEqual(after.schemaDigest, before);
       assert.ok(after.generation > grant.generation);
-      assert.deepEqual([...after.toolNames].sort(), ['get_insight', 'list_topics', 'search_knowledge'], 'the annotated read joins the grant, the write never does');
-      assert.equal(after.toolNames.includes('save_insight'), false);
-      assert.match(after.schemaDigest, /^[0-9a-f]{64}$/u, 'the grant rides the digest just observed');
-      assert.deepEqual(lifecycle.filter(name => name === 'mcp_trusted_rediscovered'), ['mcp_trusted_rediscovered'], 'the rediscovery is logged once per digest change');
-      // The two pinned reads still dispatch after the change, with no operator approval in between.
-      const reader = createLuxKnowledgeReader({ port: trusted.port, registry: trusted.registry, config: { ...baseConfig(), generation: after.generation } });
-      assert.equal((await reader.search({ query: 'synthetic', limit: 1 })).state, 'completed');
-      assert.equal((await reader.get({ ids: [1] })).state, 'completed');
-      assert.deepEqual(f.calls.map(call => call.name), ['search_knowledge', 'get_insight']);
+      assert.deepEqual([...after.toolNames].sort(), ['get_insight', 'search_knowledge']);
+      assert.equal(after.toolNames.includes('list_topics'), false);
     } finally { await trusted.close(); trustedStore.close(); }
   } finally { await explicitFixture.close(); await f.close(); }
 });
@@ -879,7 +821,7 @@ test('an unavailable endpoint reports a sanitized error and a connector read is 
     // Failed discovery is status-only, never an owner-backed acceptance connection.
     assert.deepEqual(mcp.connectionIds(), []);
     assert.equal(mcp.registry.currentGrant('source'), undefined);
-    const reader = createLuxKnowledgeReader({ port: mcp.port, registry: mcp.registry, config: { endpointId: 'source', account: 'account-a', resource: 'resource-a', generation: 1, maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200 } });
+    const reader = createLuxKnowledgeReader({ port: mcp.port, registry: mcp.registry, config: { endpointId: 'source', account: 'account-a', resource: 'resource-a', schemaDigest: '0'.repeat(64), generation: 1, maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200 } });
     const result = await reader.search({ query: 'synthetic', limit: 1 });
     assert.equal(result.state, 'refused');
     assert.equal(Array.isArray(result), false);
@@ -913,7 +855,7 @@ test('MED-1022: the voice bound and the meeting day reach the wire, and a bad va
 
 
 test('reviewed meeting and list tools dispatch only bounded read-only filters with sensitivity', async () => {
-  const tools: ToolDefinition[] = ['list_meetings', 'get_meeting', 'list_insights'].map(name => ({ name, inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }));
+  const tools: ToolDefinition[] = ['list_meetings', 'get_meeting', 'list_insights'].map(name => ({ name, inputSchema: { type: 'object' } }));
   const f = await fixture({ list: () => ({ tools: [searchTool, getTool, ...tools, writerTool] }) });
   const { adapter, registry } = setup(f.url);
   try {

@@ -96,12 +96,7 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   const declaration = connectorDescriptor(p.connector);
   const writes = declaration?.writeEnvelope ?? [];
   const grantable = [...envelope, ...composed.map(tool => tool.name), ...writes];
-  // Ruling M21-R3: a connector with an admission hook grants the names that hook admits, so the
-  // policy is bounded by shape here and the hook decides read or write when the endpoint is discovered.
-  const shape = (name: unknown): boolean => typeof name === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name);
-  const named = declaration?.admits ? (name: unknown): boolean => shape(name) : (name: unknown): boolean => shape(name) && grantable.includes(name as string);
-  const listed = declaration?.admits ? 64 : grantable.length;
-  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > listed || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => !named(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
+  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > grantable.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !grantable.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
   if (composed.some(tool => p.toolNames.includes(tool.name) && !tool.requires.every(child => p.toolNames.includes(child)))) throw Error('invalid_read_tools');
   // The same closure for a write family: a write name is grantable only beside the read-only probe.
   if (writes.some(name => p.toolNames.includes(name)) && (declaration?.writeProbe === undefined || !p.toolNames.includes(declaration.writeProbe))) throw Error('invalid_read_tools');

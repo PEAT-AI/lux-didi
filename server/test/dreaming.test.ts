@@ -10,7 +10,8 @@ import { recordHistorySession } from '../dist/domain/history-lifecycle.js';
 import * as memory from '../dist/domain/memory-items.js';
 import { afterListenerServing } from '../dist/host/runtime.js';
 import {
-  buildDreamingInput, createDreaming, DREAMING_EXTRACTOR_VERSION, DREAMING_MAX_OPERATIONS, ownerCorrectionTurnIds,
+  buildDreamingInput, createDreaming, DREAMING_BACKLOG_LIMIT, DREAMING_EXTRACTOR_VERSION, DREAMING_MAX_ATTEMPTS,
+  DREAMING_MAX_OPERATIONS, ownerCorrectionTurnIds,
   parseExtraction,
   readDreamingSession, validateOperations, type Dreaming, type DreamingOptions,
 } from '../dist/services/dreaming.js';
@@ -329,6 +330,32 @@ test('a below-floor call does not spend the backlog limit', async () => {
     const backlog = logged.find(event => event.event === 'dreaming_backlog')!;
     assert.equal(backlog['sessionsSkipped'], 1, 'the thin call is reported without spending the limit');
     assert.equal(backlog['sessionsProcessed'], 1);
+  } finally { h.cleanup(); }
+});
+
+test('an exhausted job never takes a backlog slot from a fresh call', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-fresh', { endedAt: NOW - 20_000 });
+    const ids = seedTurns(h.store, 's-fresh', [['owner', 'I want to plan the winter trip properly'],
+      ['owner', 'Somewhere warm for ten days in January']]);
+    for (let index = 0; index < DREAMING_BACKLOG_LIMIT; index += 1) {
+      const id = `s-exhausted-${index}`;
+      seedSession(h.store, id, { endedAt: NOW - 1_000 + index });
+      seedTurns(h.store, id, [['owner', `A substantive owner turn number ${index} about the winter plan`],
+        ['owner', 'And a second turn so the call clears the substantive floor']]);
+      h.store.transaction(tx => {
+        for (let attempt = 0; attempt < DREAMING_MAX_ATTEMPTS; attempt += 1) {
+          memory.failJob(tx, memory.claimJob(tx, id, DREAMING_EXTRACTOR_VERSION, NOW).id, 'model_unavailable', NOW);
+        }
+      });
+    }
+    const model = new FakeModel(() => operations({ ...PLAN_OP, turn_start_id: ids[0], turn_end_id: ids[0] }));
+    const batch = await dreaming(h.store, model).backlogBatch(DREAMING_BACKLOG_LIMIT);
+    assert.equal(model.requests.length, 1, 'the one request goes to the fresh call, never to an exhausted job');
+    assert.equal(h.store.transaction(tx => memory.job(tx, 's-fresh', DREAMING_EXTRACTOR_VERSION))!.state, 'done');
+    assert.equal(batch.processed, 1);
+    assert.equal(batch.remaining, 0);
   } finally { h.cleanup(); }
 });
 

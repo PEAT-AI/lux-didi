@@ -90,7 +90,7 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
   if (options.realMcp) {
     // Same SDK endpoint/HTTP bridge as knowledge-connector.test.ts and mcp-config.test.ts.
     const sdk = new Server({ name: 'synthetic-knowledge', version: '1' }, { capabilities: { tools: {} } });
-    sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: { type: 'object' } }] }) as never);
+    sdk.setRequestHandler('tools/list', () => ({ tools: [{ name: 'search_knowledge', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }] }) as never);
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
     await sdk.connect(transport);
     const endpoint = createServer(async (req, res) => {

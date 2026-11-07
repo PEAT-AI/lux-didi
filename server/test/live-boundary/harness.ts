@@ -268,7 +268,8 @@ export async function historyScenario(words: string[]): Promise<void> {
   // Scripting by run index cannot see the boundary, so the second inference is the one that speaks.
   const f = fixture(async request => {
     runs += 1;
-    if (runs === 1) return wait.promise;
+    // Only a split ask has a boundary to wait for; one whole ask is answered by its first inference.
+    if (words.length > 1 && runs === 1) return wait.promise;
     const whole = words.every(word => request.input.includes(word));
     return { text: whole ? 'Combined synthetic answer.' : 'Stale fragment.', calls: [] };
   });

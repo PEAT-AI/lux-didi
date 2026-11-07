@@ -341,8 +341,8 @@ test('#924/#802: a silent continuation is nudged once with its gap, and never tw
   const nudges = rungReceipts(live);
   assert.equal(nudges.length, 1, 'one quiet nudge for one stuck continuation');
   assert.ok(Number(nudges[0]?.elapsedMs) >= 1_500, 'the record carries the measured gap the owner sat through');
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the nudge is one continuation input, never a rebuild');
-  assert.match(live.fake.texts.at(-1) ?? '', /lookup has finished/);
+  assert.equal(live.fake.taskAnswers.length, 1, 'the nudge is one continuation input, never a rebuild');
+  assert.match(live.fake.taskAnswers.at(-1)?.text ?? '', /lookup has finished/);
   await live.emit(silentContinuation());
   await live.advance(1_000);
   assert.equal(rungReceipts(live).length, 1, 'a second report in the same turn never nudges again');

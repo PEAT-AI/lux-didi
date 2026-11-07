@@ -381,8 +381,9 @@ export function createDreaming(options: DreamingOptions): Dreaming {
       validFrom: session.turns.find(turn => turn.id === operation.turnStartId)?.at ?? now, validUntil: body.validUntil,
       createdAt: now, createdBy: `dreaming:${DREAMING_EXTRACTOR_VERSION}`,
       sources: [{ sessionId: session.id, turnStartId: operation.turnStartId, turnEndId: operation.turnEndId }] });
-    if (operation.op === 'supersede') supersedeItem(tx, operation.oldId, created.id, now);
-    if (replaced === null || replaced.id === operation.oldId) return false;
+    const target = operation.op === 'supersede' ? operation.oldId : null;
+    if (target !== null) supersedeItem(tx, target, created.id, now);
+    if (replaced === null || replaced.id === target) return false;
     supersedeItem(tx, replaced.id, created.id, now);
     return true;
   }

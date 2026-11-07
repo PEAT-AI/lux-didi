@@ -173,6 +173,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const acknowledgment = (value: object): Output => ({ id: call.id, name: call.name, result: {
         status: 'ok', text: JSON.stringify(value), references: [], next_cursor: null, coverage: 'Host progress acknowledgment.', repair: null,
       } });
+      // A progress note describes the work of the words it was written for, so it is dropped rather than
+      // spoken for a request he has already revised. Its effect is none, so the effect fence cannot see it.
+      if (waiting()) return { id: call.id, name: call.name, result: failed('He kept talking, so this progress note was not spoken.', 'cancelled') };
       if (reported) return acknowledgment({ already_reported: true });
       const { findings: facts, still_checking } = validation.args as { findings: { text: string; source: string }[]; still_checking: string };
       const text = `Provisional, still checking ${still_checking}:\n${facts.map(fact => `${fact.text} [${fact.source}]`).join('\n')}`;
@@ -183,9 +186,6 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     // A revision is waiting for this hop's boundary: only a declared read still earns its cache.
     // Any other effect is fenced, because his words may already have replaced the request for it.
     if (waiting() && tool.effect !== 'none') return { id: call.id, name: call.name, result: failed('He kept talking while this action waited, so it was not run. Decide again from his latest words.', 'cancelled') };
-    // A progress note describes the work of the words it was written for, so it is dropped rather than
-    // spoken for a request he has already revised. Its effect is none, so the fence above cannot see it.
-    if (waiting() && tool.name === REPORT_PROGRESS_TOOL.name) return { id: call.id, name: call.name, result: failed('He kept talking, so this progress note was not spoken.', 'cancelled') };
     const key = canonical([tool.name, validation.args]);
     const operationId = randomUUID(), toolStart = clock.now();
     let cache: 'miss' | 'hit' | 'join' = 'miss';

@@ -16,7 +16,7 @@ import { createEffectRole, createModelPort, type RoleModels } from './model.js';
 import { documentResult, failed } from './results.js';
 import { TaskRuntime } from './runtime.js';
 import { canonical, type Infer } from './worker.js';
-import { calendarResponseStatus } from '../tools/calendar-rsvp.js';
+import { calendarResponseStatus, calendarRsvpRefusal } from '../tools/calendar-rsvp.js';
 export interface HostTaskOptions {
   now?: () => number;
   store: Store; credentials: Credentials; models: RoleModels;
@@ -115,7 +115,12 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
           const binding = bound.find(item => item.connector === 'google' && item.policy.toolNames.includes(write.tool));
           if (!binding) return failed('This Google write capability is not configured. Nothing was written.');
           const result = await binding.reader.call(write.tool, write.arguments, signal);
-          return result.state === 'completed' ? documentResult(JSON.stringify(result.decodedResult), name) : failed('The connector did not acknowledge this write. Report the unresolved outcome rather than retrying blindly.');
+          if (result.state === 'completed') return documentResult(JSON.stringify(result.decodedResult), name);
+          // F3': a helper refusal that names the absent invitation is a definite nothing-written answer, so the
+          // closed line reaches the model instead of an unresolved outcome. Every other cause keeps the generic one.
+          const invitation = calendarRsvpRefusal('reason' in result ? result.reason : undefined);
+          if (invitation !== undefined) return failed(invitation, 'invalid_argument');
+          return failed('The connector did not acknowledge this write. Report the unresolved outcome rather than retrying blindly.');
         }
         if (name === 'search_web' && options.web) {
           const result = await options.web.search({ query: String(args.query), signal, exposed: !!exposed });

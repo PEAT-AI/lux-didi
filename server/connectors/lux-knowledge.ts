@@ -2,6 +2,7 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/
 import { SOURCE_DISPATCH, type SourceDispatchEvidence, type CompletedResult, type McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import { LUX_FORBIDDEN_TOOLS, LUX_PARAMS, luxWriteAdmitted } from './lux-names.js';
+import { luxResultPayload } from './lux-receipt.js';
 export { LUX_TOOLS } from './lux-names.js';
 
 /** The owner's first-party endpoint follows its discovered schema without another approval round. */
@@ -86,12 +87,8 @@ export function createLuxKnowledgeReader({ port, registry, config }: LuxKnowledg
 export function renderLuxText(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const root = value as Record<string, unknown>;
-    if (Array.isArray(root.content)) {
-      const text = root.content.filter((part): part is { type: 'text'; text: string } => Boolean(part && typeof part === 'object' && (part as { type?: unknown }).type === 'text' && typeof (part as { text?: unknown }).text === 'string')).map(part => part.text);
-      if (text.length || root.structuredContent === undefined) return text.join('\n');
-    }
-    if (root.structuredContent !== undefined) return JSON.stringify(root.structuredContent);
+    const payload = luxResultPayload(value as Record<string, unknown>);
+    if (payload !== undefined) return typeof payload === 'string' ? payload : JSON.stringify(payload);
   }
   return JSON.stringify(value);
 }

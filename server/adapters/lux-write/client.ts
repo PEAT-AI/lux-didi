@@ -1,6 +1,7 @@
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { ToolDefinition } from '../mcp/port.js';
 import { LUX_TOOLS, LUX_PARAMS, LUX_FORBIDDEN_TOOLS, luxWriteAdmitted } from '../../connectors/lux-names.js';
+import { luxResultPayload } from '../../connectors/lux-receipt.js';
 import { hostLogEvent } from '../../tools/host-events.js';
 import type { VaultTransportPhase, VaultSaveArgs, VaultTransport, VaultTransportResult, VaultWriteResult } from '../../tools/vault-write.js';
 
@@ -25,11 +26,10 @@ function parseMessage(text: string, expectedId?: unknown): unknown {
   return undefined;
 }
 function record(value: unknown): Record<string, unknown> | undefined { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
+/** The receipt is the payload lux documents; FastMCP's wrap_result adds an envelope, never a second receipt. */
 function decoded(result: Record<string, unknown>): unknown {
-  if (result.structuredContent !== undefined) return result.structuredContent;
-  const content = Array.isArray(result.content) ? result.content : [];
-  const text = content.map(record).filter(item => item?.type === 'text').map(item => String(item!.text ?? '')).join('\n');
-  return parseMessage(text) ?? text;
+  const payload = luxResultPayload(result);
+  return typeof payload === 'string' ? parseMessage(payload) ?? payload : payload;
 }
 export interface LuxWriteTransport extends VaultTransport {
   write(tool: string, args: Record<string, unknown>, authorized?: () => boolean): Promise<VaultWriteResult>;

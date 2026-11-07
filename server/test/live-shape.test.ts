@@ -299,20 +299,26 @@ const SEARCH_MARKDOWN = [
   '_low confidence: results may not contain an answer, treat as leads_',
 ].join('\n');
 
-test('a markdown knowledge search never carries its header or retrieval metadata', () => {
+// F1: the digest's header and its retrieval line are lux's own words, so they reach the helper as
+// text. Nothing in them is parsed into a field, and the header still enters as text, not a heading.
+test('F1: a markdown knowledge search reaches the helper as text with its header', () => {
   const shaped = shapeLuxKnowledge('search_insights', SEARCH_MARKDOWN);
-  assert.equal(/Knowledge Search/.test(shaped.text), false, 'the search header is stripped');
-  assert.equal(/confidence|top score|relevant candidate|mode:/.test(shaped.text), false, 'the retrieval metadata line is stripped');
-  assert.equal(shaped.text.startsWith('#'), false, 'a tool result never starts with a markdown heading');
+  assert.match(shaped.text, /Knowledge Search: 'naya live answer card'/u, 'the header reaches the helper as text');
+  assert.match(shaped.text, /confidence: low/u, 'the retrieval line is lux\'s text, never a parsed field');
+  assert.match(shaped.text, /top score: 1\.01/u);
+  assert.match(shaped.text, /relevant candidate: yes/u);
+  assert.equal(/^#{1,2} /m.test(shaped.text), false, 'a rendered header never opens a markdown heading');
   assert.match(shaped.text, /#89817/, 'the hits and ids stay');
   assert.match(shaped.text, /Didi Live tool orchestration roadmap/);
 });
 
-test('a knowledge tool result never starts with an H1 or H2', () => {
-  const hits = [{ id: 1, insight_title: 'Insight 1', insight_type: 'PATTERN', updated_at: '2026-10-14', content: 'Body.' }];
+test('F1: a JSON search result with renamed fields reaches the helper intact as text', () => {
+  const hits = [{ record_ref: 1, label: 'Insight 1', kindword: 'PATTERN', changed_on: '2026-10-14', body_text: 'Body.' }];
   const shaped = shapeLuxKnowledge('search_insights', JSON.stringify({ results: hits }));
-  assert.equal(/^#{1,2} /m.test(shaped.text), false, 'no H1/H2 heading survives shaping');
-  assert.match(shaped.text, /### Insight 1 \(PATTERN \| 2026-10-14\) \[id 1\]/);
+  assert.equal(/^#{1,2} /m.test(shaped.text), false, 'no heading is synthesized from field names');
+  for (const value of ['record_ref', 'Insight 1', 'PATTERN', '2026-10-14', 'Body.']) {
+    assert.ok(shaped.text.includes(value), `${value} reaches the helper as text`);
+  }
 });
 
 test('R6: organizer renders, and a capped attendee list says and others', () => {
@@ -430,12 +436,14 @@ test('C-DEPTH11: an event whose source sent no attendee data says so, and never 
   assert.doesNotMatch(none.text, /hides|hidden|private/iu);
 });
 
-test('#6: the confidence line never reaches the model text but is carried for research', () => {
+test('F1: the ranker line is rendered as text, never parsed into a field', () => {
   const ok = shapeLuxKnowledge('search_insights', JSON.stringify({ results: [{ id: 1, insight_title: 'Release plan', insight_type: 'PATTERN', updated_at: '2026-10-14', content: 'Body.' }] }));
   assert.equal(ok.knowledgeConfidence, undefined, 'a JSON reply carries no ranker preamble to read');
   const marked = shapeLuxKnowledge('search_insights', '# Knowledge Search\n\n_confidence: low top score: 0.11 relevant candidate: no_\n\n- **#7** Release plan\nBody.');
-  assert.equal(/_confidence:/.test(marked.text), false, 'the preamble line stays out of the model text');
-  assert.deepEqual(marked.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' });
+  assert.match(marked.text, /confidence: low/u, 'the header words reach the helper as text');
+  assert.match(marked.text, /top score: 0\.11/u);
+  assert.match(marked.text, /relevant candidate: no/u);
+  assert.equal(marked.knowledgeConfidence, undefined, 'no ranker field is parsed out of the header');
 });
 
 test('#7: a long event title survives whole and the body is what the bound trims', () => {

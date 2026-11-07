@@ -831,7 +831,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
 
     mcpEndpointFile(configDir, f.url, 'owner-trusted-reads');
     const trustedStore = new Store(join(dir, 'trusted-data'), toolsMigrations);
-    const trusted = await composeMcpRuntime({ store: trustedStore, ownerId: trustedStore.assistantId, configDir, lookupAuthority: async () => null, lifecycleLog: event => lifecycle.push(event.event) });
+    const trusted = await composeMcpRuntime({ store: trustedStore, ownerId: trustedStore.assistantId, configDir, lookupAuthority: async () => null, lifecycleLog: event => lifecycle.push('reason' in event ? String(event.event) + ':' + String(event.reason) : String(event.event)) });
     try {
       const grant = trusted.registry.currentGrant('source')!;
       assert.deepEqual([...grant.toolNames].sort(), ['get_insight', 'search_knowledge']);
@@ -848,7 +848,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
         { name: 'list_topics', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
       ];
       await trusted.refresh();
-      assert.equal(trusted.status().endpoints[0]!.state, 'connected', JSON.stringify(trusted.status().endpoints[0]));
+      assert.equal(trusted.status().endpoints[0]!.state, 'connected', JSON.stringify({ report: trusted.status().endpoints[0], lifecycle }));
       const after = trusted.registry.currentGrant('source')!;
       assert.notEqual(after.schemaDigest, before);
       assert.ok(after.generation > grant.generation);

@@ -67,6 +67,8 @@ function liveValue(tx: Transaction, ownerId: string, id: string, eligibility: Hi
 const RECALL_FILLERS = new Set('a an the i you we she he it they me my your our did do does have has had was were is are be been what when where how why about talked talk said say told tell yesterday story transcript last time conversation conversations remember und oder der die das ein eine ich du wir ihr sie er es im in am an mit von zu auf haben hat hatten war waren ist sind was wie wann wo gestern erzähl erzählt gesagt besprochen'.split(' '));
 function recallTerms(query: string): string[] { return [...new Set(tokenize(query))].filter(term => term.length > 1 && !RECALL_FILLERS.has(term)); }
 /** Occurrences of a folded term, capped so one long call cannot bury a short one. */
+/** Total order over text, never the locale: `Array#sort` needs a stable, run-independent tiebreak. */
+function compareText(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 const OCCURRENCE_CAP = 4;
 function occurrences(folded: string, term: string): number {
   let count = 0, at = folded.indexOf(term);
@@ -303,7 +305,11 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
         .sort((a, b) => b.score - a.score
           || Number(b.value.ref.kind === 'live') - Number(a.value.ref.kind === 'live')
           || (a.value.ref.kind === 'live' && b.value.ref.kind === 'live' ? Number(a.value.metadata['recallRank']) - Number(b.value.metadata['recallRank']) : 0)
-          || b.value.date - a.value.date);
+          || b.value.date - a.value.date
+          // Never a random identifier: two calls that tie on score and on date are ordered by the call
+          // and record they name, so the five the cut keeps are a function of the call, not of an insert.
+          || compareText(String(a.value.metadata['sessionId'] ?? ''), String(b.value.metadata['sessionId'] ?? ''))
+          || compareText(a.value.ref.id, b.value.ref.id));
       // One slot per call: a turn hit and the summary of the same call are two views of one five-slot answer.
       const seenSessions = new Set<string>();
       const distinct = ranked.filter(({ value }) => {
@@ -313,7 +319,7 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
         seenSessions.add(session);
         return true;
       });
-      const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: distinct.map(row => row.value.ref), references: [], coverage, limit: Math.min(args.limit ?? 5, 5), snippets: ranked.map(row => String(row.value.metadata['recallExcerpt'] ?? row.value.text.slice(0, 550))) };
+      const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: distinct.map(row => row.value.ref), references: [], coverage, limit: Math.min(args.limit ?? 5, 5), snippets: distinct.map(row => String(row.value.metadata['recallExcerpt'] ?? row.value.text.slice(0, 550))) };
       snapshot.references = snapshot.sources.map((_, index) => token({ snapshot, index, offset: 0, detail: true }));
       position = { snapshot, index: 0, offset: 0, detail: false };
     }

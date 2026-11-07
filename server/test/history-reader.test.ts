@@ -90,6 +90,16 @@ function read(store: Store, query: string): string[] {
   return (result.response['hits'] as { sessionId: string }[]).map(hit => hit.sessionId);
 }
 
+function readHits(store: Store, query: string): Record<string, unknown>[] {
+  const reader = createHistoryReader(() => NOW + 10 * DAY);
+  const scope = {
+    ownerId: store.assistantId, runId: 'reader-test', routeIdentity: 'synthetic',
+    authorityEpoch: store.authorityEpoch, revision: 1, allowedClasses: ['ordinary' as DataClass],
+  };
+  const result = store.transaction(tx => reader.read(tx, scope, { query, limit: 5 }));
+  return result.response['hits'] as Record<string, unknown>[];
+}
+
 test('the ninth session in the pool survives the five-session cut when it is the one about the question', () => {
   const f = open();
   try {
@@ -120,5 +130,59 @@ test('a pool with no matching term still answers with the newest five calls in o
     assert.equal(hits.length, 5);
     // The five calls that carry turns are the newest by their own turn time, and keep that order.
     assert.deepEqual(hits, ['call-05', 'call-04', 'call-03', 'call-02', 'call-01'], 'no term to rank on keeps recency order');
+  } finally { f.cleanup(); }
+});
+
+test('every hit carries the excerpt of the call it names, even when one call arrives twice', () => {
+  const f = open();
+  try {
+    for (let index = 1; index <= 6; index += 1) {
+      const id = `call-0${index}`, at = NOW + index * DAY;
+      seedSession(f.store, id, at);
+      seedSummary(f.store, id, `Call ${index} covered the weather and the walk.`, at);
+      seedTurn(f.store, id, `I asked about the dentist again, call ${index}, and nothing moved.`, at);
+    }
+    // call-04's own summary says the word three times, so it outranks that call's turn hit and both views
+    // reach the top five. One call takes one slot, and the slot keeps the text of the call it names.
+    f.store.transaction(tx => tx.run('UPDATE conversation_summaries SET summary=? WHERE live_session_id=?',
+      ['Call 4: dentist on Thursday; the dentist said so; the dentist again.', 'call-04']));
+    f.store.transaction(tx => { backfillHistoryTurns(tx); });
+
+    const hits = readHits(f.store, 'when is the dentist');
+    assert.equal(hits.length, 5, 'the output shape stays five sessions');
+    assert.equal(new Set(hits.map(hit => hit['sessionId'])).size, 5, 'one slot per call');
+    for (const hit of hits) {
+      const session = String(hit['sessionId']), snippet = String(hit['snippet']);
+      const index = Number(session.slice('call-'.length));
+      const own = hit['sourceKind'] === 'summary' ? `Call ${index}` : `call ${index}`;
+      assert.ok(snippet.includes(own), `hit ${session} (${String(hit['sourceKind'])}) carries its own excerpt: ${snippet}`);
+    }
+  } finally { f.cleanup(); }
+});
+
+test('calls that tie on score and on date are cut by the call, never by the summary insert', () => {
+  const f = open();
+  try {
+    // Five calls share one ended_at, so the five-session cut falls inside that tie. Their summary ids run
+    // opposite to their call ids: a pool ordered by the summary id keeps call-05 and drops call-01, and the
+    // summary id is generated at insert time, so the answer would depend on an insert and not on the calls.
+    const tied = ['call-01', 'call-02', 'call-03', 'call-04', 'call-05'];
+    for (const [index, id] of tied.entries()) {
+      seedSession(f.store, id, NOW + index * DAY);
+      seedSummary(f.store, id, `Call ${index + 1} covered the weather and the walk.`, NOW + 3 * DAY);
+      seedTurn(f.store, id, 'Mm hm, right.', NOW + index * DAY);
+      f.store.transaction(tx => tx.run('UPDATE conversation_summaries SET id=? WHERE live_session_id=?',
+        [`zz-${tied.length - index}`, id]));
+    }
+    seedSession(f.store, 'call-09', NOW + 4 * DAY);
+    seedSummary(f.store, 'call-09', 'Call 9 covered the weather and the walk.', NOW + 4 * DAY);
+    seedSession(f.store, 'call-08', NOW);
+    seedSummary(f.store, 'call-08', 'Call 8 covered the weather and the walk.', NOW + 1 * DAY);
+    f.store.transaction(tx => { backfillHistoryTurns(tx); });
+
+    const hits = read(f.store, 'the weather');
+    assert.deepEqual(hits, ['call-09', 'call-01', 'call-02', 'call-03', 'call-04'],
+      `the oldest of the tied calls keeps its slot: ${hits.join(',')}`);
+    assert.deepEqual(read(f.store, 'the weather'), hits, 'the same store answers the same question the same way');
   } finally { f.cleanup(); }
 });

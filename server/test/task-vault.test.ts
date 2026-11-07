@@ -16,9 +16,9 @@ for (const { approved, outcome } of [{ approved: false, outcome: 'inserted' }, {
   let runtime: TaskRuntime | undefined;
   t.after(() => { try { runtime?.close(); } finally { store.close(); rmSync(directory, { recursive: true, force: true }); } });
   let saves = 0;
-  const vault = new VaultWriter({ store, now: () => 1000, log: () => {}, transport: { save: async () => { saves++; return outcome === 'unknown' ? { outcome: 'unknown' } : { outcome: 'inserted', insightId: 'synthetic-insight' }; } } });
+  const vault = new VaultWriter({ store, now: () => 1000, log: () => {}, transport: { save: async () => { throw Error('Unexpected legacy save transport'); }, write: async () => { saves++; return outcome === 'unknown' ? { disposition: 'refused', reason: 'outcome_unknown' } : { disposition: 'created', insight_id: 7 }; } } });
   // The discovered lux write the host projects as vault_save, and the owner turn the write must name.
-  const createBinding = { connector: 'lux-knowledge', policy: { toolNames: ['create_insight'], endpoint: { account: 'synthetic-account', resource: 'lux-knowledge:vault' } },
+  const createBinding = { connector: 'lux-knowledge', policy: { bounds: { maxEntityBytes: 65536 }, toolNames: ['create_insight'], endpoint: { account: 'synthetic-account', resource: 'lux-knowledge:vault' } },
     reader: { discovery: () => [{ name: 'create_insight', description: 'Create an insight the owner asked for.', annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
       inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } } }],
       call: async () => ({ state: 'completed', decodedResult: { insight_id: 7, disposition: 'created' } }) } } as unknown as import('../tasks/connectors.js').BoundConnector;

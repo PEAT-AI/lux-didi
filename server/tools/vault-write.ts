@@ -179,7 +179,7 @@ export class VaultWriter {
   async writeTask(input: {
     sessionId: string; tool: 'vault_save' | 'vault_update'; operation: string;
     inputSchema: Record<string, unknown>; maxPayloadBytes: number; authorized: () => boolean;
-    args: Record<string, unknown>;
+    args: Record<string, unknown>; externalContextPresent?: boolean;
   }): Promise<VaultWriteResult> {
     const emit = (receipt: VaultWriteResult): VaultWriteResult => {
       this.#log({ event: 'vault_write', tool: (LUX_WRITE_TOOLS as readonly string[]).includes(input.operation) ? input.operation : input.tool,
@@ -222,7 +222,7 @@ export class VaultWriter {
       if (!this.#validator.getValidator(input.inputSchema)(payload).valid) return { refused: refuse('invalid_arguments_after_host_provenance') };
       const content = JSON.stringify(payload);
       if (Buffer.byteLength(content, 'utf8') > input.maxPayloadBytes) return { refused: refuse('request_bound_exceeded') };
-      const claim = authorizeComposedWrite(tx, { liveSessionId: input.sessionId, stageId, operation: input.operation, content, title: input.operation, now: this.#now() });
+      const claim = authorizeComposedWrite(tx, { liveSessionId: input.sessionId, stageId, operation: input.operation, content, title: input.operation, now: this.#now(), externalContextPresent: input.externalContextPresent });
       return { claim };
     });
     if (!authorized.claim) return emit(authorized.refused!);

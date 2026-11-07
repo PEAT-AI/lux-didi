@@ -98,7 +98,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
             && binding.policy.connectionId === selected.binding.policy.connectionId && binding.policy.generation === selected.binding.policy.generation
             && binding.policy.toolNames.includes(selected.tool.name) && binding.reader.discovery?.().some(tool => tool.name === selected.tool.name && luxWriteAdmitted(tool)));
           const write = options.vault.writeTask({ sessionId, tool: name, operation: selected.tool.name,
-            inputSchema: selected.tool.inputSchema, maxPayloadBytes: selected.binding.policy.bounds.maxEntityBytes, authorized, args })
+            inputSchema: selected.tool.inputSchema, maxPayloadBytes: selected.binding.policy.bounds.maxEntityBytes, authorized, args, externalContextPresent: exposed ?? false })
             .then(receipt => documentResult(JSON.stringify(receipt), 'vault-receipt'));
           // Cancellation stops waiting, not a write that may already have reached lux.
           let onAbort: (() => void) | undefined;

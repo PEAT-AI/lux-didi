@@ -1530,7 +1530,9 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
           VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,1,'ended',?,?,?,?,?)`,
           ['s-interrupted', seed.assistantId, seed.authorityEpoch, 'key-s-interrupted', 'fp-s-interrupted', 'client', 'audit',
             'profile', 'prompt', 'terminal', JSON.stringify({ state: 'closed', code: 'normal' }), endedAt, endedAt, endedAt, null]);
-        for (const text of ['one', 'two']) {
+        // The distiller skips a call with no substantive owner turn, so the interrupted session carries real
+        // words: a transcript of small talk is skipped as too_few_turns and never reaches the model at all.
+        for (const text of ['the owner saved a synthetic note', 'and read it back']) {
           tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
             ['s-interrupted', 'inputTranscription', text, text.length, endedAt]);
         }
@@ -1611,7 +1613,7 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
     }
     // Real time only, for the real I/O the released boot now does; it ends as soon as the model is reached,
     // and the bound exists so a boot that never gets there fails by name instead of timing the test out.
-    for (const until = Date.now() + 15_000; !requested && Date.now() < until;) {
+    for (const until = Date.now() + 6_000; !requested && Date.now() < until;) {
       await new Promise<void>(resolve => realSetTimeout(resolve, 5));
     }
     assert.ok(requested, `the start pass reached the summary request inside ${SUMMARY_START_SETTLE_BUDGET_MS} virtual ms`);

@@ -4,6 +4,7 @@ import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
 import { createLuxKnowledgeReader, luxToolAdmitted } from './lux-knowledge.js';
+import { luxWriteAdmitted } from './lux-names.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { GOOGLE_FAMILIES, GOOGLE_HELPER_FAMILY, createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
@@ -193,7 +194,11 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
       config: { endpointId: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource, generation: policy.generation, ...policy.bounds },
     });
     return {
-      discovery: () => registry.visibleTools(policy.endpoint.id).filter(luxToolAdmitted),
+      discovery: () => {
+        const grant = registry.currentGrant(policy.endpoint.id);
+        if (!grant || grant.generation !== policy.generation || grant.account !== policy.endpoint.account || grant.resource !== policy.endpoint.resource) return [];
+        return registry.visibleTools(policy.endpoint.id).filter(tool => luxToolAdmitted(tool) && (!luxWriteAdmitted(tool) || grant.effect === 'read-write'));
+      },
       call: (tool, args, signal) => reader.call(tool, args, signal),
     };
   },

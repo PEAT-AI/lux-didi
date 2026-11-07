@@ -55,7 +55,7 @@ export interface VaultWriteResult {
   [key: string]: unknown;
 }
 export interface VaultTransport {
-  write?(tool: string, args: Record<string, unknown>): Promise<VaultWriteResult>;
+  write?(tool: string, args: Record<string, unknown>, authorized?: () => boolean): Promise<VaultWriteResult>;
   save(args: VaultSaveArgs): Promise<VaultTransportResult>;
   backoff?(milliseconds: number): Promise<void>;
 }

@@ -12,7 +12,7 @@ export function luxWriteAdmitted(tool: { name: string; description?: string; ann
   if (!tool.annotations || typeof tool.annotations !== 'object' || Array.isArray(tool.annotations)) return false;
   const hints = tool.annotations as Record<string, unknown>;
   if (hints.readOnlyHint !== false || hints.destructiveHint !== false) return false;
-  return (hints.idempotentHint === true || /\b(create|store|update|correct|link|feedback)\b/i.test(tool.description ?? ''));
+  return true;
 }
 
 /** Only names the host itself must populate, inspect or bound. Other fields pass through untouched. */

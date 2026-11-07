@@ -207,7 +207,7 @@ export class VaultWriter {
       if (input.operation === LUX_TOOLS.create || input.operation === LUX_TOOLS.update) {
         if (!Object.hasOwn(properties, P.sourceKind) || !Object.hasOwn(properties, P.sourceRef)) return { refused: refuse('provenance_schema_missing') };
         payload[P.sourceKind] = 'voice_call';
-        payload[P.sourceRef] = { app: 'lux-didi', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString() };
+        payload[P.sourceRef] = { app: 'lux-didi', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString(), speaker: turn.role };
         if (typeof payload[P.content] === 'string') payload[P.content] = String(payload[P.content]) + provenance;
         if (input.operation === LUX_TOOLS.create) {
           if (!Object.hasOwn(properties, P.idempotencyKey)) return { refused: refuse('idempotency_schema_missing') };

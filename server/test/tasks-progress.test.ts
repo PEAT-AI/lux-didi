@@ -133,7 +133,7 @@ test('expired revision returns held findings without starting a final inference 
   assert.ok(clock.now() <= 38000);
 });
 
-test('reads finishing at 30 seconds leave at most eight seconds for final composition', async () => {
+test('reads finishing at 30 seconds leave only the last six seconds for final composition', async () => {
   const clock = fakeClock(), composing = deferred(); let asks = 0;
   const tool = reader(async () => { clock.advance(10000); return syntheticResult(); });
   const pending = runWorker({ registry: new Map([[tool.name, tool]]), identity, input: 'Synthetic remaining budget', signal: new AbortController().signal, clock,
@@ -143,12 +143,12 @@ test('reads finishing at 30 seconds leave at most eight seconds for final compos
       return { text: '', calls: [{ id: `r${asks}`, name: tool.name, args: { id: String(asks) } }] };
     } });
   await composing.promise;
-  assert.ok(clock.remaining().includes(8000));
+  assert.ok(clock.remaining().includes(6000));
   assert.ok(!clock.remaining().includes(24000));
-  clock.advance(8000);
+  clock.advance(6000);
   const result = await pending;
   assert.equal(result.status, 'incomplete'); assert.equal(result.failure?.reason_code, 'deadline');
-  assert.equal(clock.now(), 38000);
+  assert.equal(clock.now(), 36000);
 });
 
 test('final waits behind an unaccepted progress envelope and then delivers as result', () => {

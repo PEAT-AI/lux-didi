@@ -115,7 +115,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     // #901: the final composition draws from the same revision deadline, so a slow hop can never spend
     // the whole budget here and still reach the voice: whatever is left of the 36 s is all it gets.
     const remaining = REVISION_DEADLINE_MS - Math.max(0, clock.now() - anchor);
-    if (revisionExpired || expired || remaining <= 0) { expired = true; return incomplete(); }
+    if (revisionExpired || remaining <= 0) { expired = true; return incomplete(); }
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
     if (!findings.length) return incomplete();
     const finalAbort = new AbortController();

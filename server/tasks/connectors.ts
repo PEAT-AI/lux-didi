@@ -158,15 +158,21 @@ function companySignInRepair(binding: BoundConnector): string {
   return `The Mongoose ${endpoint === 'crm' ? 'CRM' : endpoint ?? 'company'} endpoint is unavailable. Sign-in is needed for that endpoint in Settings.`;
 }
 /** Typed company steps preserve each endpoint's published schema and authoritative grants. */
+/** Host wrapper identity follows the granted mutation capability, never a read-name allowlist. */
+export function luxWriteHelper(tool: string): string | undefined {
+  if (tool === LUX_TOOLS.create) return 'vault_save';
+  if ((LUX_WRITE_TOOLS as readonly string[]).includes(tool)) return 'vault_update';
+  return undefined;
+}
 export function configuredCompanyTools(bindings: readonly BoundConnector[], catalogues: readonly PublishedCatalogue[] = []): Definition[] {
   const discovered = bindings.filter(binding => binding.connector === 'lux-knowledge').flatMap(binding => (binding.reader.discovery?.() ?? []).filter(tool => binding.policy.toolNames.includes(tool.name)));
   const unique = [...new Map(discovered.map(tool => [tool.name, tool])).values()];
   const lux: Definition[] = unique.filter(tool => !luxWriteAdmitted(tool)).map(tool => ({ name: tool.name, description: tool.description ?? tool.name, fields: {}, parameters: tool.inputSchema, outside: true }));
   const envelope = (payload: Record<string, unknown>): Record<string, unknown> => ({ type: 'object', properties: { requested_turn_id: { type: 'string', minLength: 1 }, payload }, required: ['requested_turn_id', 'payload'], additionalProperties: false });
   const create = unique.find(tool => tool.name === LUX_TOOLS.create && luxWriteAdmitted(tool));
-  if (create) lux.push({ name: 'vault_save', description: `Save only when the owner asks or confirms. Name that owner turn. ${create.description ?? ''}`, fields: {}, parameters: envelope(create.inputSchema), outside: false });
+  if (create) lux.push({ name: luxWriteHelper(create.name)!, description: `Save only when the owner asks or confirms. Name that owner turn. ${create.description ?? ''}`, fields: {}, parameters: envelope(create.inputSchema), outside: false });
   const updates = unique.filter(tool => tool.name !== LUX_TOOLS.create && (LUX_WRITE_TOOLS as readonly string[]).includes(tool.name) && luxWriteAdmitted(tool));
-  if (updates.length) lux.push({ name: 'vault_update', description: 'Correct an insight, link to a hub or record search feedback only on an owner-requested turn. Use the discovered payload shape; say what changed.', fields: {}, parameters: envelope(updates.length === 1 ? updates[0]!.inputSchema : { oneOf: updates.map(tool => tool.inputSchema) }), outside: false });
+  if (updates.length) lux.push({ name: luxWriteHelper(updates[0]!.name)!, description: 'Correct an insight, link to a hub or record search feedback only on an owner-requested turn. Use the discovered payload shape; say what changed.', fields: {}, parameters: envelope(updates.length === 1 ? updates[0]!.inputSchema : { oneOf: updates.map(tool => tool.inputSchema) }), outside: false });
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy).filter(item => nativeTaskReadGranted(binding.policy, item.name)));
   const typed = Object.entries(companySteps).flatMap<Definition>(([name, description]) => {
     const declaration = capabilities.find(item => item.name === name);

@@ -6,21 +6,28 @@ import { attachHostLogSink } from '../tools/host-events.js';
 import { commentaryPart } from './commentary-test.js';
 import { safeEvent } from '../host/log.js';
 
-// Reject host notes accidentally becoming typed owner turns. These structural checks
-// complement the adapter wire tests below; they do not simulate a whole alarm call.
+// Every host note rides the one helper that picks its transport by adapter capability, so no call site
+// can type a note into the owner's own input path by accident. These structural checks complement the
+// adapter wire tests below; they do not simulate a whole alarm call.
 const source = readFileSync(new URL('../../live/index.ts', import.meta.url), 'utf8');
 for (const [name, start, end] of [
   ['alarm opening', '  #sendHostSpeech(', '  #ringingAlarms('],
   ['mute offer', 'handle.mutedOfferTimer = this.#schedule(', 'handle.mutedOfferTimer.unref'],
-  ['continuation', 'const ask = handle.session.', 'this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS'],
+  ['continuation', "if (postToolNoOutput && step === 'rung'", 'this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS'],
 ] as const) {
-  test(`${name} uses session commentary rather than typed owner input`, () => {
+  test(`${name} carries the host note through the transport helper`, () => {
     const offset = source.indexOf(start);
     const block = source.slice(offset, source.indexOf(end, offset + start.length));
-    assert.match(block, /sendSessionCommentary/);
-    assert.doesNotMatch(block, /sendText/);
+    assert.match(block, /#sendHostNote\(/);
+    assert.doesNotMatch(block, /sendSessionCommentary|sendText/);
   });
 }
+
+test('the alarm opening block that owns the send is the helper call, not a typed turn', () => {
+  const helper = source.slice(source.indexOf('  #sendHostNote('), source.indexOf('  #sendHostSpeech('));
+  assert.match(helper, /sendSessionCommentary/);
+  assert.match(helper, /handle\.session\.sendText/);
+});
 
 test('host commentary produces one null-delegation command and no response.create', async t => {
   const { socket, session } = await fakeReady(t);

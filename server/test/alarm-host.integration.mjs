@@ -168,6 +168,20 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   const announcementStart = f.frames.length;
   assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' }, `synthetic-key-${due.id}`)).status, 200);
   assert.equal(f.attempts, attempts, 'live alarm announcement reuses the current provider session');
+  // #928: the opening's installation is not its announcement. She announces it at her first audio after
+  // the opening, on the path this adapter accepts (Gemini has no commentary channel).
+  const alarmLog = async () => (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const announcedCount = (rows, mode) => rows.filter(row => row.event === 'alarm_announced' && row.mode === mode).length;
+  const settleAnnouncement = async (mode) => {
+    for (let i = 0; i < 500 && announcedCount(await alarmLog(), mode) === 0; i++) await new Promise(resolve => setImmediate(resolve));
+    return announcedCount(await alarmLog(), mode);
+  };
+  const audibleTurn = () => f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000',
+    data: Buffer.alloc(480, 0x7f).toString('base64') } }] } } });
+  assert.ok((await alarmLog()).some(row => row.event === 'alarm_prompt_installed' && row.mode === 'in_call'), 'the call installs the opening');
+  assert.equal(announcedCount(await alarmLog(), 'in_call'), 0, 'installing the opening announces nothing yet');
+  audibleTurn();
+  assert.equal(await settleAnnouncement('in_call'), 1, 'her first audio after the opening announces the alarm');
   await owner('snooze my alarm for five minutes', due.id); const staleSnooze = revision.identity;
   await owner('show my alarms');
   assert.match(await call('snooze_alarm', { id: String(due.id) }, staleSnooze), /failed/, 'replacement for snooze phrase expiry: stale revision cannot snooze');
@@ -216,6 +230,10 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   assert.match(JSON.stringify(setup), /\[alarm mode\]/);
   assert.match(JSON.stringify(setup), /Synthetic Owner/);
   assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup)), /Synthetic Owner/);
+  // #928: the new session's opening announces at her first audio after it too, and only once.
+  assert.equal(announcedCount(await alarmLog(), 'new_session'), 0, 'a new session installs the opening without announcing it');
+  audibleTurn();
+  assert.equal(await settleAnnouncement('new_session'), 1, 'her first audio after the new session opening announces the alarm');
   assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' }, randomUUID())).status, 409);
   for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /failed/, 'alarm setup is not owner authority');
@@ -313,9 +331,12 @@ test('real-host matrix: canonical create, list, cancel, snooze, stale task revis
   assert.equal(rows().find(row => row.id === followNextId).state, 'cancelled', 'the returned snooze ID supports later cancellation');
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
-  // #107: the alarm block reaching the provider is its own event, and each route names its mode.
-  assert.ok(log.some(row => row.event === 'alarm_announced' && row.mode === 'in_call'), 'the live call announcement is recorded');
-  assert.ok(log.some(row => row.event === 'alarm_announced' && row.mode === 'new_session'), 'the new session announcement is recorded');
+  // #107: the alarm block reaching the provider is its own event, and each route names its mode. #928: the
+  // announcement is her first audio after the opening, recorded exactly once per route.
+  assert.ok(log.some(row => row.event === 'alarm_prompt_installed' && row.mode === 'in_call'), 'the live call installs the opening');
+  assert.ok(log.some(row => row.event === 'alarm_ready' && row.mode === 'in_call'), 'the live call waits for provider readiness');
+  assert.equal(log.filter(row => row.event === 'alarm_announced' && row.mode === 'in_call').length, 1, 'the live call announcement is recorded exactly once');
+  assert.equal(log.filter(row => row.event === 'alarm_announced' && row.mode === 'new_session').length, 1, 'the new session announcement is recorded exactly once');
   // #107: an unresolved permission is never reported as a denial.
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'notifications_not_asked'), 'not asked stays distinct from denied');
   // #751: one start line per host start, and it carries the pending count only, never a label or a time.

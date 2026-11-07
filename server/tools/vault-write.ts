@@ -248,7 +248,7 @@ export class VaultWriter {
 
   async dispatch(claim: { opId: string; content: string; title: string }): Promise<VaultReceipt> {
     const sourceRow = this.#store.transaction(tx => tx.get('SELECT live_session_id,utterance_id,created_at FROM vault_writes WHERE op_id=?', [claim.opId]));
-    const source = sourceRow ? { [P.sourceKind]: 'voice_call', [P.sourceRef]: { app: 'lux-didi', session_id: String(sourceRow.live_session_id), turn_start_id: String(sourceRow.utterance_id), turn_end_id: String(sourceRow.utterance_id), spoken_at: new Date(Number(sourceRow.created_at)).toISOString() }, [P.idempotencyKey]: `${String(sourceRow.live_session_id)}:${String(sourceRow.utterance_id)}:${String(sourceRow.utterance_id)}` } : undefined;
+    const source = sourceRow ? { [P.sourceKind]: 'voice_call', [P.sourceRef]: { app: 'lux-didi', session_id: String(sourceRow.live_session_id), turn_start_id: String(sourceRow.utterance_id), turn_end_id: String(sourceRow.utterance_id), spoken_at: new Date(Number(sourceRow.created_at)).toISOString(), speaker: 'owner' }, [P.idempotencyKey]: `${String(sourceRow.live_session_id)}:${String(sourceRow.utterance_id)}:${String(sourceRow.utterance_id)}` } : undefined;
 
     const content = sourceRow ? `${claim.content}\n\nProvenance: lux-didi; speaker=owner; confidence=1; session=${String(sourceRow.live_session_id)}; requested_turn_id=${String(sourceRow.utterance_id)}.` : claim.content;
     const started = this.#now();

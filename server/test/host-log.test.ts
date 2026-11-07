@@ -819,9 +819,14 @@ test('a dreaming_done line names a below-floor skip and carries no other outcome
 test('the aggregated startup omission record is closed, counted and content free', () => {
   const record = { event: 'live_context_items_omitted', selected: 3, omitted: 5,
     reasons: { budget: 2, duplicate: 2, expired: 1, superseded: 0, invalid: 0, 'not-yet-valid': 0 },
-    kinds: { plan: 1, preference: 2 }, selectedIds: ['fact-1', 'plan-2', 'summary-3'] };
+    kinds: { plan: 1, preference: 2 }, selectedIds: ['fact-1', 'plan-2', 'summary-3'], selectedTruncated: 0 };
   assert.deepEqual(safeEvent(record), record);
   assert.equal(safeEvent({ ...record, selectedIds: [...record.selectedIds, 'SYNTHETIC PRIVATE CONTENT'] }), undefined);
+  assert.equal(safeEvent({ ...record, selectedTruncated: 72 }), { ...record, selectedTruncated: 72 });
+  assert.equal(safeEvent({ ...record, selectedTruncated: -1 }), undefined);
+  assert.equal(safeEvent({ ...record, selectedTruncated: 1.5 }), undefined);
+  assert.equal(safeEvent({ ...record, selectedTruncated: 'many' }), undefined);
+  assert.equal(safeEvent({ ...record, selectdIdsExtra: 1 }), undefined);
   assert.equal(safeEvent({ ...record, reasons: { ...record.reasons, budget: -1 } }), undefined);
   assert.equal(safeEvent({ ...record, kinds: { legacy_context: 1 } }), undefined);
   assert.equal(safeEvent({ ...record, text: 'SYNTHETIC PRIVATE CONTENT' }), undefined);

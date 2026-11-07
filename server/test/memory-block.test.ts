@@ -195,3 +195,30 @@ test('an allowance tighter than the composed memory section drops the lowest ran
   assert.ok(tight.selectedIds.length < roomy.selectedIds.length);
   assert.ok(tight.omitted.some(value => value.reason === 'budget') || tight.selectedIds.length === 0);
 });
+
+// Review B1: the trim dropped `ranked[last]`, and a summary is always pushed last, so the rebuilt block
+// was identical and the loop never ended. A start that overruns computes an allowance near 0, so this
+// path is the one every overrunning call takes.
+test('an allowance tighter than the whole block ends with summaries selected and never cuts an item', () => {
+  const summaries = [{ id: 'summary-a', sessionId: 'sess-a', startedAt: now - 3_600_000,
+    text: 'Yesterday he asked about the boiler repair and the plumber rang back', openLoop: 'chase the plumber invoice' }];
+  const items = [item('fact-a', { text: 'Fact: his sister Ana lives in Lisbon' })];
+  const result = compileMemoryBlock({ ...input, items, summaries, allowanceTokens: 60 });
+  assert.ok(estimatedTokens(result.text) <= 60, `composed ${estimatedTokens(result.text)} tokens exceeds the allowance`);
+  assert.equal(result.summaryIds.length, 0);
+  assert.ok(result.omitted.some(value => value.id === 'summary-a'));
+});
+
+// Review M2: one pooled coverage share let a burst of long preferences spend it all and evict the facts,
+// which is the DREAM-1 symptom one level down. Each covered kind keeps its own bounded share.
+test('a burst of long preferences cannot spend the coverage share and evict the durable facts', () => {
+  const long = (index: number): string => `Preference ${index}: ` + `he insists on the same routine here ${index} `.repeat(6);
+  const preferences = Array.from({ length: 12 }, (_, index) => item(`longpref-${index}`, {
+    kind: 'preference', text: long(index), salience: 0.9 }));
+  const facts = Array.from({ length: 12 }, (_, index) => item(`burst-fact-${index}`, {
+    text: `Fact ${index}: his sister Ana lives in Lisbon ${index}`, salience: 0.2 }));
+  const result = compileMemoryBlock({ ...input, items: [...preferences, ...facts] });
+  for (const fact of facts) assert.ok(result.selectedIds.includes(fact.id), `${fact.id} must survive the preference burst`);
+  assert.ok(result.omitted.some(value => value.reason === 'budget'));
+  assert.ok(estimatedTokens(result.text) <= CONTEXT_BUDGET.sections.memory.ceiling);
+});

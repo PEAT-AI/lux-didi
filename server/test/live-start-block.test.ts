@@ -52,3 +52,21 @@ test('the aggregated record is content free and counts only the kinds the memory
   for (const kind of Object.keys(record.kinds)) assert.ok(['durable_fact', 'preference', 'person_role', 'transient_state', 'plan', 'promise', 'open_question', 'correction', 'decision'].includes(kind), kind);
   assert.deepEqual(record.kinds, {});
 });
+
+// Review M3: a busy start built more than 128 selected ids, host/log.ts rejected the record and the
+// single L6 line vanished with nothing replacing it. The record now caps the ids and states the drop.
+test('the aggregated record survives a busy start by capping its ids and stating the truncation', () => {
+  const block = compileMemoryBlock({ ...input, items: [
+    item('fact-a', { text: 'Fact: his sister Ana lives in Lisbon' }),
+    item('fact-b', { kind: 'preference', text: 'Preference: he wants tea, never coffee' }),
+  ] });
+  const selectedIds = Array.from({ length: 200 }, (_, index) => `record-${index}`);
+  const record = omissionRecord({ ...block, selectedIds, kindOf: () => 'durable_fact' });
+  assert.equal(record.selected, 200);
+  assert.equal(record.selectedIds.length, 128);
+  assert.equal(record.selectedTruncated, 72);
+  assert.deepEqual(record.selectedIds, selectedIds.slice(0, 128));
+  const small = omissionRecord({ ...block, kindOf: () => 'durable_fact' });
+  assert.deepEqual(small.selectedIds, block.selectedIds);
+  assert.equal(small.selectedTruncated, 0);
+});

@@ -132,6 +132,9 @@ const DREAMING_REFUSALS: readonly string[] = ['turn_outside_session', 'explicit_
   'invalid_salience', 'unparsable_event_at', 'unparsable_valid_until', 'model_noop'];
 /** M17: the one outcome a dreaming_done line may name instead of an extraction. */
 const DREAMING_OUTCOMES: readonly string[] = ['skipped_below_floor', 'extracted', 'superseded'];
+/** R1: the closed reason codes a dreaming_failed line may name; the provider's own words never fit. */
+const DREAMING_FAILURES: readonly string[] = ['model_denied', 'model_blocked', 'model_error', 'model_empty_output',
+  'model_truncated', 'model_cancelled', 'model_deadline', 'generation_stale', 'write_failed'];
 /** Counts by operation, as `add:1 supersede:2`: a closed summary, never the text of an item. */
 const isSafeOps = (value: unknown): value is string => typeof value === 'string' && /^(|(add|supersede|invalidate|noop):\d{1,6}( (add|supersede|invalidate|noop):\d{1,6})*)$/.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -1813,6 +1816,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const pct = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 6400;
     if (!mb(value.rssMb) || !mb(value.heapUsedMb) || !pct(value.cpuPct)) return;
     return { event: 'host_resources', rssMb: value.rssMb, heapUsedMb: value.heapUsedMb, cpuPct: value.cpuPct };
+  }
+  if (value.event === 'dreaming_started') {
+    // R1: a claimed job leaves a bounded receipt: the job's ids and nothing else, so a completed job
+    // in the store can be matched against a line here.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'jobId'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeId(value.jobId)) return;
+    return { event: 'dreaming_started', liveSessionId: value.liveSessionId, jobId: value.jobId };
+  }
+  if (value.event === 'dreaming_failed') {
+    if (!closedKeys(value, ['event', 'liveSessionId', 'jobId', 'reason'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeId(value.jobId) || !isSafeMember(value.reason, DREAMING_FAILURES)) return;
+    return { event: 'dreaming_failed', liveSessionId: value.liveSessionId, jobId: value.jobId, reason: value.reason };
   }
   if (value.event === 'dreaming_done' || value.event === 'dreaming_backlog' || value.event === 'dreaming_op_rejected') {
     // M9 #914: the dreaming pass counts operations and names a refusal; it never logs a turn, a subject

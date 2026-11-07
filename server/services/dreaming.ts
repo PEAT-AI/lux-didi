@@ -411,10 +411,14 @@ export function createDreaming(options: DreamingOptions): Dreaming {
     }
     if (existing !== null && existing.state === 'failed' && existing.attempts >= DREAMING_MAX_ATTEMPTS) return skipped('attempts_exhausted');
     const claim = options.store.transaction(tx => claimJob(tx, liveSessionId, DREAMING_EXTRACTOR_VERSION, startedAt));
+    // R1: every claimed job leaves a bounded receipt, so a store that counts completed jobs can be
+    // matched against the log. The line names the job only, never a turn or an item.
+    options.log({ event: 'dreaming_started', liveSessionId, jobId: claim.id });
     const items = options.store.transaction(tx => relatedItems(tx, `${session.turns.map(turn => turn.text).join(' ')} ${session.summary ?? ''}`));
     const result = await callModel(buildDreamingInput({ assistantName: options.assistantName, session, items }), session.dataClass);
     if (result.status !== 'complete') {
-      const reason = `model_${result.status === 'empty' ? 'empty_output' : String(result.reason || result.status)}`.slice(0, 120);
+      // R1: the reason is a closed code from the model's own status, never the provider's words.
+      const reason = `model_${result.status === 'empty' ? 'empty_output' : String(result.status)}`.slice(0, 120);
       options.store.transaction(tx => failJob(tx, claim.id, reason, options.now()));
       options.log({ event: 'dreaming_failed', liveSessionId, jobId: claim.id, reason });
       return { status: 'failed', reason, ops: NO_OPS, rejected: 0, coverageGap: session.coverageGap, elapsedMs: options.now() - startedAt };
@@ -435,7 +439,10 @@ export function createDreaming(options: DreamingOptions): Dreaming {
         if (!completeJob(tx, claim.id, session.turns.at(-1)?.id ?? 0, options.now())) throw new Error('generation_stale');
       });
     } catch (error) {
-      commit.failure = (error instanceof Error ? error.message : 'write_failed').slice(0, 120);
+      // R1: a store error message is never a closed code, so only the refusal this pass throws itself
+      // keeps its name; everything else is one word the log schema admits.
+      const message = error instanceof Error ? error.message : '';
+      commit.failure = message === 'generation_stale' ? 'generation_stale' : 'write_failed';
       options.store.transaction(tx => failJob(tx, claim.id, String(commit.failure), options.now()));
     }
     const elapsedMs = options.now() - startedAt;

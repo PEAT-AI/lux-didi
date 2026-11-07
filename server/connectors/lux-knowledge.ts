@@ -30,6 +30,26 @@ export interface LuxKnowledgeReader {
   call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
 }
 
+/** Reject non-JSON objects before inspecting or copying untrusted arguments. */
+function wireData(value: unknown, seen = new Set<object>()): boolean {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+  const array = Array.isArray(value);
+  if (Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype)) return false;
+  seen.add(value);
+  const keys = Reflect.ownKeys(value);
+  if (array && keys.length !== value.length + 1) return false;
+  for (const key of keys) {
+    if (array && key === 'length') continue;
+    if (typeof key !== 'string' || (array && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length))) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value') || !wireData(descriptor.value, seen)) return false;
+  }
+  seen.delete(value);
+  return true;
+}
+
 /** The discovered schema is the wire contract. No parameter aliases, silent drops or read allowlist. */
 export function createLuxKnowledgeReader({ port, registry, config }: LuxKnowledgeOptions): LuxKnowledgeReader {
   const settings = { ...config };
@@ -43,6 +63,7 @@ export function createLuxKnowledgeReader({ port, registry, config }: LuxKnowledg
       const declaration = registry.visibleTools(settings.endpointId).find(item => item.name === tool);
       if (!declaration || !luxToolAdmitted(declaration)) return { state: 'refused', reason: 'tool_missing_or_forbidden' };
       if (luxWriteAdmitted(declaration) && grant.effect !== 'read-write') return { state: 'refused', reason: 'write-grant-required' };
+      if (!args || Array.isArray(args) || !wireData(args)) return { state: 'refused', reason: 'invalid_arguments' };
       const properties = declaration.inputSchema.properties as Record<string, unknown> | undefined;
       if (Object.keys(args).some(key => !properties || !Object.hasOwn(properties, key))) return { state: 'refused', reason: 'unknown_wire_parameter' };
       const wire: Record<string, unknown> = { ...args, ...(properties && Object.hasOwn(properties, LUX_PARAMS.includeSensitive) ? { [LUX_PARAMS.includeSensitive]: true } : {}) };

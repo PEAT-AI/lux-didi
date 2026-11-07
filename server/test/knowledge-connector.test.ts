@@ -885,3 +885,18 @@ test('reviewed meeting and list tools dispatch only bounded read-only filters wi
     assert.ok(!adapter.visibleTools('source').some(tool => tool.name === 'save_insight'));
   } finally { await adapter.close(); await f.close(); }
 });
+
+test('discovered wire arguments refuse null and accessor objects without evaluating them', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    let evaluated = 0;
+    const accessor = Object.defineProperty({}, 'query', { enumerable: true, get() { evaluated++; return 'synthetic'; } });
+    for (const args of [null, accessor]) {
+      assert.deepEqual(await reader.call('search_insights', args as never), { state: 'refused', reason: 'invalid_arguments' });
+    }
+    assert.equal(evaluated, 0);
+    assert.equal(f.calls.length, 0);
+  } finally { await adapter.close(); await f.close(); }
+});

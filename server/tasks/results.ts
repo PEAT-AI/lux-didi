@@ -124,6 +124,33 @@ export const DOCUMENT_CHARS = 24000;
 export function failed(repair: string, category: FailureCategory = 'upstream_error', reason: ReasonCode = reasonForCategory(category)): ToolResult {
   return { failure_category: category, reason_code: reason, status: 'failed', text: '', references: [], next_cursor: null, coverage: 'No verified result.', repair };
 }
+/**
+ * One row per action the host dispatched, never per thing the model said it did. `running` is a call
+ * that was dispatched and had not answered when the call ended: the fact she must not report as done.
+ */
+export interface ActionOutcome { action: string; outcome: 'succeeded' | 'failed' | 'running'; reason?: ReasonCode }
+/**
+ * The short host line the voice reads: per action, what succeeded, what failed and why, what is still
+ * running. Two opens and one failed search reads as exactly that, never as a total failure or a total
+ * success. Built from receipts, so a model summary can never overwrite it.
+ */
+export function outcomeLine(actions: readonly ActionOutcome[]): string {
+  const rows = new Map<string, { succeeded: number; failed: Map<string, number>; running: number }>();
+  for (const action of actions) {
+    const row = rows.get(action.action) ?? { succeeded: 0, failed: new Map<string, number>(), running: 0 };
+    rows.set(action.action, row);
+    if (action.outcome === 'succeeded') row.succeeded++;
+    else if (action.outcome === 'running') row.running++;
+    else { const reason = action.reason ?? 'unknown'; row.failed.set(reason, (row.failed.get(reason) ?? 0) + 1); }
+  }
+  const parts: string[] = [];
+  for (const [action, row] of rows) {
+    if (row.succeeded) parts.push(`${action} succeeded${row.succeeded > 1 ? ` (${row.succeeded})` : ''}`);
+    for (const [reason, count] of row.failed) parts.push(`${action} failed (${reason}${count > 1 ? `, ${count}` : ''})`);
+    if (row.running) parts.push(`${action} ${row.running > 1 ? `${row.running} calls ` : ''}still running`);
+  }
+  return parts.length ? `Actions: ${parts.join('; ')}.` : '';
+}
 /** A failed result that arrived without a reason still names one, so no reader has to guess at it. */
 export function closedFailure(result: ToolResult): ToolResult {
   return result.status === 'failed' && !isReasonCode(result.reason_code) ? { ...result, reason_code: 'unknown' } : result;

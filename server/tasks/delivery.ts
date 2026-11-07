@@ -44,8 +44,10 @@ export function resultCommentary(answer: CommentaryAnswer): Commentary {
   const failed = answer.findings.find(finding => finding.status === 'failed');
   const failure = answer.failure;
   const facts = failure && Object.hasOwn(failureFacts, failure.reason_code) ? failureFacts[failure.reason_code] : undefined;
+  // Some verified work and one failure is a mixed account: neither a total failure nor a plain result.
+  const mixed = answer.findings.some(finding => finding.status !== 'failed') && (failure !== undefined || (answer.failures?.length ?? 0) > 0);
   return {
-    kind: answer.failure ? 'failure' : noAction ? 'no_action' : answer.status === 'incomplete' ? 'partial' : 'result',
+    kind: answer.failure ? (mixed ? 'partial' : 'failure') : noAction ? 'no_action' : mixed || answer.status === 'incomplete' ? 'partial' : 'result',
     exact: noAction ? [] : answer.exact ?? extractExact(answer.text),
     content: noAction ? '' : answer.text,
     cause: noAction ? '' : failure?.reason_code ?? answer.failures?.[0]?.reason_code ?? failed?.reason_code ?? '',

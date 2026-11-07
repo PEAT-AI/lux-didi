@@ -25,6 +25,8 @@ export class TaskRuntime {
   readonly #toolsUsed = new Set<string>();
   /** Closed failure codes per task, so the helper can name what failed and why. */
   readonly #started = new Map<string, number>();
+  /** The revision whose row is still `running`, so a call that ends early can never leave it there. */
+  #open: RevisionIdentity | undefined;
   readonly #taskFailures = new Map<string, { tool: string; code: string }[]>();
   #lastTask: { failure?: WorkerResult['failure']; status: string; failed_tools: { tool: string; code: string }[] } | undefined;
   usedTool(identity: RevisionIdentity): boolean { return this.#toolsUsed.has(identity.task_id); }
@@ -94,6 +96,7 @@ export class TaskRuntime {
     this.#started.set(`${identity.task_id}:${identity.task_revision}`, revision.askAtUtc);
     for (const evidence of revision.evidence) this.#capture(identity.task_id, evidence);
     this.options.store.saveTaskRevision(identity, revision.ownerWords, { receipts: revision.receipts, evidence: revision.evidence }, Date.now(), this.#liveSessionId());
+    this.#open = identity;
     this.log(identity.task_revision === 1 ? 'start' : 'revision', identity.task_revision);
     return revision;
   }
@@ -122,6 +125,7 @@ export class TaskRuntime {
     if (output?.receipt) this.controller.recordReceipt(output);
   }
   settle(identity: RevisionIdentity, answer: WorkerResult): WorkerResult {
+    if (this.#open && this.#open.task_id === identity.task_id && this.#open.task_revision === identity.task_revision) this.#open = undefined;
     this.#failures = answer.failures ?? [];
     answer = { ...answer, text: redactSecrets(answer.text), findings: answer.findings.map(result => redactTaskResult(result, 'task_answer')),
       ...(answer.receipts ? { receipts: answer.receipts.map(result => redactTaskResult(result, 'task_answer')) } : {}) };
@@ -160,5 +164,17 @@ export class TaskRuntime {
   }
   attach(identity: RevisionIdentity, binding: string): boolean { return this.controller.attach(identity, binding); }
   ownerSpeaking(): void { this.controller.ownerSpeaking(); }
-  close(): void { this.controller.disconnect(); this.options.authority.endCall(); }
+  close(): void {
+    const open = this.#open;
+    this.#open = undefined;
+    this.controller.disconnect(); this.options.authority.endCall();
+    if (open) this.#abandoned(open);
+  }
+  /** The call ended before the worker settled: the row takes a terminal status and says why, never `running`. */
+  #abandoned(identity: RevisionIdentity): void {
+    const reason_code = 'cancelled';
+    this.options.store.finishTask(identity, 'cancelled', { status: 'cancelled', failure: { stage: 'inference', reason_code, detail: '' } });
+    hostLogEvent({ event: 'task_settled', taskId: identity.task_id, revision: identity.task_revision, status: 'cancelled', reason_code,
+      findings: 0, elapsed_ms: Math.max(0, (this.options.now ?? Date.now)() - (this.#started.get(`${identity.task_id}:${identity.task_revision}`) ?? 0)) });
+  }
 }

@@ -1,7 +1,7 @@
 import { hostLogEvent } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import type { Identity } from './authority.js';
-import { closedFailure, failed, readerFailure, reasonCodeFor, type ReasonCode, type ToolResult } from './results.js';
+import { closedFailure, failed, outcomeLine, readerFailure, reasonCodeFor, type ActionOutcome, type ReasonCode, type ToolResult } from './results.js';
 import { REPORT_PROGRESS_TOOL, validateArguments, type TaskTool } from './tools.js';
 import { taskInstructions } from './instructions.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -77,6 +77,20 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   if (!pending) { pending = new Map(); pendingReads.set(reads, pending); }
   const receipts: ToolResult[] = [];
   const findings: ToolResult[] = [], failures: FailureRecord[] = [], outputs: Output[] = [], completedOutputs: Output[] = [], turns: Inference[] = [];
+  /** Dispatched and answered calls, so a call still in flight when the task ends is named as running. */
+  const dispatched = new Map<string, ToolCall>(), answered = new Set<string>();
+  const outcomes = (): ActionOutcome[] => [
+    ...completedOutputs.map(output => output.result.status === 'failed'
+      ? { action: output.name, outcome: 'failed' as const, reason: output.result.reason_code ?? 'unknown' }
+      : { action: output.name, outcome: 'succeeded' as const }),
+    ...[...dispatched].filter(([id]) => !answered.has(id)).map(([, call]) => ({ action: call.name, outcome: 'running' as const })),
+  ];
+  /** The host line goes first, so no reader has to trust the model's own account of what it did. */
+  const withActions = (text: string): string => {
+    const line = outcomeLine(outcomes());
+    const spoken = text.trim();
+    return line ? (spoken ? `${line}\n${spoken}` : line) : spoken;
+  };
   /** One row per tool, first reason wins, so a retry of the same failure does not repeat itself in the status. */
   const recordFailure = (tool: string, result: ToolResult): void => {
     const code = result.reason_code ?? 'unknown';
@@ -91,9 +105,24 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       stage, reason_code: failure.reason_code, status: provider?.status, http_status: provider?.status, request_id: provider?.request_id, provider_error_class: provider?.error_class ?? 'unknown', model: options.model ?? DEFAULT_WORKER_MODEL,
       tool_count: options.registry.size, instruction_chars: instructions.length, elapsed_ms: Math.max(0, clock.now() - start), detail: failure.detail });
   };
+  /** A provider that could not be reached is retried once, and only while the revision still has the time. */
+  const retryableProvider = (error: unknown): boolean => {
+    const code = error instanceof ProviderError ? error.reason_code : '';
+    return ['provider_unavailable', 'provider_timeout'].includes(code) && !expired && current() && REVISION_DEADLINE_MS - (clock.now() - start) >= INFERENCE_DEADLINE_MS;
+  };
+  const retried = async <T>(body: () => Promise<T>): Promise<T> => {
+    try { return await body(); }
+    catch (error) {
+      if (!retryableProvider(error)) throw error;
+      hostLogEvent({ event: 'task_inference_retry', taskId: options.identity.task_id, revision: options.identity.task_revision,
+        stage: 'inference', reason_code: (error as ProviderError).reason_code, elapsed_ms: Math.max(0, clock.now() - start) });
+      failure = undefined;
+      return body();
+    }
+  };
   const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join(' ')).filter(Boolean).join(' ');
-  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: partialText(), findings, failures, receipts, ...(failure ? { failure } : expired ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
-  const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, failures, receipts };
+  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: withActions(partialText()), findings, failures, receipts, ...(failure ? { failure } : expired ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
+  const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: withActions(partialText()), findings, failures, receipts };
   async function compose(): Promise<WorkerResult> {
     if (revisionExpired || clock.now() - start >= REVISION_DEADLINE_MS) { expired = true; return incomplete(); }
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
@@ -107,11 +136,13 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const remaining = REVISION_DEADLINE_MS + 2000 - (clock.now() - start);
     const clear = clock.timer(cancel, Math.min(FINAL_INFERENCE_DEADLINE_MS, remaining));
     try {
-      const answer = await Promise.race([options.infer({ instructions,
+      const answer = await retried(() => Promise.race([options.infer({ instructions,
         input: options.input + '\nTool work stopped before completion. Answer only from verified outputs, state unfinished coverage plainly, and do not claim completeness.',
-        outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]);
+        outputs: [...outputs.map(output => completedOutputs.find(done => done.id === output.id && done.result.status !== 'failed') ?? output), ...completedOutputs.filter(done => !outputs.some(output => output.id === done.id))], turns: [...turns], tools: [], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, finalAbort.signal), stopped]));
       if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
-      return { status: 'incomplete', text: answer.text.trim() || incomplete().text, findings, failures, receipts, ...(answer.exact ? { exact: answer.exact } : {}) };
+      const composed = answer.text.trim();
+      return { status: 'incomplete', text: composed ? withActions(composed) : incomplete().text, findings, failures, receipts,
+        ...(failure ? { failure } : {}), ...(answer.exact ? { exact: answer.exact } : {}) };
     } catch (error) {
       if (options.signal.aborted && !expired) {
         hostLogEvent({ event: 'task_inference_superseded', taskId: options.identity.task_id,
@@ -210,7 +241,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       let inference: Inference;
       try {
         options.event?.('inference', 1, clock.now() - start);
-        inference = await bounded(signal => options.infer({ instructions, input: options.input, outputs: [...outputs], turns: [...turns], tools: [...registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS);
+        inference = await retried(() => bounded(signal => options.infer({ instructions, input: options.input, outputs: [...outputs], turns: [...turns], tools: [...registry.values()], model: options.model ?? DEFAULT_WORKER_MODEL, effort: options.effort ?? DEFAULT_WORKER_EFFORT }, signal), INFERENCE_DEADLINE_MS));
       } catch (error) {
         if (options.signal.aborted && !expired) {
           hostLogEvent({ event: 'task_inference_superseded', taskId: options.identity.task_id,
@@ -222,7 +253,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       if (!current()) return finish();
       turns.push(inference);
       if (!inference.calls.length && !inference.no_action && !inference.text.trim() && findings.length) return compose();
-      if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.text, findings, failures, receipts, ...(inference.exact ? { exact: inference.exact } : {}) };
+      if (!inference.calls.length) return { status: inference.no_action ? 'no_action' : 'complete', text: inference.no_action ? inference.text : withActions(inference.text), findings, failures, receipts, ...(inference.exact ? { exact: inference.exact } : {}) };
       options.event?.('calls', inference.calls.length, clock.now() - start);
       const outstanding = new Map(inference.calls.map(item => [item.id, item]));
       let stopCalls!: () => void;
@@ -231,7 +262,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       if (abort.signal.aborted) stopCalls();
       try {
         await Promise.race([Promise.all(inference.calls.map(async item => {
+          dispatched.set(item.id, item);
           const output = await call(item);
+          answered.add(item.id);
           if (!current()) return;
           outstanding.delete(item.id);
           outputs.push(output);

@@ -1,5 +1,6 @@
 import './lux-save-natural.test.js';
 import './task-delivery-envelope.test.js';
+import './task-results-truth.test.js';
 import { failed } from '../tasks/results.js';
 import { safeEvent } from '../host/log.js';
 import assert from 'node:assert/strict';

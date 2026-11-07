@@ -18,6 +18,8 @@ import {
   type MemoryEvalReport, type RestoreTool,
 } from '../memory/eval-runner.js';
 import { GOLDEN_FILE, answersFile, buildEvalStore } from './fixtures/memory-eval/build.js';
+// The reader's rerank case is its own file; no declared check lists it, so this suite runs it.
+import './history-reader.test.js';
 
 const ROOT = process.cwd();
 
@@ -102,6 +104,31 @@ test('the clean variant passes every bar', async () => {
     for (const key of ['1', '2', '3', '4', '5', '6', '7']) assert.ok(report.classes[key]!.scored >= 1, `class ${key} has no scored item`);
     assert.equal(report.notRun['restore:tool_missing'], 1);
     assert.ok((report.notRun['answer:no_runner'] ?? 0) >= 1);
+  });
+});
+
+// 10.21: the two numbers per class, and the same start block with the memory removed.
+test('each class reports found by search and turn one from the start block, and the memory-off arm answers less', async () => {
+  await withStore('clean', async (store, work) => {
+    const out = join(work, 'report.json');
+    const result = cli(['--store', store, '--golden', GOLDEN_FILE, '--out', out]);
+    assert.equal(result.status, 0, `the clean store must pass both arms:\n${result.stderr}${result.stdout}`);
+    for (const label of ['found_by_search@5', 'turn_one_from_start_block', 'turn_one_memory_off']) {
+      assert.ok(result.stdout.includes(label), `the run prints ${label} by name: ${result.stdout}`);
+    }
+    const report = readReport(out);
+    for (const key of ['1', '2', '3', '4', '5', '6', '7']) {
+      const entry = report.classes[key]!;
+      for (const field of ['foundBySearch', 'turnOneFromStartBlock', 'turnOneMemoryOff'] as const) {
+        assert.ok(field in entry, `class ${key} carries ${field}`);
+      }
+    }
+    assert.equal(report.classes['2']!.foundBySearch, 1, 'every class-2 search reaches its gold call');
+    assert.ok((report.overall.turnOneFromStartBlock ?? 0) > 0, 'the start block answers some class at turn one');
+    assert.ok((report.overall.turnOneMemoryOff ?? 0) < (report.overall.turnOneFromStartBlock ?? 0),
+      'with the memory removed the same block answers less at turn one');
+    const dentist = report.items_detail.find(item => item.id === 'm13-dentist-search')!;
+    assert.equal(dentist.search.overlap, 1, 'the call whose summary never names the dentist is found through its turns');
   });
 });
 
@@ -209,7 +236,7 @@ test('a verifier error is a failed item, never a pass, and it is only called aft
 
 test('the golden and answer files are read strictly', () => {
   const items = readGolden(GOLDEN_FILE);
-  assert.equal(items.length, 12);
+  assert.equal(items.length, 13);
   assert.deepEqual([...new Set(items.map(item => item.class))].sort(), [1, 2, 3, 4, 5, 6, 7]);
   const answers = readAnswers(answersFile('defect'));
   assert.equal(answers.kind, 'recorded-first-answers');

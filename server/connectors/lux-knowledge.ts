@@ -1,404 +1,61 @@
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
-import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
-import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, StoredPayload } from '../adapters/mcp/port.js';
+import { SOURCE_DISPATCH, type SourceDispatchEvidence, type CompletedResult, type McpPort } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
-
-/**
- * The wire names this module speaks, in fixed order: the only place a lux tool name is written
- * (ruling M21-R3). Admission is decided by `luxToolAdmitted` below, never by this list.
- */
-import { LUX_TOOLS, LUX_FORBIDDEN_TOOLS, luxWriteAdmitted } from './lux-names.js';
+import { LUX_FORBIDDEN_TOOLS, LUX_PARAMS, luxWriteAdmitted } from './lux-names.js';
 export { LUX_TOOLS } from './lux-names.js';
-export const LUX_KNOWLEDGE_TOOLS = [LUX_TOOLS.search, LUX_TOOLS.get, LUX_TOOLS.meetings, LUX_TOOLS.meeting, LUX_TOOLS.insights] as const;
-/** The bounded lookup tools, whose arguments this module shapes itself. */
-export const LUX_LOOKUP_TOOLS = [LUX_TOOLS.meetings, LUX_TOOLS.meeting, LUX_TOOLS.insights] as const;
-export type LuxKnowledgeTool = (typeof LUX_TOOLS)[keyof typeof LUX_TOOLS];
 
-/**
- * M21: the lux-knowledge endpoint is the owner's own first-party local service, so a release that
- * changes its descriptions is not a catalogue change the owner must approve again.
- */
-export function isTrustedRediscovery(connector: string): boolean {
-  return connector === 'lux-knowledge';
-}
+/** The owner's first-party endpoint follows its discovered schema without another approval round. */
+export function isTrustedRediscovery(connector: string): boolean { return connector === 'lux-knowledge'; }
 
-/**
- * Rulings M21-R2 and M21-R3: the one admission policy hook for a discovered lux tool, and the only
- * place the decision is made. LK5's own `readOnlyHint: true` is the whole admission; everything else
- * is refused by default, so the next release's new read tool needs no host change. M23 plugs its
- * write policy in here rather than anywhere else: no other module refuses a lux tool by name.
- */
+/** M21 owns this one hook; M23 composes safe mutations with read admission here. */
 export function luxToolAdmitted(tool: { name: string; description?: string; annotations?: unknown }): boolean {
   if ((LUX_FORBIDDEN_TOOLS as readonly string[]).includes(tool.name)) return false;
-  const annotations = tool.annotations;
-  if (annotations === null || typeof annotations !== 'object' || Array.isArray(annotations)) return false;
-  const record = annotations as Record<string, unknown>;
-  // LK5 marks purge destructive; a destructive tool is not a read even beside readOnlyHint true.
-  if (record['destructiveHint'] === true) return false;
-  return record['readOnlyHint'] === true || luxWriteAdmitted(tool);
+  if (!tool.annotations || typeof tool.annotations !== 'object' || Array.isArray(tool.annotations)) return false;
+  const hints = tool.annotations as Record<string, unknown>;
+  return hints.destructiveHint !== true && (hints.readOnlyHint === true || luxWriteAdmitted(tool));
 }
 
 export interface LuxKnowledgeConfig {
-  includeSensitive?: boolean;
-  endpointId: string;
-  account: string;
-  resource: string;
-  /** Approved read-grant generation; must match the current registry grant. */
-  generation: number;
-  /** Request budget: largest `limit` a search caller may select. */
-  maxSearchLimit: number;
-  /** Batch budget: largest number of IDs a get caller may select. */
-  maxGetIds: number;
-  /** Bound on query length in characters. */
-  maxQueryChars: number;
+  endpointId: string; account: string; resource: string; generation: number;
+  maxSearchLimit: number; maxGetIds: number; maxQueryChars: number;
 }
-
-/** The lux-knowledge 3r search bounds: `max_chars` and `deadline_ms` are validated here, not trusted from the caller. */
-export const KNOWLEDGE_BODY_MIN_CHARS = 200;
-export const KNOWLEDGE_BODY_MAX_CHARS = 6_000;
-export const KNOWLEDGE_DEADLINE_MIN_MS = 500;
-export const KNOWLEDGE_DEADLINE_MAX_MS = 30_000;
-/** MED-1022: the server's own `snippet_chars` range, the bound on each hit after the first. */
-export const KNOWLEDGE_SNIPPET_MIN_CHARS = 100;
-export const KNOWLEDGE_SNIPPET_MAX_CHARS = 6_000;
-
-/** MED-1022: a meeting bound is a real calendar day, never a date-shaped string. */
-export function isCalendarDay(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
-  const at = Date.parse(`${value}T00:00:00.000Z`);
-  return Number.isFinite(at) && new Date(at).toISOString().slice(0, 10) === value;
-}
-
-export interface LuxKnowledgeSearchInput {
-  query: string;
-  limit: number;
-  /** 3r: snippets (the old shape) or bounded stored bodies; MED-1022 adds the voice shape. */
-  detail?: 'snippets' | 'bodies' | 'voice';
-  /** 3r: per-body character cap, within the server's own 200..6000 range. */
-  maxChars?: number;
-  /** 3r: the search's own time budget, within the server's own 500..30000 range. */
-  deadlineMs?: number;
-  /** K4: rank inside one project tag. The owner's own corpus is project tagged; a filter is never guessed. */
-  project?: string;
-  /** K4: boost one project's entries without excluding any other. */
-  projectHint?: string;
-  /** MED-1022: the voice shape's bound on each further hit, within the server's 100..6000 range. */
-  snippetChars?: number;
-  /** FR5: the vault's own search depth; the server defaults to the ranked full search. */
-  mode?: 'fast' | 'full';
-  /** MED-1022: an ISO day the connector narrows to; inclusive, in the owner's zone. */
-  meetingDateFrom?: string;
-  meetingDateTo?: string;
-}
-export interface LuxKnowledgeGetInput { ids: number[]; include_links?: boolean }
-
-export interface HttpLuxKnowledgeSource {
-  toolName: string;
-  endpointId: string;
-  url: string;
-  account: string;
-  resource: string;
-  schemaDigest: string;
-  generation: number;
-}
-/** Transport-specific provenance: stdio carries no url, only the safe binding digest. */
-export interface StdioLuxKnowledgeSource {
-  toolName: string;
-  endpointId: string;
-  transport: 'stdio';
-  bindingDigest: string;
-  account: string;
-  resource: string;
-  schemaDigest: string;
-  generation: number;
-}
-export type LuxKnowledgeSource = HttpLuxKnowledgeSource | StdioLuxKnowledgeSource;
-
-/** Opaque local evidence. Classification is constant `unknown`; markdown can never change it. */
+export interface LuxKnowledgeOptions { port: McpPort; registry: McpRegistry; config: LuxKnowledgeConfig }
 export interface LuxKnowledgeEvidence extends SourceDispatchEvidence {
-  decodedResult: unknown;
-  classification: 'unknown';
-  capability: 'local-only';
-  tool: string;
-  source: LuxKnowledgeSource;
-  observedAt: number;
-  coverage: CompletedResult['coverage'];
-  projection: CompletedResult['projection'];
-  response: StoredPayload;
+  decodedResult: unknown; classification: 'unknown'; capability: 'local-only'; tool: string;
+  source: CompletedResult['source']; observedAt: number;
+  coverage: CompletedResult['coverage']; projection: CompletedResult['projection']; response: CompletedResult['payload'];
 }
-
-export interface LuxKnowledgeRefused { state: 'refused'; reason: string }
-export interface LuxKnowledgeUnknown { state: 'unknown'; reason: string }
-
-export type LuxKnowledgeResult =
-  | (LuxKnowledgeEvidence & {
-      state: 'completed' | 'tool-error' | 'protocol-error';
-      /** get() only: caller-requested IDs, NOT verified returned entities. */
-      requestedIds?: readonly number[];
-    })
-  | LuxKnowledgeRefused
-  | LuxKnowledgeUnknown;
-
+export type LuxKnowledgeResult = (LuxKnowledgeEvidence & { state: CompletedResult['state'] }) | { state: 'refused' | 'unknown'; reason: string };
 export interface LuxKnowledgeReader {
   call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
-  lookup(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
-  search(input: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
-  get(input: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
 }
 
-export interface LuxKnowledgeOptions {
-  port: McpPort;
-  registry: McpRegistry;
-  config: LuxKnowledgeConfig;
-}
-
-/** The lookup tools whose arguments this module shapes; admission is `luxToolAdmitted`, not a set. */
-const PINNED_LOOKUP_TOOLS: ReadonlySet<string> = new Set<string>(LUX_LOOKUP_TOOLS);
-
-/** Distinguishes the adapter's non-completed outcomes from a completed protocol result. */
-type FailedCall = { state: 'refused' | 'unknown'; reason: string };
-function isFailed(result: CallResult): result is FailedCall {
-  return result.state === 'refused' || result.state === 'unknown';
-}
-
-/** Config budgets must be real; never silently defaulted or clamped to an invented floor. */
-function requirePositiveSafeInteger(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new Error('invalid-connector-config');
-  return value as number;
-}
-
-/**
- * Reads an exact plain-data record once: own keys (symbols and non-enumerable included) must be
- * exactly `keys`, every entry must be a data property (no accessors), and every value is taken
- * from the same descriptor read. This is a strict data DTO boundary, not a Proxy sandbox.
- */
-function readExactRecord(value: unknown, keys: readonly string[]): { [key: string]: PropertyDescriptor } | undefined {
-  return readAllowedRecord(value, keys);
-}
-
-/** The same strict read for an argument set whose trailing keys are optional; an unknown key still refuses. */
-function readAllowedRecord(value: unknown, required: readonly string[], optional: readonly string[] = []): { [key: string]: PropertyDescriptor } | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const prototype: unknown = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return undefined;
-  const own = Reflect.ownKeys(value);
-  const record: { [key: string]: PropertyDescriptor } = {};
-  for (const key of own) {
-    if (typeof key !== 'string' || !(required.includes(key) || optional.includes(key))) return undefined;
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor === undefined || !('value' in descriptor)) return undefined;
-    record[key] = descriptor;
-  }
-  for (const key of required) if (!(key in record)) return undefined;
-  return record;
-}
-
-/** Copies a dense array of positive safe integers once, rejecting holes, extras and accessors. */
-function readIds(value: unknown, max: number): { ok: true; ids: number[] } | { ok: false; reason: string } {
-  if (!Array.isArray(value)) return { ok: false, reason: 'ids-not-array' };
-  if (Object.getPrototypeOf(value) !== Array.prototype) return { ok: false, reason: 'ids-not-dense' };
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-  if (lengthDescriptor === undefined || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || (lengthDescriptor.value as number) < 0) {
-    return { ok: false, reason: 'ids-not-dense' };
-  }
-  const length = lengthDescriptor.value as number;
-  const own = Reflect.ownKeys(value);
-  if (own.length !== length + 1 || own.some(key => typeof key !== 'string')) return { ok: false, reason: 'ids-not-dense' };
-  if (length === 0) return { ok: false, reason: 'ids-empty' };
-  if (length > max) return { ok: false, reason: 'get-batch-out-of-budget' };
-  const ids: number[] = [];
-  for (let index = 0; index < length; index++) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-    if (descriptor === undefined || !('value' in descriptor)) return { ok: false, reason: 'ids-not-dense' };
-    const id = descriptor.value;
-    if (!Number.isSafeInteger(id) || (id as number) <= 0) return { ok: false, reason: 'ids-not-positive-integer' };
-    ids.push(id as number);
-  }
-  const seen = new Set<number>();
-  for (const id of ids) { if (seen.has(id)) return { ok: false, reason: 'ids-not-unique' }; seen.add(id); }
-  return { ok: true, ids };
-}
-
-interface Budgets { maxSearchLimit: number; maxGetIds: number; maxQueryChars: number }
-interface Settings extends Budgets {
-  includeSensitive: boolean;
-  endpointId: string; account: string; resource: string; generation: number;
-}
-
-
-function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: LuxKnowledgeSearchInput } | { ok: false; reason: string } {
-  const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs', 'project', 'projectHint', 'snippetChars', 'meetingDateFrom', 'meetingDateTo', 'mode']);
-  if (record === undefined) return { ok: false, reason: 'invalid-search-input' };
-  const query = record['query']!.value;
-  const limit = record['limit']!.value;
-  if (typeof query !== 'string' || query.trim().length === 0 || query.length > budgets.maxQueryChars) return { ok: false, reason: 'invalid-query' };
-  if (!Number.isSafeInteger(limit) || (limit as number) <= 0 || (limit as number) > budgets.maxSearchLimit) return { ok: false, reason: 'search-limit-out-of-budget' };
-  const detail = record['detail']?.value;
-  const maxChars = record['maxChars']?.value;
-  const deadlineMs = record['deadlineMs']?.value;
-  const project = record['project']?.value;
-  const projectHint = record['projectHint']?.value;
-  const snippetChars = record['snippetChars']?.value;
-  const meetingDateFrom = record['meetingDateFrom']?.value;
-  const meetingDateTo = record['meetingDateTo']?.value;
-  const mode = record['mode']?.value;
-  // K4: a project tag is a name the corpus carries, never a pattern the model composed.
-  const projectName = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^[\w.@-]{1,64}$/u.test(value));
-  if (!projectName(project) || !projectName(projectHint)) return { ok: false, reason: 'invalid-project' };
-  if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies' && detail !== 'voice') return { ok: false, reason: 'invalid-detail' };
-  if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || (maxChars as number) < KNOWLEDGE_BODY_MIN_CHARS || (maxChars as number) > KNOWLEDGE_BODY_MAX_CHARS)) return { ok: false, reason: 'max-chars-out-of-range' };
-  if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return { ok: false, reason: 'deadline-ms-out-of-range' };
-  if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return { ok: false, reason: 'snippet-chars-out-of-range' };
-  if (!isCalendarDay(meetingDateFrom) || !isCalendarDay(meetingDateTo)) return { ok: false, reason: 'invalid-meeting-date' };
-  // FR5: the server's own two modes, never a third spelling of them.
-  if (mode !== undefined && mode !== 'fast' && mode !== 'full') return { ok: false, reason: 'invalid-mode' };
+/** The discovered schema is the wire contract. No parameter aliases, silent drops or read allowlist. */
+export function createLuxKnowledgeReader({ port, registry, config }: LuxKnowledgeOptions): LuxKnowledgeReader {
+  const settings = { ...config };
+  if (!settings.endpointId || !settings.account || !settings.resource || [settings.generation, settings.maxSearchLimit, settings.maxGetIds, settings.maxQueryChars].some(value => !Number.isSafeInteger(value) || value < 1)) throw Error('invalid-connector-config');
+  const validator = new AjvJsonSchemaValidator();
   return {
-    ok: true,
-    args: {
-      query, limit: limit as number,
-      ...(detail === undefined ? {} : { detail: detail as 'snippets' | 'bodies' | 'voice' }),
-      ...(maxChars === undefined ? {} : { maxChars: maxChars as number }),
-      ...(deadlineMs === undefined ? {} : { deadlineMs: deadlineMs as number }),
-      ...(project === undefined ? {} : { project: project as string }),
-      ...(projectHint === undefined ? {} : { projectHint: projectHint as string }),
-      ...(snippetChars === undefined ? {} : { snippetChars: snippetChars as number }),
-      ...(meetingDateFrom === undefined ? {} : { meetingDateFrom: meetingDateFrom as string }),
-      ...(meetingDateTo === undefined ? {} : { meetingDateTo: meetingDateTo as string }),
-      ...(mode === undefined ? {} : { mode: mode as 'fast' | 'full' }),
+    async call(tool, args, signal) {
+      if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
+      const grant = registry.currentGrant(settings.endpointId);
+      if (!grant || grant.generation !== settings.generation || grant.account !== settings.account || grant.resource !== settings.resource) return { state: 'refused', reason: 'grant-scope-mismatch' };
+      const declaration = registry.visibleTools(settings.endpointId).find(item => item.name === tool);
+      if (!declaration || !luxToolAdmitted(declaration)) return { state: 'refused', reason: 'tool_missing_or_forbidden' };
+      if (luxWriteAdmitted(declaration) && grant.effect !== 'read-write') return { state: 'refused', reason: 'write-grant-required' };
+      const properties = declaration.inputSchema.properties as Record<string, unknown> | undefined;
+      if (Object.keys(args).some(key => !properties || !Object.hasOwn(properties, key))) return { state: 'refused', reason: 'unknown_wire_parameter' };
+      const wire: Record<string, unknown> = { ...args, ...(properties && Object.hasOwn(properties, LUX_PARAMS.includeSensitive) ? { [LUX_PARAMS.includeSensitive]: true } : {}) };
+      if (!validator.getValidator(declaration.inputSchema)(wire).valid) return { state: 'refused', reason: 'invalid_arguments' };
+      const limit = wire[LUX_PARAMS.limit], query = wire[LUX_PARAMS.query], ids = wire[LUX_PARAMS.insightIds];
+      if ((typeof limit === 'number' && limit > settings.maxSearchLimit) || (typeof query === 'string' && query.length > settings.maxQueryChars) || (Array.isArray(ids) && ids.length > settings.maxGetIds)) return { state: 'refused', reason: 'request_bound_exceeded' };
+      const result = await port.call({ endpointId: settings.endpointId, toolName: tool, arguments: wire, generation: settings.generation, account: settings.account, resource: settings.resource }, signal);
+      if (result.state === 'refused' || result.state === 'unknown') return result;
+      if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
+      return { state: result.state, classification: 'unknown', capability: 'local-only', tool,
+        decodedResult: structuredClone(result.decodedResult), source: { ...result.source }, observedAt: result.freshness.receivedAt,
+        coverage: structuredClone(result.coverage), projection: structuredClone(result.projection), response: structuredClone(result.payload),
+        ...(result[SOURCE_DISPATCH] ? { [SOURCE_DISPATCH]: result[SOURCE_DISPATCH] } : {}) };
     },
   };
-}
-function validateGet(input: unknown, budgets: Budgets): { ok: true; ids: number[]; includeLinks: boolean } | { ok: false; reason: string } {
-  const hasLinks = typeof input === 'object' && input !== null && !Array.isArray(input) && 'include_links' in (input as Record<string, unknown>);
-  const record = readExactRecord(input, hasLinks ? ['ids', 'include_links'] : ['ids']);
-  if (record === undefined) return { ok: false, reason: 'invalid-get-input' };
-  const links = record['include_links'];
-  if (links !== undefined && typeof links.value !== 'boolean') return { ok: false, reason: 'invalid-get-input' };
-  const ids = readIds(record['ids']!.value, budgets.maxGetIds);
-  if (!ids.ok) return ids;
-  return { ok: true, ids: ids.ids, includeLinks: links?.value === true };
-}
-
-/** Pre-dispatch gate over the accepted registry. No discovery, no approval, no egress change. */
-function preflight(registry: McpRegistry, settings: Settings, tool: string): string | undefined {
-  let grant: ReadGrant | undefined;
-  try {
-    registry.endpoint(settings.endpointId);
-    grant = registry.currentGrant(settings.endpointId);
-  } catch { return 'source-unavailable'; }
-  if (!grant) return 'grant-absent';
-  if (grant.generation !== settings.generation) return 'grant-generation-mismatch';
-  if (grant.account !== settings.account || grant.resource !== settings.resource) return 'grant-scope-mismatch';
-  const visible = registry.visibleTools(settings.endpointId);
-  // Ruling M21-R1: a granted name the endpoint publishes as a write is a refused grant.
-  if (visible.some(definition => !luxToolAdmitted(definition))) return 'ineligible-tool-granted';
-  if (!visible.some(definition => definition.name === tool)) return 'required-definition-absent';
-  return undefined;
-}
-
-export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowledgeReader {
-  const { port, registry, config } = options;
-  // Capture stable settings once; later caller mutation of `config` cannot change behavior.
-  if (config.includeSensitive !== undefined && typeof config.includeSensitive !== 'boolean') throw Error('invalid-connector-config');
-  const settings: Settings = {
-    includeSensitive: true,
-    endpointId: config.endpointId,
-    account: config.account,
-    resource: config.resource,
-    generation: requirePositiveSafeInteger(config.generation),
-    maxSearchLimit: requirePositiveSafeInteger(config.maxSearchLimit),
-    maxGetIds: requirePositiveSafeInteger(config.maxGetIds),
-    maxQueryChars: requirePositiveSafeInteger(config.maxQueryChars),
-  };
-
-  async function dispatch(tool: string, args: Record<string, unknown>, signal?: AbortSignal, requestedIds?: readonly number[]): Promise<LuxKnowledgeResult> {
-    const request: CallRequest = {
-      endpointId: settings.endpointId,
-      toolName: tool,
-      arguments: args,
-      generation: settings.generation,
-      account: settings.account,
-      resource: settings.resource,
-    };
-    if (signal?.aborted) return { state: 'refused', reason: 'cancelled-before-dispatch' };
-    const result = await port.call(request, signal);
-    if (isFailed(result)) {
-      return result.state === 'refused'
-        ? { state: 'refused', reason: result.reason }
-        : { state: 'unknown', reason: result.reason };
-    }
-    if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
-    const evidence: LuxKnowledgeEvidence = {
-      classification: 'unknown',
-      decodedResult: structuredClone(result.decodedResult),
-      capability: 'local-only',
-      tool,
-      source: { ...result.source },
-      ...(result[SOURCE_DISPATCH] ? {[SOURCE_DISPATCH]:result[SOURCE_DISPATCH]} : {}),
-      observedAt: result.freshness.receivedAt,
-      coverage: structuredClone(result.coverage),
-      projection: structuredClone(result.projection),
-      response: structuredClone(result.payload),
-    };
-    return requestedIds === undefined
-      ? { state: result.state, ...evidence }
-      : { state: result.state, ...evidence, requestedIds: [...requestedIds] };
-  }
-
-  const validator = new AjvJsonSchemaValidator();
-  const call = async (tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult> => {
-    const denied = preflight(registry, settings, tool);
-    if (denied) return { state: 'refused', reason: denied };
-    const declaration = registry.visibleTools(settings.endpointId).find(item => item.name === tool);
-    if (!declaration || !luxToolAdmitted(declaration)) return { state: 'refused', reason: 'tool_missing_or_forbidden' };
-    const properties = declaration.inputSchema.properties as Record<string, unknown> | undefined;
-    if (Object.keys(args).some(key => !properties || !Object.hasOwn(properties, key))) return { state: 'refused', reason: 'unknown_wire_parameter' };
-    const wire: Record<string, unknown> = { ...args, ...(properties && Object.hasOwn(properties, 'include_sensitive') ? { include_sensitive: true } : {}) };
-    if (!validator.getValidator(declaration.inputSchema)(wire).valid) return { state: 'refused', reason: 'invalid_arguments' };
-    if (typeof wire.limit === 'number' && wire.limit > settings.maxSearchLimit) return { state: 'refused', reason: 'request_bound_exceeded' };
-    return dispatch(tool, wire, signal);
-  };
-  return {
-    call,
-    lookup: call,
-    search: (args, signal) => call(LUX_TOOLS.search, args, signal),
-    get: (args, signal) => call(LUX_TOOLS.get, args, signal),
-  };
-}
-
-/** Ruling M21-R1: the bounds a widened read tool keeps when the module does not pin its keys. */
-function boundedReadArguments(args: Record<string, unknown>): boolean {
-  const entries = Object.entries(args);
-  if (entries.length > 32) return false;
-  return entries.every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(key) && boundedValue(value));
-}
-function boundedValue(value: unknown): boolean {
-  if (value === null || typeof value === 'boolean') return true;
-  if (typeof value === 'number') return Number.isFinite(value);
-  if (typeof value === 'string') return value.length <= 4096;
-  if (Array.isArray(value)) return value.length <= 100 && value.every(boundedValue);
-  return false;
-}
-
-/** Read-only discovery accepts only bounded, literal filters, never server catalogue overrides. */
-export function validateKnowledgeLookup(tool: string, args: Record<string, unknown>, maxLimit: number): boolean {
-  const keys = tool === 'list_meetings' ? ['participant', 'date_from', 'date_to', 'order', 'limit']
-    : tool === 'get_meeting' ? ['meeting_id', 'limit', 'offset']
-    : tool === 'list_insights' ? ['project', 'status', 'count_only', 'limit', 'offset', 'participant', 'meeting_date_from', 'meeting_date_to'] : [];
-  // Ruling M21-R1: a widened read tool keeps the bounds, not the pinned key list.
-  if (!keys.length) return boundedReadArguments(args);
-  if (!keys.length || Object.keys(args).some(key => !keys.includes(key))) return false;
-  if (tool === 'get_meeting' && (typeof args.meeting_id !== 'string' || !args.meeting_id.trim())) return false;
-  for (const [key, value] of Object.entries(args)) {
-    if (key === 'limit') { if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > Math.min(50, maxLimit)) return false; }
-    else if (key === 'offset') { if (!Number.isSafeInteger(value) || Number(value) < 0) return false; }
-    else if (key === 'count_only') { if (typeof value !== 'boolean') return false; }
-    else if (key.includes('date_')) { if (!isCalendarDay(value)) return false; }
-    else if (key === 'order') { if (value !== 'newest' && value !== 'oldest') return false; }
-    else if (key === 'status') { if (!['active', 'archived', 'all'].includes(String(value))) return false; }
-    else if (typeof value !== 'string' || !value.trim() || value.length > 200) return false;
-  }
-  const from = args.date_from ?? args.meeting_date_from, to = args.date_to ?? args.meeting_date_to;
-  return !from || !to || String(from) <= String(to);
 }

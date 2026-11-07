@@ -252,11 +252,13 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
   createReader({ port, registry, policy }) {
     const reader = createLuxKnowledgeReader({
       port, registry,
-      config: { endpointId: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource, schemaDigest: policy.schemaDigest, generation: policy.generation, includeSensitive: policy.sourcePolicy.unknownClass === 'sensitive' && policy.sourcePolicy.allowedClasses.includes('sensitive') && policy.route.allowedClasses.includes('sensitive'), ...policy.bounds },
+      config: { endpointId: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource, generation: policy.generation, includeSensitive: policy.sourcePolicy.unknownClass === 'sensitive' && policy.sourcePolicy.allowedClasses.includes('sensitive') && policy.route.allowedClasses.includes('sensitive'), ...policy.bounds },
     });
     return {
       async call(tool, args, signal) {
-        if (tool === 'list_meetings' || tool === 'get_meeting' || tool === 'list_insights') return await reader.lookup(tool, args, signal);
+        // Ruling M21-R1: any other read the endpoint publishes is a lookup with its own arguments;
+        // only the two pinned reads take the connector's own validated shapes.
+        if (tool !== 'search_knowledge' && tool !== 'get_insight') return await reader.lookup(tool, args, signal);
         if (tool !== 'search_knowledge') return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
         // The declaration speaks the wire names; the reader takes the connector's own field names.
         const search = args as {

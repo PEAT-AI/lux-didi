@@ -791,3 +791,14 @@ test('estimated startup counts reject negative, nonnumeric and unknown fields', 
   assert.equal(safeEvent({ ...SIZE, stablePrefixChars: 101 }), undefined);
   assert.equal(safeEvent({ ...SIZE, fixedChars: 31 }), undefined);
 });
+
+test('M21: a trusted rediscovery logs the endpoint id and digest prefixes, never content', () => {
+  const rediscovered = { event: 'mcp_trusted_rediscovered', endpointId: 'lux-knowledge',
+    previousDigest: 'a1b2c3d4e5f6', observedDigest: '00112233aabb' };
+  assert.deepEqual(safeEvent(rediscovered), rediscovered);
+  assert.equal(safeEvent({ ...rediscovered, digest: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...rediscovered, endpointId: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...rediscovered, observedDigest: 'f'.repeat(64) }), undefined, 'a whole digest is not a prefix');
+  assert.equal(safeEvent({ ...rediscovered, previousDigest: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...rediscovered, observedDigest: 'A1B2C3D4E5F6' }), undefined, 'uppercase hex is refused');
+});

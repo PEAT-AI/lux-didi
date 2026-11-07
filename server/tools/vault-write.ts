@@ -46,7 +46,15 @@ export type VaultTransportResult =
 export interface VaultSaveArgs { readonly content: string; readonly title: string; readonly insightType: string; readonly project: string }
 
 /** One MCP write attempt. The client owns the wire; nothing above it retries. */
+export interface VaultWriteResult {
+  disposition: string;
+  insight_id?: number;
+  candidates?: unknown[];
+  reason?: string;
+  [key: string]: unknown;
+}
 export interface VaultTransport {
+  write?(tool: string, args: Record<string, unknown>): Promise<VaultWriteResult>;
   save(args: VaultSaveArgs): Promise<VaultTransportResult>;
   backoff?(milliseconds: number): Promise<void>;
 }

@@ -1,5 +1,5 @@
 import { hostLogEvent } from '../../tools/host-events.js';
-import { validInsightId, VAULT_REMOTE_TOOL, type VaultTransportPhase, type VaultSaveArgs, type VaultTransport, type VaultTransportResult } from '../../tools/vault-write.js';
+import { validInsightId, VAULT_REMOTE_TOOL, type VaultTransportPhase, type VaultSaveArgs, type VaultTransport, type VaultTransportResult, type VaultWriteResult } from '../../tools/vault-write.js';
 
 /** The local lux-knowledge MCP endpoint a vault write may reach, and nothing else. */
 export interface LuxWriteEndpoint { readonly url: string; readonly token?: string }
@@ -50,6 +50,7 @@ function vaultPayload(result: unknown): VaultPayload | undefined {
 }
 
 export interface LuxWriteTransport extends VaultTransport {
+  write(tool: string, args: Record<string, unknown>): Promise<VaultWriteResult>;
   /** W6 item 12: the closest existing lux row's word overlap, or undefined when the probe cannot answer. */
   nearDuplicate(text: string): Promise<number | undefined>;
 }
@@ -94,7 +95,24 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
     return true;
   };
 
+  const write = async (tool: string, args: Record<string, unknown>): Promise<VaultWriteResult> => {
+    if (!allowed || !['create_insight', 'update_insight', 'create_insight_link', 'record_search_feedback'].includes(tool)) return { disposition: 'refused', reason: 'tool_not_allowed' };
+    if (!(await initialize())) return { disposition: 'refused', reason: 'transport_unavailable' };
+    try {
+      const call = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } });
+      if (!call.ok || !call.json || typeof call.json !== 'object' || 'error' in call.json) return { disposition: 'refused', reason: 'upstream_error' };
+      const result = (call.json as { result?: { structuredContent?: unknown; content?: { type?: string; text?: string }[]; isError?: boolean } }).result;
+      if (!result || result.isError) return { disposition: 'refused', reason: 'upstream_error' };
+      const payload = result.structuredContent ?? parseMessage(result.content?.find(item => item.type === 'text')?.text ?? '');
+      if (!payload || typeof payload !== 'object') return { disposition: 'refused', reason: 'invalid_receipt' };
+      const receipt = payload as VaultWriteResult;
+      if (tool === 'create_insight' && !['created', 'duplicate_of', 'refused'].includes(receipt.disposition)) return { disposition: 'refused', reason: 'invalid_receipt' };
+      return receipt;
+    } catch { return { disposition: 'refused', reason: 'outcome_unknown' }; }
+  };
+
   return {
+    write,
     /** A read probe only: search_knowledge is asked, and nothing is ever written here. */
     async nearDuplicate(text: string): Promise<number | undefined> {
       if (!allowed) return undefined;

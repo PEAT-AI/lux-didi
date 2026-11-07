@@ -40,8 +40,13 @@ if [ "$(uname -s)" = Darwin ]; then
     bash scripts/build-macos-app.sh "$native_work/LuxDidi.app" --cache "$native_work/cache"
   )
 fi
-# Exercise the discovered installed alarm check against its offline staged package.
-bash scripts/check-installed-alarm.sh
+# Exercise the discovered installed alarm check against its offline staged package. It compiles Swift and
+# reads a packaged Mac app, so it is a macOS check: on another host it is one named line, not a stack of reds.
+if [ "$(uname -s)" = Darwin ]; then
+  bash scripts/check-installed-alarm.sh
+else
+  echo "check-host: skipping the installed alarm check on $(uname -s): it compiles Swift and reads a packaged Mac app" >&2
+fi
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-compose-wire.test.js server/dist/test/host-log.test.js server/dist/test/log-envelope.test.js server/dist/test/trello-board.test.js server/dist/test/connector-recovery.test.js server/dist/test/trello-guidance.test.js server/dist/test/wire-envelope.test.js server/dist/test/open-actions.test.js server/dist/test/tools-builtin-intent.test.js server/dist/test/live-summary.test.js server/dist/test/timeline.test.js server/dist/test/alarm-mode.test.js server/dist/test/alarm-shell.test.js; do

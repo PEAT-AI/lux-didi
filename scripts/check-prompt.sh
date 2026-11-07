@@ -108,8 +108,8 @@ for (const rule of [
   'when the status says nothing is running, say that nothing is running and give the real outcome',
 ]) assert.ok(worker.includes(rule), `the new helper rule is stated: ${rule}`);
 assert.doesNotMatch(voice, /"/, 'the voice conduct hands her no quoted line to say');
-const backchannel = persona.NAYA_VOICE_SURFACE.slice(persona.NAYA_VOICE_SURFACE.indexOf('# Backchannel policy'),
-  persona.NAYA_VOICE_SURFACE.indexOf('# Ending the call'));
+const backchannel = persona.NAYA_VOICE_SURFACE.slice(persona.NAYA_VOICE_SURFACE.indexOf('# His turn'),
+  persona.NAYA_VOICE_SURFACE.indexOf('# Ending'));
 assert.ok(backchannel.length > 0, 'the backchannel paragraph is present');
 assert.doesNotMatch(backchannel, /"/, 'the backchannel paragraph hands her no quoted line to say');
 assert.doesNotMatch(worker.replace('{"status":"no_action"}', ''), /"/, 'the helper conduct hands her no quoted line to say');
@@ -201,7 +201,7 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
 assert.ok(persona.NAYA_LIVE_BASE.includes('helper-returned history permits word-for-word lookback'));
-assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only returned words, since past quotes cannot be invented.'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only returned words, never invented past quotes.'));
 assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE
 

@@ -330,7 +330,7 @@ test('strict exact-key validation rejects malformed and extra fields before any 
       reader.call('search_insights', { query: 'x', limit: 1.5 }),
       reader.call('search_insights', { query: 'x', limit: 999 }),
       reader.call('search_insights', { query: 'x'.repeat(201), limit: 1 }),
-      reader.call('search_insights', { query: 'x', limit: 1, include_sensitive: 'yes' } as never),
+      reader.call('search_insights', { query: 'x', limit: 1, unknown_field: true } as never),
       reader.call('search_insights', { query: 'x', limit: 1, projectHint: '' } as never),
       reader.call('search_insights', { query: 'x', limit: 1, project_boost: 2 } as never),
       reader.call('get_insight', null as never),
@@ -370,9 +370,9 @@ test('an unannotated mutation is refused even when its name is granted', async (
   try {
     assert.equal(luxToolAdmitted(writerTool), false, 'a write is not a read the helper may hold');
     await approve(adapter, registry, ['search_insights', 'get_insight', 'create_insight']);
-    assert.deepEqual(adapter.visibleTools('source').map(tool => tool.name).sort(), ['get_insight', 'create_insight', 'search_insights']);
+    assert.deepEqual(adapter.visibleTools('source').map(tool => tool.name).sort(), ['create_insight', 'get_insight', 'search_insights']);
     const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
-    const result = await reader.call('search_insights', { query: 'x', limit: 1 });
+    const result = await reader.call('create_insight', {});
     assert.equal(result.state, 'refused');
     if (result.state !== 'refused') throw new Error('expected refusal');
     assert.equal(result.reason, 'tool_missing_or_forbidden');
@@ -902,5 +902,15 @@ test('discovered wire arguments refuse null and accessor objects without evaluat
     }
     assert.equal(evaluated, 0);
     assert.equal(f.calls.length, 0);
+  } finally { await adapter.close(); await f.close(); }
+});
+
+test('the host keeps sensitive reads enabled even when the helper supplies false', async () => {
+  const f = await fixture();
+  const { adapter, registry } = setup(f.url);
+  try {
+    const { reader } = await readerFor(adapter, registry);
+    complete(await reader.call('search_insights', { query: 'synthetic', limit: 1, include_sensitive: false }));
+    assert.equal(f.calls[0]?.arguments && (f.calls[0].arguments as Record<string, unknown>).include_sensitive, true);
   } finally { await adapter.close(); await f.close(); }
 });

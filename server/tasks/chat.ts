@@ -19,7 +19,7 @@ export function taskDefinitions(runtime: TaskRuntime, identity: RevisionIdentity
       const { signal } = context;
       return owner.runTask(call, args, async () => {
         const result = await runtime.runTool(tool.name, args, { ...identity, operation_id: context.executionId }, signal);
-        if (result.status === 'failed' && isConnectorTaskRead(tool.name)) return { status: 'completed' as const, result: owner.journal.fail(call, 'failed', result[TASK_CONNECTOR_FAILURE_CODE] ?? 'connector_error', result[TASK_CONNECTOR_FAILURE]) };
+        if (result.status === 'failed' && (isConnectorTaskRead(tool.name) || tool.effect === 'none' && tool.outside_text)) return { status: 'completed' as const, result: owner.journal.fail(call, 'failed', result[TASK_CONNECTOR_FAILURE_CODE] ?? 'connector_error', result[TASK_CONNECTOR_FAILURE]) };
         // Reads are conservatively private except host-owned alarm/roster metadata and public web evidence.
         const dataClasses: readonly DataClass[] = result.dataClasses ?? (result.status === 'failed' || tool.effect !== 'none' || ['alarm_list', 'people_lookup', 'search_web'].includes(tool.name) ? ['ordinary'] : ['private']);
         const snapshot = result[TASK_DISCLOSURE];

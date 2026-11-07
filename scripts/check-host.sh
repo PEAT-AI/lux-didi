@@ -26,10 +26,19 @@ if [ -n "$eval_imports" ]; then
 fi
 # Exercise the documented build producer, using the current compiler layout.
 bash scripts/run-local.sh --build-only
+# BOX-R1: the Swift steps below (native canary, Mac app build, installed alarm check) need macOS with a
+# Swift compiler. Where it is absent the check says so once and still runs every Node test, which is the part
+# a non-macOS host owns; on a Mac with swiftc every step runs unchanged.
+swift_steps=1
+if [ "$(uname -s)" = Darwin ] && command -v swiftc >/dev/null 2>&1; then
+  swift_steps=0
+else
+  echo "check-host: the Swift steps need macOS with swiftc, so this host skips them; every Node test below still runs" >&2
+fi
 # Pure fake canary records: no installed app, provider or native shell is contacted.
 node --test server/test/canary.test.mjs
 # Compile the complete shell, including its idle alarm subscription, without launching it.
-if [ "$(uname -s)" = Darwin ]; then
+if [ "$swift_steps" -eq 0 ]; then
   (
     native_work=$(mktemp -d "${TMPDIR:-/tmp}/didi-alarm-build.XXXXXX")
     trap 'rm -rf "$native_work"' EXIT
@@ -40,13 +49,8 @@ if [ "$(uname -s)" = Darwin ]; then
     bash scripts/build-macos-app.sh "$native_work/LuxDidi.app" --cache "$native_work/cache"
   )
 fi
-# Exercise the discovered installed alarm check against its offline staged package. It compiles Swift and
-# reads a packaged Mac app, so it is a macOS check: on another host it is one named line, not a stack of reds.
-if [ "$(uname -s)" = Darwin ]; then
-  bash scripts/check-installed-alarm.sh
-else
-  echo "check-host: skipping the installed alarm check on $(uname -s): it compiles Swift and reads a packaged Mac app" >&2
-fi
+# Exercise the discovered installed alarm check against its offline staged package.
+if [ "$swift_steps" -eq 0 ]; then bash scripts/check-installed-alarm.sh; fi
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-compose-wire.test.js server/dist/test/host-log.test.js server/dist/test/log-envelope.test.js server/dist/test/trello-board.test.js server/dist/test/connector-recovery.test.js server/dist/test/trello-guidance.test.js server/dist/test/wire-envelope.test.js server/dist/test/open-actions.test.js server/dist/test/tools-builtin-intent.test.js server/dist/test/live-summary.test.js server/dist/test/timeline.test.js server/dist/test/alarm-mode.test.js server/dist/test/alarm-shell.test.js; do

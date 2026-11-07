@@ -35,7 +35,7 @@ test('helper mutation is durably claimed before dispatch and its receipt settles
   assert.equal(claimed?.operation, LUX_TOOLS.create);
   assert.equal(claimed?.live_session_id, 'synthetic-call');
   assert.equal(forwarded?.[P.idempotencyKey], 'synthetic-call:1:1');
-  assert.deepEqual(forwarded?.[P.sourceRef], { app: 'lux-didi', session_id: 'synthetic-call', turn_start_id: '1', turn_end_id: '1', spoken_at: new Date(1000).toISOString() });
+  assert.deepEqual(forwarded?.[P.sourceRef], { app: 'lux-didi', session_id: 'synthetic-call', turn_start_id: '1', turn_end_id: '1', spoken_at: new Date(1000).toISOString(), speaker: 'owner' });
   finish({ disposition: 'created', insight_id: 42, candidates: [{ insight_id: 9 }] });
   assert.deepEqual((await pending).candidates, [{ insight_id: 9 }], 'host never merges or discards candidates');
   const settled = h.store.transaction(tx => tx.get("SELECT state,insight_id FROM vault_writes WHERE utterance_id='helper:1'"));

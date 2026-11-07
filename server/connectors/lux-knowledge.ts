@@ -2,17 +2,44 @@ import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/po
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
-/** The only remote tools this connector may ever call, in fixed order. No caller override. */
-export const LUX_KNOWLEDGE_TOOLS = ['search_knowledge', 'get_insight', 'list_meetings', 'get_meeting', 'list_insights'] as const;
-export type LuxKnowledgeTool = (typeof LUX_KNOWLEDGE_TOOLS)[number];
+/**
+ * The wire names this module speaks, in fixed order: the only place a lux tool name is written
+ * (ruling M21-R3). Admission is decided by `luxToolAdmitted` below, never by this list.
+ */
+export const LUX_TOOLS = { search: 'search_knowledge', get: 'get_insight', meetings: 'list_meetings', meeting: 'get_meeting', insights: 'list_insights' } as const;
+export const LUX_KNOWLEDGE_TOOLS = [LUX_TOOLS.search, LUX_TOOLS.get, LUX_TOOLS.meetings, LUX_TOOLS.meeting, LUX_TOOLS.insights] as const;
+/** The bounded lookup tools, whose arguments this module shapes itself. */
+export const LUX_LOOKUP_TOOLS = [LUX_TOOLS.meetings, LUX_TOOLS.meeting, LUX_TOOLS.insights] as const;
+export type LuxKnowledgeTool = (typeof LUX_TOOLS)[keyof typeof LUX_TOOLS];
+
+/**
+ * M21: the lux-knowledge endpoint is the owner's own first-party local service, so a release that
+ * changes its descriptions is not a catalogue change the owner must approve again.
+ */
+export function isTrustedRediscovery(connector: string): boolean {
+  return connector === 'lux-knowledge';
+}
+
+/**
+ * Rulings M21-R2 and M21-R3: the one admission policy hook for a discovered lux tool, and the only
+ * place the decision is made. LK5's own `readOnlyHint: true` is the whole admission; everything else
+ * is refused by default, so the next release's new read tool needs no host change. M23 plugs its
+ * write policy in here rather than anywhere else: no other module refuses a lux tool by name.
+ */
+export function luxToolAdmitted(tool: { name: string; annotations?: unknown }): boolean {
+  const annotations = tool.annotations;
+  if (annotations === null || typeof annotations !== 'object' || Array.isArray(annotations)) return false;
+  const record = annotations as Record<string, unknown>;
+  // LK5 marks purge destructive; a destructive tool is not a read even beside readOnlyHint true.
+  if (record['destructiveHint'] === true) return false;
+  return record['readOnlyHint'] === true;
+}
 
 export interface LuxKnowledgeConfig {
   includeSensitive?: boolean;
   endpointId: string;
   account: string;
   resource: string;
-  /** Reviewed discovery digest the trusted owner approved for this endpoint. */
-  schemaDigest: string;
   /** Approved read-grant generation; must match the current registry grant. */
   generation: number;
   /** Request budget: largest `limit` a search caller may select. */
@@ -90,7 +117,7 @@ export interface LuxKnowledgeEvidence extends SourceDispatchEvidence {
   decodedResult: unknown;
   classification: 'unknown';
   capability: 'local-only';
-  tool: LuxKnowledgeTool;
+  tool: string;
   source: LuxKnowledgeSource;
   observedAt: number;
   coverage: CompletedResult['coverage'];
@@ -111,7 +138,7 @@ export type LuxKnowledgeResult =
   | LuxKnowledgeUnknown;
 
 export interface LuxKnowledgeReader {
-  lookup(tool: 'list_meetings' | 'get_meeting' | 'list_insights', args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
+  lookup(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
   search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
   get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
 }
@@ -191,8 +218,11 @@ function readIds(value: unknown, max: number): { ok: true; ids: number[] } | { o
 interface Budgets { maxSearchLimit: number; maxGetIds: number; maxQueryChars: number }
 interface Settings extends Budgets {
   includeSensitive: boolean;
-  endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
+  endpointId: string; account: string; resource: string; generation: number;
 }
+
+/** The pinned lookup tools: their arguments are shaped here, never taken from the caller. */
+const PINNED_LOOKUPS: ReadonlySet<string> = new Set(['list_meetings', 'get_meeting', 'list_insights']);
 
 function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: LuxKnowledgeSearchInput } | { ok: false; reason: string } {
   const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs', 'project', 'projectHint', 'snippetChars', 'meetingDateFrom', 'meetingDateTo', 'mode']);
@@ -248,19 +278,19 @@ function validateGet(input: unknown, budgets: Budgets): { ok: true; ids: number[
 }
 
 /** Pre-dispatch gate over the accepted registry. No discovery, no approval, no egress change. */
-function preflight(registry: McpRegistry, settings: Settings, tool: LuxKnowledgeTool): string | undefined {
+function preflight(registry: McpRegistry, settings: Settings, tool: string): string | undefined {
   let grant: ReadGrant | undefined;
   try {
     registry.endpoint(settings.endpointId);
     grant = registry.currentGrant(settings.endpointId);
   } catch { return 'source-unavailable'; }
   if (!grant) return 'grant-absent';
-  if (grant.schemaDigest !== settings.schemaDigest) return 'schema-drift';
   if (grant.generation !== settings.generation) return 'grant-generation-mismatch';
   if (grant.account !== settings.account || grant.resource !== settings.resource) return 'grant-scope-mismatch';
-  const visible = registry.visibleTools(settings.endpointId).map(definition => definition.name);
-  if (visible.some(name => !ELIGIBLE.has(name))) return 'ineligible-tool-granted';
-  if (!visible.includes(tool)) return 'required-definition-absent';
+  const visible = registry.visibleTools(settings.endpointId);
+  // Ruling M21-R1: a granted name the endpoint publishes as a write is a refused grant.
+  if (visible.some(definition => !luxToolAdmitted(definition))) return 'ineligible-tool-granted';
+  if (!visible.some(definition => definition.name === tool)) return 'required-definition-absent';
   return undefined;
 }
 
@@ -273,14 +303,13 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
     endpointId: config.endpointId,
     account: config.account,
     resource: config.resource,
-    schemaDigest: config.schemaDigest,
     generation: requirePositiveSafeInteger(config.generation),
     maxSearchLimit: requirePositiveSafeInteger(config.maxSearchLimit),
     maxGetIds: requirePositiveSafeInteger(config.maxGetIds),
     maxQueryChars: requirePositiveSafeInteger(config.maxQueryChars),
   };
 
-  async function dispatch(tool: LuxKnowledgeTool, args: Record<string, unknown>, signal?: AbortSignal, requestedIds?: readonly number[]): Promise<LuxKnowledgeResult> {
+  async function dispatch(tool: string, args: Record<string, unknown>, signal?: AbortSignal, requestedIds?: readonly number[]): Promise<LuxKnowledgeResult> {
     const request: CallRequest = {
       endpointId: settings.endpointId,
       toolName: tool,
@@ -319,6 +348,8 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       if (!validateKnowledgeLookup(tool, args, settings.maxSearchLimit)) return { state: 'refused', reason: 'invalid_arguments' };
       const denied = preflight(registry, settings, tool);
       if (denied) return { state: 'refused', reason: denied };
+      // Ruling M21-R1: a widened read tool takes exactly its own declared arguments.
+      if (!PINNED_LOOKUPS.has(tool)) return dispatch(tool, { ...args }, signal);
       return dispatch(tool, { limit: Math.min(20, settings.maxSearchLimit), ...args, ...(tool === 'list_meetings' ? {} : { include_sensitive: settings.includeSensitive }) }, signal);
     },
     async search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {
@@ -353,11 +384,27 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
   };
 }
 
+/** Ruling M21-R1: the bounds a widened read tool keeps when the module does not pin its keys. */
+function boundedReadArguments(args: Record<string, unknown>): boolean {
+  const entries = Object.entries(args);
+  if (entries.length > 32) return false;
+  return entries.every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(key) && boundedValue(value));
+}
+function boundedValue(value: unknown): boolean {
+  if (value === null || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'string') return value.length <= 4096;
+  if (Array.isArray(value)) return value.length <= 100 && value.every(boundedValue);
+  return false;
+}
+
 /** Read-only discovery accepts only bounded, literal filters, never server catalogue overrides. */
 export function validateKnowledgeLookup(tool: string, args: Record<string, unknown>, maxLimit: number): boolean {
   const keys = tool === 'list_meetings' ? ['participant', 'date_from', 'date_to', 'order', 'limit']
     : tool === 'get_meeting' ? ['meeting_id', 'limit', 'offset']
     : tool === 'list_insights' ? ['project', 'status', 'count_only', 'limit', 'offset', 'participant', 'meeting_date_from', 'meeting_date_to'] : [];
+  // Ruling M21-R1: a widened read tool keeps the bounds, not the pinned key list.
+  if (!keys.length && !ELIGIBLE.has(tool)) return boundedReadArguments(args);
   if (!keys.length || Object.keys(args).some(key => !keys.includes(key))) return false;
   if (tool === 'get_meeting' && (typeof args.meeting_id !== 'string' || !args.meeting_id.trim())) return false;
   for (const [key, value] of Object.entries(args)) {

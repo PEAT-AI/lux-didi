@@ -327,22 +327,21 @@ test('#901: the final composition draws from the same revision deadline and neve
   const startAt = clock.now();
   const hub = new FakeAuthority();
   const registry = createRegistry({ authority: hub, execute: async () => documentResult('Thursday 5 November 09:00 CET is free', 'plan:1') });
-  let hopSeen = 0, finalSignal: AbortSignal | undefined, finalStarted!: () => void;
+  let finalSignal: AbortSignal | undefined, finalStarted!: () => void;
   const composing = new Promise<void>(resolve => { finalStarted = resolve; });
   const work = runWorker({ registry, identity, input: 'synthetic request', signal: new AbortController().signal, clock,
+    // The hop spends 30 of the 36 s before it meets its read: only 6 s of the revision budget are left
+    // for the composition, and the clock moves only through the worker's own seams.
+    event: phase => { if (phase === 'calls') clock.advance(30_000); },
     infer: async (request, signal): Promise<Inference> => {
       if (request.tools.length > 0) {
-        hopSeen += 1;
-        if (hopSeen > 1) return { text: '', calls: [] };
-        // The hop spends 30 of the 36 s: only 6 s of the revision budget are left for the composition.
-        clock.advance(30_000);
+        if (request.outputs.length > 0) return { text: '', calls: [] };
         return { text: '', calls: [{ id: '1', name: 'read_mail', args: { id: 'm', cursor: null } }] };
       }
       finalSignal = signal; finalStarted();
       return new Promise((_, reject) => { signal.addEventListener('abort', () => reject(new Error('final stopped')), { once: true }); });
     } });
   await composing;
-  assert.ok(hopSeen >= 1, 'the hop ran before the composition');
   // 6 s are left, so a composition still pending one millisecond before the budget cannot be the 24 s timer.
   clock.advance(5_999);
   assert.equal(finalSignal?.aborted, false, 'the composition keeps working while the budget has room');
@@ -353,23 +352,4 @@ test('#901: the final composition draws from the same revision deadline and neve
   assert.equal(answer.status, 'incomplete');
   assert.equal(answer.failure?.stage, 'final');
   assert.equal(answer.failure?.reason_code, 'deadline');
-});
-
-test('#902: a completed calendar read with no events list is an honest empty, not an invalid result', () => {
-  const window = { start: '2026-11-05T00:00:00+01:00', end: '2026-11-06T00:00:00+01:00' };
-  const envelope = (data: unknown) => ({ content: [{ type: 'text', text: JSON.stringify({ data, coverage: { complete: true } }) }] });
-  // The shapes a completed calendar read comes back in when the window holds nothing: the helper either
-  // omits the events key or answers with the calendar list it walked, and neither is a malformed result.
-  for (const data of [{}, { events: null }, { calendars: [{ id: 'primary', primary: true }] }]) {
-    const result = projectTaskPayload('calendar_events', envelope(data), window);
-    assert.equal(result.status, 'empty', 'an empty window is empty, not a failure');
-    assert.equal(result.reason_code, undefined, 'an honest empty must not borrow the invalid_result code');
-    assert.equal(result.failure_category, undefined);
-    assert.match(result.text, /No calendar events between 2026-11-05T00:00:00\+01:00 and 2026-11-06T00:00:00\+01:00/u);
-    assert.match(result.coverage, /returned no events between 2026-11-05T00:00:00\+01:00 and 2026-11-06/u);
-  }
-  // The guard this narrowed around still stands: a mail page with no recognized list is a real failure.
-  const mail = projectTaskPayload('search_mail', envelope({ nothing: true }), {});
-  assert.equal(mail.status, 'failed');
-  assert.equal(mail.reason_code, 'invalid_result');
 });

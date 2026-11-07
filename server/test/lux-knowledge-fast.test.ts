@@ -44,21 +44,21 @@ function vault() {
   return { calls, reader };
 }
 
-test('search forwards mode fast and full and keeps the old wire shape when no mode is given', async () => {
+test('the reader forwards mode fast and full and sends no mode when none is chosen', async () => {
   const { calls, reader } = vault();
-  assert.equal((await reader.search({ query: 'orchard plan', limit: 3, mode: 'fast' })).state, 'completed');
+  assert.equal((await reader.call('search_insights', { query: 'orchard plan', limit: 3, mode: 'fast' })).state, 'completed');
   assert.equal(calls.at(-1)!.arguments['mode'], 'fast');
-  assert.equal((await reader.search({ query: 'orchard plan', limit: 3, mode: 'full' })).state, 'completed');
+  assert.equal((await reader.call('search_insights', { query: 'orchard plan', limit: 3, mode: 'full' })).state, 'completed');
   assert.equal(calls.at(-1)!.arguments['mode'], 'full');
   // The server's own default is full, so an unstated mode travels as no field at all.
-  assert.equal((await reader.search({ query: 'orchard plan', limit: 3 })).state, 'completed');
+  assert.equal((await reader.call('search_insights', { query: 'orchard plan', limit: 3 })).state, 'completed');
   assert.equal(Object.hasOwn(calls.at(-1)!.arguments, 'mode'), false);
   assert.deepEqual(calls.map(call => call.toolName), ['search_insights', 'search_insights', 'search_insights']);
 });
 
 test('search refuses any mode other than fast or full before dispatch', async () => {
   const { calls, reader } = vault();
-  const refused = await reader.search({ query: 'orchard plan', limit: 3, mode: 'quick' } as never);
+  const refused = await reader.call('search_insights', { query: 'orchard plan', limit: 3, mode: 'quick' });
   // The published schema owns the two modes now, so an invented one is refused as invalid arguments.
   assert.deepEqual(refused, { state: 'refused', reason: 'invalid_arguments' });
   assert.equal(calls.length, 0, 'a refused mode never reaches the wire');

@@ -24,13 +24,13 @@ import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeReader, LuxK
 // admission. Anything else the endpoint publishes is never callable.
 const searchTool: ToolDefinition = {
   name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic search',
-  inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' }, mode: { type: 'string', enum: ['fast', 'full'] }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, max_chars: { type: 'integer', minimum: 200, maximum: 6000 }, deadline_ms: { type: 'integer', minimum: 1, maximum: 60000 }, project_boost: { type: 'string' } }, required: ['query'] },
+  inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 1, pattern: '\\S' }, limit: { type: 'integer', minimum: 1 }, include_sensitive: { type: 'boolean' }, mode: { type: 'string', enum: ['fast', 'full'] }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, max_chars: { type: 'integer', minimum: 200, maximum: 6000 }, deadline_ms: { type: 'integer', minimum: 500, maximum: 30000 }, project_boost: { type: 'string' } }, required: ['query'] },
 };
 const getTool: ToolDefinition = {
   name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic by-id read',
-  inputSchema: { type: 'object', properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['insight_ids'] },
+  inputSchema: { type: 'object', properties: { insight_ids: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'integer', minimum: 1 } }, include_links: { type: 'boolean' } }, required: ['insight_ids'] },
 };
-const writerTool: ToolDefinition = { name: 'save_insight', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } };
+const writerTool: ToolDefinition = { name: 'create_insight', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } };
 
 interface WireCall { name: unknown; arguments: unknown }
 interface FixtureOptions {
@@ -182,14 +182,14 @@ test('K4: a project hint reaches the wire as project_boost, and an unknown searc
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    const result = complete(await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, projectHint: 'Wriggler' }));
+    const result = complete(await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, project_boost: 'Wriggler' }));
     assert.equal(result.tool, 'search_insights');
     assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: true, project_boost: 'Wriggler' } }]);
     await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, project_boost: 'Wriggler' });
     assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: true, project_boost: 'Wriggler' } });
     const refused = await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, sort: 'score' } as Record<string, unknown>);
     assert.equal('state' in refused ? refused.state : 'completed', 'refused');
-    assert.equal((refused as { reason?: string }).reason, 'invalid-search-input');
+    assert.equal((refused as { reason?: string }).reason, 'unknown_wire_parameter');
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -207,7 +207,7 @@ test('3r fields outside the server range are refused before dispatch', async () 
       reader.call('search_insights', { query: 'x', limit: 1, deadline_ms: 30_001 }),
     ]);
     assert.deepEqual(outs.map(out => out.state === 'refused' ? out.reason : out.state), [
-      'invalid-detail', 'max-chars-out-of-range', 'max-chars-out-of-range', 'max-chars-out-of-range', 'deadline-ms-out-of-range', 'deadline-ms-out-of-range',
+      'invalid_arguments', 'invalid_arguments', 'invalid_arguments', 'invalid_arguments', 'invalid_arguments', 'invalid_arguments',
     ]);
     assert.deepEqual(f.calls, []);
   } finally { await adapter.close(); await f.close(); }
@@ -263,7 +263,7 @@ test('a completed native search preserves all returned hits and their bodies in 
   } finally { await adapter.close(); await f.close(); }
 });
 
-test('get round trip: requested IDs are cited as requested, include_links pinned false', async () => {
+test('get round trip: requested IDs stay requested and optional wire defaults are not synthesized', async () => {
   const f = await fixture({ call: () => ({ content: [{ type: 'text', text: 'synthetic by-id payload' }] }) });
   const { adapter, registry } = setup(f.url);
   try {
@@ -272,7 +272,7 @@ test('get round trip: requested IDs are cited as requested, include_links pinned
     assert.equal(result.tool, 'get_insight');
     assert.equal(result.classification, 'unknown');
     assert.deepEqual(result.requestedIds, [7, 9]);
-    assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { insight_ids: [7, 9], include_links: false } }]);
+    assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { insight_ids: [7, 9] } }]);
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -282,9 +282,9 @@ test('X2: the discovered read schema is the wire contract and an unlisted key is
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    const refused = await reader.call('get_insight', { insight_ids: [7, 9] });
+    const refused = await reader.call('get_insight', { unknown_field: [7, 9] });
     assert.equal(refused.state, 'refused');
-    assert.equal((refused as { reason?: string }).reason, 'unknown_wire_parameter', 'the retired insight_ids key is not rewritten');
+    assert.equal((refused as { reason?: string }).reason, 'unknown_wire_parameter', 'an unlisted key is not rewritten');
     const served = complete(await reader.call('get_insight', { insight_ids: [7, 9], include_links: true }));
     assert.deepEqual(served.requestedIds, [7, 9]);
     assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { insight_ids: [7, 9], include_links: true } }], 'the model arguments reach the wire unchanged');
@@ -330,9 +330,9 @@ test('strict exact-key validation rejects malformed and extra fields before any 
       reader.call('search_insights', { query: 'x', limit: 1.5 }),
       reader.call('search_insights', { query: 'x', limit: 999 }),
       reader.call('search_insights', { query: 'x'.repeat(201), limit: 1 }),
-      reader.call('search_insights', { query: 'x', limit: 1, include_sensitive: true } as never),
+      reader.call('search_insights', { query: 'x', limit: 1, include_sensitive: 'yes' } as never),
       reader.call('search_insights', { query: 'x', limit: 1, projectHint: '' } as never),
-      reader.call('search_insights', { query: 'x', limit: 1, project_boost: 'two words' } as never),
+      reader.call('search_insights', { query: 'x', limit: 1, project_boost: 2 } as never),
       reader.call('get_insight', null as never),
       reader.call('get_insight', {} as never),
       reader.call('get_insight', { insight_ids: [] }),
@@ -359,12 +359,12 @@ test('no approved grant refuses before dispatch', async () => {
     const result = await reader.call('search_insights', { query: 'x', limit: 1 });
     assert.equal(result.state, 'refused');
     if (result.state !== 'refused') throw new Error('expected refusal');
-    assert.equal(result.reason, 'grant-absent');
+    assert.equal(result.reason, 'grant-scope-mismatch');
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); await f.close(); }
 });
 
-test('a granted write tool is refused: readOnlyHint false is never callable', async () => {
+test('an unannotated mutation is refused even when its name is granted', async () => {
   const f = await fixture();
   const { adapter, registry } = setup(f.url);
   try {
@@ -375,7 +375,7 @@ test('a granted write tool is refused: readOnlyHint false is never callable', as
     const result = await reader.call('search_insights', { query: 'x', limit: 1 });
     assert.equal(result.state, 'refused');
     if (result.state !== 'refused') throw new Error('expected refusal');
-    assert.equal(result.reason, 'ineligible-tool-granted');
+    assert.equal(result.reason, 'tool_missing_or_forbidden');
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); await f.close(); }
 });
@@ -413,7 +413,7 @@ test('M21-R2: an annotated read tool is callable, an unannotated, destructive or
       const refused = await reader.call(name, {});
       assert.equal(refused.state, 'refused', `${name} must be refused`);
       if (refused.state !== 'refused') throw new Error('expected refusal');
-      assert.equal(refused.reason, 'ineligible-tool-granted', name);
+      assert.equal(refused.reason, 'tool_missing_or_forbidden', name);
       assert.equal(g.calls.length, 0, `${name} never reached the wire`);
     } finally { await adapter.close(); await g.close(); }
   }
@@ -421,7 +421,7 @@ test('M21-R2: an annotated read tool is callable, an unannotated, destructive or
 
 test('wrong scope or generation refuse before dispatch', async () => {
   const cases: [keyof LuxKnowledgeConfig, string][] = [
-    ['generation', 'grant-generation-mismatch'],
+    ['generation', 'grant-scope-mismatch'],
     ['account', 'grant-scope-mismatch'], ['resource', 'grant-scope-mismatch'],
   ];
   for (const [field, reason] of cases) {
@@ -657,7 +657,7 @@ test('F1/F2: a search withheld count and by-ID sensitivity-shaped markdown are n
     assert.deepEqual(fetched.requestedIds, [7]);
     assert.deepEqual(f.calls, [
       { name: 'search_insights', arguments: { query: 'ordinary query', limit: 5, include_sensitive: true } },
-      { name: 'get_insight', arguments: { insight_ids: [7], include_links: false } },
+      { name: 'get_insight', arguments: { insight_ids: [7] } },
     ]);
     // The by-ID path has no upstream sensitivity gate (knowledge-boundary F4/F5): the connector
     // neither filters nor reclassifies it and never derives authority from the markdown.
@@ -790,7 +790,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
     try {
       const grant = trusted.registry.currentGrant('source')!;
       assert.deepEqual([...grant.toolNames].sort(), ['get_insight', 'search_insights']);
-      assert.equal(grant.toolNames.includes('save_insight'), false);
+      assert.equal(grant.toolNames.includes('create_insight'), false);
       assert.equal(grant.effect, 'read');
       assert.deepEqual(trusted.connectionIds(), ['source']);
       assert.equal(trusted.status().endpoints[0]!.tools, 2);
@@ -808,7 +808,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
       assert.notEqual(after.schemaDigest, before);
       assert.ok(after.generation > grant.generation);
       assert.deepEqual([...after.toolNames].sort(), ['get_insight', 'list_topics', 'search_insights'], 'the annotated read joins the grant, the write never does');
-      assert.equal(after.toolNames.includes('save_insight'), false);
+      assert.equal(after.toolNames.includes('create_insight'), false);
       assert.match(after.schemaDigest, /^[0-9a-f]{64}$/u, 'the grant rides the digest just observed');
       assert.deepEqual(lifecycle.filter(name => name === 'mcp_trusted_rediscovered'), ['mcp_trusted_rediscovered'], 'the rediscovery is logged once per digest change');
       // The two pinned reads still dispatch after the change, with no operator approval in between.
@@ -866,7 +866,11 @@ test('MED-1022: the voice bound and the meeting day reach the wire, and a bad va
 
 
 test('reviewed meeting and list tools dispatch only bounded read-only filters with sensitivity', async () => {
-  const tools: ToolDefinition[] = ['list_meetings', 'get_meeting', 'list_insights'].map(name => ({ name, inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }));
+  const tools: ToolDefinition[] = [
+    { name: 'list_meetings', inputSchema: { type: 'object', properties: { participant: { type: 'string' }, meeting_date_from: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 25 } }, required: ['participant'] }, annotations: { readOnlyHint: true, destructiveHint: false } },
+    { name: 'get_meeting', inputSchema: { type: 'object', properties: { meeting_id: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 25 }, include_sensitive: { type: 'boolean' } }, required: ['meeting_id'] }, annotations: { readOnlyHint: true, destructiveHint: false } },
+    { name: 'list_insights', inputSchema: { type: 'object', properties: { count_only: { type: 'boolean' }, limit: { type: 'integer', minimum: 1, maximum: 25 }, include_sensitive: { type: 'boolean' } } }, annotations: { readOnlyHint: true, destructiveHint: false } },
+  ];
   const f = await fixture({ list: () => ({ tools: [searchTool, getTool, ...tools, writerTool] }) });
   const { adapter, registry } = setup(f.url);
   try {
@@ -882,7 +886,7 @@ test('reviewed meeting and list tools dispatch only bounded read-only filters wi
       complete(await reader.call(tool, args));
       assert.deepEqual(f.calls.at(-1), { name: tool, arguments: { ...args, ...(tool === 'list_meetings' ? {} : { include_sensitive: true }) } });
     }
-    assert.ok(!adapter.visibleTools('source').some(tool => tool.name === 'save_insight'));
+    assert.ok(!adapter.visibleTools('source').some(tool => tool.name === 'create_insight'));
   } finally { await adapter.close(); await f.close(); }
 });
 

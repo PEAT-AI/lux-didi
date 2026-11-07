@@ -53,6 +53,7 @@ export function createLuxKnowledgeReader({ port, registry, config }: LuxKnowledg
       if ('reason' in result) return result;
       if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
       return { state: result.state, classification: 'unknown', capability: 'local-only', tool,
+        ...(Array.isArray(ids) ? { requestedIds: [...ids] as number[] } : {}),
         decodedResult: structuredClone(result.decodedResult), source: { ...result.source }, observedAt: result.freshness.receivedAt,
         coverage: structuredClone(result.coverage), projection: structuredClone(result.projection), response: structuredClone(result.payload),
         ...(result[SOURCE_DISPATCH] ? { [SOURCE_DISPATCH]: result[SOURCE_DISPATCH] } : {}) };

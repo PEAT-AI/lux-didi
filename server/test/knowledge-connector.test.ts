@@ -24,11 +24,11 @@ import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeReader, LuxK
 // admission. Anything else the endpoint publishes is never callable.
 const searchTool: ToolDefinition = {
   name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic search',
-  inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query'] },
+  inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' }, mode: { type: 'string', enum: ['fast', 'full'] }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, max_chars: { type: 'integer', minimum: 200, maximum: 6000 }, deadline_ms: { type: 'integer', minimum: 1, maximum: 60000 }, project_boost: { type: 'string' } }, required: ['query'] },
 };
 const getTool: ToolDefinition = {
   name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic by-id read',
-  inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids'] },
+  inputSchema: { type: 'object', properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['insight_ids'] },
 };
 const writerTool: ToolDefinition = { name: 'save_insight', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } };
 
@@ -144,7 +144,7 @@ test('search round trip: exact arguments, opaque unknown/local-only evidence, ex
     assert.equal(result.coverage.basis, 'single-tool-result');
     assert.equal(result.coverage.remoteSideEffects, 'unverified');
     assert.equal(result.requestedIds, undefined);
-    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'synthetic query', limit: 3, include_sensitive: false } }]);
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'synthetic query', limit: 3, include_sensitive: true } }]);
     assert.equal(result.response.state, 'available');
     if (result.response.state !== 'available') throw new Error('missing response handle');
     assert.equal(result.response.encoding, 'http-response-entity');
@@ -170,10 +170,10 @@ test('3r voice search: the bounded-body fields reach the wire exactly, and no ot
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.call('search_insights', { query: 'synthetic query', limit: 6, detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 }));
     assert.equal(result.tool, 'search_insights');
-    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'synthetic query', limit: 6, include_sensitive: false, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 } }]);
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'synthetic query', limit: 6, include_sensitive: true, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 } }]);
     // A snippet search keeps the old wire shape: the 3r fields travel only when asked for.
     await reader.call('search_insights', { query: 'synthetic query', limit: 3 });
-    assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'synthetic query', limit: 3, include_sensitive: false } });
+    assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'synthetic query', limit: 3, include_sensitive: true } });
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -184,9 +184,9 @@ test('K4: a project hint reaches the wire as project_boost, and an unknown searc
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, projectHint: 'Wriggler' }));
     assert.equal(result.tool, 'search_insights');
-    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project_boost: 'Wriggler' } }]);
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: true, project_boost: 'Wriggler' } }]);
     await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, project: 'Wriggler' });
-    assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: false, project: 'Wriggler' } });
+    assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: true, project: 'Wriggler' } });
     const refused = await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, sort: 'score' } as Record<string, unknown>);
     assert.equal('state' in refused ? refused.state : 'completed', 'refused');
     assert.equal((refused as { reason?: string }).reason, 'invalid-search-input');
@@ -240,7 +240,7 @@ test('a larger native search limit returns and preserves the next slice without 
     };
     assert.equal(JSON.parse(text(first)).results.length, 20);
     assert.equal(JSON.parse(text(second)).results.length, 25, 'the named larger limit returns the next slice');
-    assert.deepEqual(f.calls.at(-1), { name: 'search_insights', arguments: { query: 'q', limit: 25, include_sensitive: false } });
+    assert.deepEqual(f.calls.at(-1), { name: 'search_insights', arguments: { query: 'q', limit: 25, include_sensitive: true } });
     const shaped = shapeLuxKnowledge('search_insights', text(second));
     assert.equal(shaped.partial, false, 'the formatter did not discard returned source bodies');
     assert.equal((shaped.text.match(/^### /gm) ?? []).length, 25);
@@ -268,11 +268,11 @@ test('get round trip: requested IDs are cited as requested, include_links pinned
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    const result = complete(await reader.call('get_insight', { ids: [7, 9] }));
+    const result = complete(await reader.call('get_insight', { insight_ids: [7, 9] }));
     assert.equal(result.tool, 'get_insight');
     assert.equal(result.classification, 'unknown');
     assert.deepEqual(result.requestedIds, [7, 9]);
-    assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { ids: [7, 9], include_links: false } }]);
+    assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { insight_ids: [7, 9], include_links: false } }]);
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -282,9 +282,9 @@ test('X2: the discovered read schema is the wire contract and an unlisted key is
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    const refused = await reader.call('get_insight', { ids: [7, 9] });
+    const refused = await reader.call('get_insight', { insight_ids: [7, 9] });
     assert.equal(refused.state, 'refused');
-    assert.equal((refused as { reason?: string }).reason, 'unknown_wire_parameter', 'the retired ids key is not rewritten');
+    assert.equal((refused as { reason?: string }).reason, 'unknown_wire_parameter', 'the retired insight_ids key is not rewritten');
     const served = complete(await reader.call('get_insight', { insight_ids: [7, 9], include_links: true }));
     assert.deepEqual(served.requestedIds, [7, 9]);
     assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { insight_ids: [7, 9], include_links: true } }], 'the model arguments reach the wire unchanged');
@@ -310,8 +310,8 @@ test('X2: get_insight forwards a requested include_links to the MCP call', async
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    complete(await reader.call('get_insight', { ids: [7, 9], include_links: true } as never));
-    assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { ids: [7, 9], include_links: true } }]);
+    complete(await reader.call('get_insight', { insight_ids: [7, 9], include_links: true } as never));
+    assert.deepEqual(f.calls, [{ name: 'get_insight', arguments: { insight_ids: [7, 9], include_links: true } }]);
   } finally { await adapter.close(); await f.close(); }
 });
 
@@ -335,13 +335,13 @@ test('strict exact-key validation rejects malformed and extra fields before any 
       reader.call('search_insights', { query: 'x', limit: 1, project: 'two words' } as never),
       reader.call('get_insight', null as never),
       reader.call('get_insight', {} as never),
-      reader.call('get_insight', { ids: [] }),
-      reader.call('get_insight', { ids: [0] }),
-      reader.call('get_insight', { ids: [-3] }),
-      reader.call('get_insight', { ids: [1, 1] }),
-      reader.call('get_insight', { ids: [1.2] }),
-      reader.call('get_insight', { ids: [1, 2, 3, 4, 5, 6, 7, 8, 9] }),
-      reader.call('get_insight', { ids: [1], project: 'p' } as never),
+      reader.call('get_insight', { insight_ids: [] }),
+      reader.call('get_insight', { insight_ids: [0] }),
+      reader.call('get_insight', { insight_ids: [-3] }),
+      reader.call('get_insight', { insight_ids: [1, 1] }),
+      reader.call('get_insight', { insight_ids: [1.2] }),
+      reader.call('get_insight', { insight_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9] }),
+      reader.call('get_insight', { insight_ids: [1], project: 'p' } as never),
     ]);
     for (const result of rejected) assert.equal(result.state, 'refused');
     assert.equal(f.calls.length, 0);
@@ -468,7 +468,7 @@ test('sensitive-shaped and hostile markdown stays unknown/local-only and trigger
     assert.equal(result.capability, 'local-only');
     assert.equal('sensitivity' in result, false);
     assert.match(result.projection.text, /personnel/);
-    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'ordinary query', limit: 1, include_sensitive: false } }]);
+    assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'ordinary query', limit: 1, include_sensitive: true } }]);
     assert.equal(f.calls.length, 1);
   } finally { await adapter.close(); await f.close(); }
 });
@@ -479,7 +479,7 @@ test('a changed response between search and fetch gets a new original-byte hash 
   try {
     const { reader } = await readerFor(adapter, registry);
     const search = complete(await reader.call('search_insights', { query: 'x', limit: 1 }));
-    const fetched = complete(await reader.call('get_insight', { ids: [1] }));
+    const fetched = complete(await reader.call('get_insight', { insight_ids: [1] }));
     assert.equal(search.response.state, 'available');
     assert.equal(fetched.response.state, 'available');
     if (search.response.state !== 'available' || fetched.response.state !== 'available') throw new Error('missing handles');
@@ -567,15 +567,15 @@ test('strict dense-array DTO rejects sparse, accessor, symbol, non-enumerable, e
     const customIterator = [1, 2]; Object.defineProperty(customIterator, Symbol.iterator, { value: () => [].values(), enumerable: false, configurable: true });
     const nonEnumerable = [1, 2]; Object.defineProperty(nonEnumerable, 'hidden', { value: 9, enumerable: false, configurable: true });
     const extraKey = [1, 2]; (extraKey as unknown as Record<string, unknown>).extra = 9;
-    const getter: Record<string, unknown> = {}; Object.defineProperty(getter, 'ids', { get: () => [1], enumerable: true, configurable: true });
+    const getter: Record<string, unknown> = {}; Object.defineProperty(getter, 'insight_ids', { get: () => [1], enumerable: true, configurable: true });
     const rejected = await Promise.all([
-      reader.call('get_insight', { ids: sparse as never }),
-      reader.call('get_insight', { ids: accessor as never }),
-      reader.call('get_insight', { ids: symbolKey as never }),
-      reader.call('get_insight', { ids: customIterator as never }),
-      reader.call('get_insight', { ids: nonEnumerable as never }),
-      reader.call('get_insight', { ids: extraKey as never }),
-      reader.call('get_insight', { ids: [1, 2.5] as never }),
+      reader.call('get_insight', { insight_ids: sparse as never }),
+      reader.call('get_insight', { insight_ids: accessor as never }),
+      reader.call('get_insight', { insight_ids: symbolKey as never }),
+      reader.call('get_insight', { insight_ids: customIterator as never }),
+      reader.call('get_insight', { insight_ids: nonEnumerable as never }),
+      reader.call('get_insight', { insight_ids: extraKey as never }),
+      reader.call('get_insight', { insight_ids: [1, 2.5] as never }),
       reader.call('get_insight', getter as never),
     ]);
     for (const result of rejected) assert.equal(result.state, 'refused');
@@ -633,7 +633,7 @@ test('budgets are captured stably at construction and never silently capped or d
     config.maxSearchLimit = 1; // later caller mutation must not change the captured budget
     const result = await reader.call('search_insights', { query: 'x', limit: 123_456_789 });
     assert.equal(result.state, 'completed');
-    assert.deepEqual(f.calls[0]?.arguments, { query: 'x', limit: 123_456_789, include_sensitive: false });
+    assert.deepEqual(f.calls[0]?.arguments, { query: 'x', limit: 123_456_789, include_sensitive: true });
     const over = await reader.call('search_insights', { query: 'x', limit: 123_456_790 });
     assert.equal(over.state, 'refused');
     assert.equal(f.calls.length, 1);
@@ -648,7 +648,7 @@ test('F1/F2: a search withheld count and by-ID sensitivity-shaped markdown are n
   try {
     const { reader } = await readerFor(adapter, registry);
     const search = complete(await reader.call('search_insights', { query: 'ordinary query', limit: 5 }));
-    const fetched = complete(await reader.call('get_insight', { ids: [7] }));
+    const fetched = complete(await reader.call('get_insight', { insight_ids: [7] }));
     assert.equal(search.classification, 'unknown');
     assert.equal(fetched.classification, 'unknown');
     assert.equal('sensitivity' in search, false);
@@ -656,8 +656,8 @@ test('F1/F2: a search withheld count and by-ID sensitivity-shaped markdown are n
     assert.deepEqual(search.requestedIds, undefined);
     assert.deepEqual(fetched.requestedIds, [7]);
     assert.deepEqual(f.calls, [
-      { name: 'search_insights', arguments: { query: 'ordinary query', limit: 5, include_sensitive: false } },
-      { name: 'get_insight', arguments: { ids: [7], include_links: false } },
+      { name: 'search_insights', arguments: { query: 'ordinary query', limit: 5, include_sensitive: true } },
+      { name: 'get_insight', arguments: { insight_ids: [7], include_links: false } },
     ]);
     // The by-ID path has no upstream sensitivity gate (knowledge-boundary F4/F5): the connector
     // neither filters nor reclassifies it and never derives authority from the markdown.
@@ -814,7 +814,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
       // The two pinned reads still dispatch after the change, with no operator approval in between.
       const reader = createLuxKnowledgeReader({ port: trusted.port, registry: trusted.registry, config: { ...baseConfig(), generation: after.generation } });
       assert.equal((await reader.call('search_insights', { query: 'synthetic', limit: 1 })).state, 'completed');
-      assert.equal((await reader.call('get_insight', { ids: [1] })).state, 'completed');
+      assert.equal((await reader.call('get_insight', { insight_ids: [1] })).state, 'completed');
       assert.deepEqual(f.calls.map(call => call.name), ['search_insights', 'get_insight']);
     } finally { await trusted.close(); trustedStore.close(); }
   } finally { await explicitFixture.close(); await f.close(); }
@@ -848,8 +848,8 @@ test('MED-1022: the voice bound and the meeting day reach the wire, and a bad va
     const { reader } = await readerFor(adapter, registry);
     complete(await reader.call('search_insights', { query: 'ocp prep call', limit: 6, detail: 'voice', maxChars: 3_000, snippetChars: 300, meetingDateFrom: '2026-10-21', meetingDateTo: '2026-10-21' }));
     assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: {
-      query: 'ocp prep call', limit: 6, include_sensitive: false, detail: 'voice', max_chars: 3_000, snippet_chars: 300,
-      meeting_date_from: '2026-10-21', meeting_date_to: '2026-10-21',
+      query: 'ocp prep call', limit: 6, include_sensitive: true, detail: 'voice', max_chars: 3_000, snippet_chars: 300,
+      meeting_meeting_date_from: '2026-10-21', meeting_meeting_date_to: '2026-10-21',
     } }]);
     const outs = await Promise.all([
       reader.call('search_insights', { query: 'x', limit: 1, snippetChars: 99 }),
@@ -872,7 +872,7 @@ test('reviewed meeting and list tools dispatch only bounded read-only filters wi
   try {
     const { reader } = await readerFor(adapter, registry);
     for (const [tool, args, invalid] of [
-      ['list_meetings', { participant: 'Synthetic', date_from: '2026-01-01', limit: 2 }, { date_from: '2026-02-30' }],
+      ['list_meetings', { participant: 'Synthetic', meeting_date_from: '2026-01-01', limit: 2 }, { meeting_date_from: '2026-02-30' }],
       ['get_meeting', { meeting_id: 'synthetic', limit: 2 }, { limit: 2 }],
       ['list_insights', { count_only: true, limit: 2 }, { limit: 100000 }],
     ] as const) {

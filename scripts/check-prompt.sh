@@ -69,9 +69,9 @@ for (const rule of [
 for (const gone of ['freshly worded', 'nothing summarised', 'Close with a costly question', 'Say still about one',
   'Say still about one only'])
   assert.equal(voice.includes(gone) || persona.NAYA_CHARACTER.includes(gone), false, `the contradictory or garbled line is gone: ${gone}`);
-assert.match(persona.NAYA_CHARACTER, /A closing question earns its place only when his answer would change what you do next/);
-assert.match(persona.NAYA_CHARACTER, /Call something still open or still true only when it was confirmed in the last 24 hours/);
-assert.match(persona.NAYA_VOICE_SURFACE, /when nothing current is open, greet the moment itself/,
+assert.match(persona.NAYA_CHARACTER, /Ask a closing question only if its answer changes your next action/);
+assert.match(persona.NAYA_CHARACTER, /Call something still open or true only if confirmed within 24 hours/);
+assert.match(persona.NAYA_VOICE_SURFACE, /greet the moment if none is open/,
   'a call with nothing open greets the moment');
 // C-PROMPT: the class one topic belongs to is the class the note names and the plan refuses.
 assert.deepEqual(persona.buildOpeningFacts({ now: 0, timeZone: 'UTC', familyNames: [], floorSubjects: [], savedForHim: ['the supplier payment came to 4,200 dollars'] }).facts.saved_for_him, []);
@@ -86,7 +86,7 @@ for (const rule of [
   'You cannot see work in progress',
   'give what is there rather than only that it is incomplete',
   'no reflex tag',
-  'the floor stays his',
+  'His floor includes thinking',
 ]) assert.ok(voice.includes(rule) || persona.NAYA_VOICE_SURFACE.includes(rule), `the new conduct is stated: ${rule}`);
 for (const rule of [
   'Supply exact facts for her to phrase in her own voice',
@@ -169,7 +169,7 @@ for (const reasonCode of ['credential_missing', 'credential-unavailable', 'crede
     connectors: [{ connector: 'mongoose', state: 'error', reasonCode }] });
   assert.match(one, /^Connectors: company knowledge not signed in\./mu, `host sign-in code classified as a sign-in: ${reasonCode}`);
 }
-for (const rule of ['say you cannot hear it', 'never say you are unchanged', 'no reflex tag']) {
+for (const rule of ['say you cannot hear it', 'not that you are unchanged', 'no reflex tag']) {
   assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
 }
 // Result honesty belongs to the work policy, not a host-authored line for her to say.
@@ -190,7 +190,7 @@ assert.match(notConnected, /^Connectors: team chat not connected\./mu, 'a connec
 console.log(JSON.stringify({ case: 'connector_truth', approvalNoControl: true, noSettingsLocation: true, notConnected: true }));
 // C-CLAIMS9 outcome 2, W3-R2: the rule holds on a session with no connector rows too, where no connector line
 // is built at all, so it lives in the voice surface the model always receives.
-assert.ok(persona.NAYA_VOICE_SURFACE.includes('Never name a settings or approval location the connector state line does not name.'),
+assert.ok(persona.NAYA_VOICE_SURFACE.includes('Name settings or approval locations only from the connector state line.'),
   'the voice surface forbids naming a location the connector state line does not name, with or without connector rows');
 console.log(JSON.stringify({ case: 'connector_truth_without_rows', voiceRule: true }));
 NODE
@@ -200,8 +200,8 @@ node --input-type=module - "$out/dist" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
-assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations word for word through what the helper returned'));
-assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what the helper returned; never invent a past quote.'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('helper-returned conversations allow word-for-word lookback'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only returned words, since past quotes cannot be invented.'));
 assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE
 

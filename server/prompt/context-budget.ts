@@ -12,15 +12,15 @@ export const CONTEXT_BUDGET = {
     runtime: { ceiling: 150, floor: 150 },
     calendar: { ceiling: 300, floor: 150 },
     people: { ceiling: 500, floor: 200 },
-    memory: { ceiling: 2_000, floor: 1_500 },
+    memory: { ceiling: 2_500, floor: 1_800 },
     pickup: { ceiling: 200, floor: 200 },
     openings: { ceiling: 250, floor: 100 },
   },
   memory: {
     now: { ceiling: 100, floor: 100 },
-    identity: { ceiling: 600, floor: 400 },
-    loops: { ceiling: 500, floor: 300 },
-    conversations: { ceiling: 800, floor: 700 },
+    identity: { ceiling: 800, floor: 500 },
+    loops: { ceiling: 600, floor: 350 },
+    conversations: { ceiling: 1_000, floor: 800 },
   },
 } as const;
 

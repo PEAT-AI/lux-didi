@@ -427,7 +427,9 @@ test('C-LUXRECEIPT: an envelope that carries no receipt is still invalid_receipt
 });
 
 test('C-LUXRECEIPT: a durable voice save is confirmed from lux\'s wrapped envelope', async t => {
-  const { fetchImpl } = luxFetch({ callResult: wrappedLuxReceipt({ action: 'inserted', disposition: 'created', insight_id: 81, candidates: [] }) });
+  const tools = [{ name: 'create_insight', description: 'Create an insight', annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    inputSchema: CREATE_SCHEMA }];
+  const { fetchImpl } = luxFetch({ tools, callResult: wrappedLuxReceipt({ action: 'inserted', disposition: 'created', insight_id: 81, candidates: [] }) });
   const h = harness(t, 'http://127.0.0.1:12345/mcp', fetchImpl);
   assert.deepEqual(await save(h, NOTE), { disposition: 'created', insight_id: 81 }, 'the save is confirmed, never mapped to failed');
   const row = h.store.transaction(tx => tx.get('SELECT state,insight_id FROM vault_writes', []));

@@ -2827,6 +2827,20 @@ export class LiveSessionOwner {
     handle.watchdogSince = undefined; handle.watchdogPhase = undefined;
   }
 
+  /**
+   * #924/#802: one quiet continuation input for a response that opened and made no audible output. It is never a
+   * rebuild: no session is replaced, no timer is moved earlier, and a turn earns it once.
+   */
+  #nudgeSilentContinuation(handle: ActiveSession): void {
+    if (this.#settled(handle) || handle.rebuilding) return;
+    if (handle.pendingCallIds.size > 0 || this.#continuationReRequested.has(handle)) return;
+    this.#continuationReRequested.add(handle);
+    const openSince = handle.responseCreatedAt ?? handle.debtSince ?? this.#now();
+    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: Math.max(0, this.#now() - openSince) });
+    handle.deadAirNudgedAt = this.#now();
+    this.#sendHostSpeech(handle, hostNote(CONTINUATION_RE_REQUEST_NOTE), 'The tool batch settled with no spoken continuation.');
+  }
+
   /** One neutral event either leaves a turn owing a reply (arm), refreshes the silence clock (re-arm) or clears it. */
   #watchdogEvent(handle: ActiveSession, event: LiveVoiceEvent): void {
     if (this.#settled(handle) || handle.rebuilding) return;
@@ -2837,7 +2851,11 @@ export class LiveSessionOwner {
       if (handle.debtSince !== undefined && handle.pendingCallIds.size === 0 && handle.deadAirNudgedAt === undefined) {
         handle.debtTimer?.cancel(); handle.debtTimer = undefined;
         void this.#debtRung(handle, handle.generation, 'rung', true).catch(() => { /* recovery settles its own failures */ });
+        return;
       }
+      // #924/#802: with no audible-debt clock running, the nudge stands alone: the turn's own watchdog keeps its
+      // 8 s recovery, so a faster answer is never a faster rebuild.
+      this.#nudgeSilentContinuation(handle);
       return;
     }
     // D3: a fill frame is not output. The provider streams inaudible frames between sentences, so re-arming

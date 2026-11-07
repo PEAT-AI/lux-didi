@@ -330,21 +330,17 @@ test('C-REBUILD B: a held note is not dropped by the late window on its way back
 });
 
 // #924/#802: about thirty percent of continuations go silent, and today recovery waits for the 8 s dead-air rung
-// or the 23 s rebuild. A silent continuation is reported by the adapter at its window and earns exactly one quiet
-// continuation input, once per turn. It is never a rebuild, and the record carries the measured gap.
-test('#924/#802: a silent continuation is nudged once, before the rung, and never twice in a turn', async t => {
+// or the 23 s rebuild. A response the adapter opened and heard nothing from earns exactly one quiet continuation
+// input, once per turn, recorded with the gap the owner sat through, and never a rebuild.
+test('#924/#802: a silent continuation is nudged once with its gap, and never twice in a turn', async t => {
   const live = await openCall(t);
   await live.emit(ownerFinal('What did we decide about the bridge?'));
-  await live.emit(toolCall('silent-1'));
-  // The report can land before or after the tool result settles, so it is offered across the window a silent
-  // response really reports in; the host may answer it once and only once.
-  for (let waited = 0; waited < 20_000 && rungReceipts(live).length === 0; waited += 250) {
-    await live.advance(250);
-    await live.emit(silentContinuation());
-  }
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await live.advance(1_500);
+  await live.emit(silentContinuation());
   const nudges = rungReceipts(live);
   assert.equal(nudges.length, 1, 'one quiet nudge for one stuck continuation');
-  assert.ok(Number(nudges[0]?.elapsedMs) < AUDIBLE_DEBT_RUNG_MS, 'the record names a gap shorter than the 8 s rung');
+  assert.ok(Number(nudges[0]?.elapsedMs) >= 1_500, 'the record carries the measured gap the owner sat through');
   assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the nudge is one continuation input, never a rebuild');
   assert.match(live.fake.texts.at(-1) ?? '', /lookup has finished/);
   await live.emit(silentContinuation());

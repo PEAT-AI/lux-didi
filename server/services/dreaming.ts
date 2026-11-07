@@ -14,7 +14,7 @@ import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import { historySessionEvidence, ownerMemorySession, ownerMemorySessionSql } from '../domain/history-lifecycle.js';
 import {
-  activeItems, claimJob, completeJob, failJob, generationNow, insertItem, invalidateItem, job, supersedeItem,
+  activeItem, activeItems, claimJob, completeJob, failJob, generationNow, insertItem, invalidateItem, job, supersedeItem,
   type MemoryItem,
 } from '../domain/memory-items.js';
 import { getBySession as summaryForSession } from '../domain/summaries.js';
@@ -242,11 +242,22 @@ export function readDreamingSession(store: StorePort, liveSessionId: string, fal
   });
 }
 
-/** A call earns the extractor's request only when its owner said something twice, and at some length. */
+/**
+ * #948: the cues that a short call still carries something meant to outlive it: a preference, a
+ * correction, a dated plan or an explicit "remember this". A greeting carries none of them.
+ */
+const DURABLE_STATEMENT_CUE = /\bremember (?:this|that)\b|\bfrom now on\b|\bgoing forward\b|\bi (?:prefer|always|never|no longer|do not|don'?t|hate|love)\b|\bnot anymore\b|\bactually\b|\bno, |\bcorrection\b|\bscrap that\b|\b(?:tomorrow|tonight|next week|next month|next (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i;
+
+/**
+ * A call earns the extractor's request when its owner said something twice, and at some length. A
+ * short call still earns it when one owner turn states something durable, which the extractor then
+ * has to keep; that is why the cue, not only the length, decides.
+ */
 function belowSubstantiveFloor(turns: readonly DreamingTurn[]): boolean {
   const owner = turns.filter(turn => turn.role === 'owner');
   const chars = owner.reduce((total, turn) => total + turn.text.trim().length, 0);
-  return owner.length < DREAMING_FLOOR_MIN_OWNER_TURNS || chars < DREAMING_FLOOR_MIN_OWNER_CHARS;
+  if (owner.length >= DREAMING_FLOOR_MIN_OWNER_TURNS && chars >= DREAMING_FLOOR_MIN_OWNER_CHARS) return false;
+  return !owner.some(turn => DURABLE_STATEMENT_CUE.test(turn.text));
 }
 
 function localStamp(ms: number, timeZone: string): string {
@@ -355,17 +366,25 @@ export function createDreaming(options: DreamingOptions): Dreaming {
       deadlineMs: deadlineAt(options.now(), options.deadlineBudgetMs ?? DREAMING_DEADLINE_BUDGET_MS) });
   }
 
-  function applyOperation(tx: Transaction, operation: DreamingOperation, session: DreamingSession): void {
-    if (operation.op === 'noop') return;
+  /** Whether this operation made an earlier equivalent transient row the superseded history. */
+  function applyOperation(tx: Transaction, operation: DreamingOperation, session: DreamingSession): boolean {
+    if (operation.op === 'noop') return false;
     const now = options.now();
-    if (operation.op === 'invalidate') { invalidateItem(tx, operation.id, operation.reason); return; }
+    if (operation.op === 'invalidate') { invalidateItem(tx, operation.id, operation.reason); return false; }
     const body = operation.item;
+    // #949: a transient state dreamed again, from this job or an earlier one, keeps one active row.
+    // Reading it before the insert keeps the lookup off the row this operation is about to write, and
+    // the collapse goes through the same supersede path an explicit supersede uses.
+    const replaced = body.kind === 'transient_state' ? activeItem(tx, 'transient_state', body.subject) : null;
     const created = insertItem(tx, { kind: body.kind, text: body.text, subject: body.subject, salience: body.salience,
       authority: 'derived', eventAt: body.eventAt, eventTz: body.eventTz, eventText: body.eventText, place: body.place,
       validFrom: session.turns.find(turn => turn.id === operation.turnStartId)?.at ?? now, validUntil: body.validUntil,
       createdAt: now, createdBy: `dreaming:${DREAMING_EXTRACTOR_VERSION}`,
       sources: [{ sessionId: session.id, turnStartId: operation.turnStartId, turnEndId: operation.turnEndId }] });
     if (operation.op === 'supersede') supersedeItem(tx, operation.oldId, created.id, now);
+    if (replaced === null || replaced.id === operation.oldId) return false;
+    supersedeItem(tx, replaced.id, created.id, now);
+    return true;
   }
 
   async function runSession(liveSessionId: string): Promise<DreamingOutcome> {
@@ -405,11 +424,13 @@ export function createDreaming(options: DreamingOptions): Dreaming {
     const rejected = [...parsed.rejected, ...validated.rejected];
     for (const rejection of rejected) options.log({ event: 'dreaming_op_rejected', liveSessionId, op: rejection.op, reason: rejection.reason });
     const ops = countOps(validated.accepted);
-    const commit: { failure: string | null } = { failure: null };
+    const commit: { failure: string | null; superseded: number } = { failure: null, superseded: 0 };
     try {
       options.store.transaction(tx => {
         if (generationNow(tx) !== claim.generation) throw new Error('generation_stale');
-        for (const operation of validated.accepted) applyOperation(tx, operation, session);
+        for (const operation of validated.accepted) {
+          if (applyOperation(tx, operation, session)) commit.superseded += 1;
+        }
         if (!completeJob(tx, claim.id, session.turns.at(-1)?.id ?? 0, options.now())) throw new Error('generation_stale');
       });
     } catch (error) {
@@ -421,7 +442,10 @@ export function createDreaming(options: DreamingOptions): Dreaming {
       options.log({ event: 'dreaming_failed', liveSessionId, jobId: claim.id, reason: commit.failure });
       return { status: 'failed', reason: commit.failure, ops: NO_OPS, rejected: rejected.length, coverageGap: session.coverageGap, elapsedMs };
     }
+    // The per-job outcome, counts only: a row it collapsed carries `superseded`, anything else the
+    // extractor committed carries `extracted`. `ops` already carries the per-operation counts.
     options.log({ event: 'dreaming_done', liveSessionId, jobId: claim.id, ops: opsLine(ops), rejected: rejected.length,
+      outcome: commit.superseded > 0 ? 'superseded' : 'extracted',
       coverageGap: session.coverageGap, elapsedMs });
     return { status: 'done', ops, rejected: rejected.length, coverageGap: session.coverageGap, elapsedMs };
   }

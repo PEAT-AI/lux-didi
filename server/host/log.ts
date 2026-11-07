@@ -131,7 +131,7 @@ const DREAMING_REFUSALS: readonly string[] = ['turn_outside_session', 'explicit_
   'unknown_operation', 'unknown_kind', 'empty_text', 'text_too_long', 'unknown_subject', 'missing_salience',
   'invalid_salience', 'unparsable_event_at', 'unparsable_valid_until', 'model_noop'];
 /** M17: the one outcome a dreaming_done line may name instead of an extraction. */
-const DREAMING_OUTCOMES: readonly string[] = ['skipped_below_floor'];
+const DREAMING_OUTCOMES: readonly string[] = ['skipped_below_floor', 'extracted', 'superseded'];
 /** Counts by operation, as `add:1 supersede:2`: a closed summary, never the text of an item. */
 const isSafeOps = (value: unknown): value is string => typeof value === 'string' && /^(|(add|supersede|invalidate|noop):\d{1,6}( (add|supersede|invalidate|noop):\d{1,6})*)$/.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;

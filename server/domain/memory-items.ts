@@ -297,6 +297,20 @@ export function itemsForSubject(tx: Transaction, subject: string): MemoryItem[] 
   return tx.all('SELECT * FROM memory_items WHERE subject = ? ORDER BY created_at DESC, id', [subject]).map(mapItem);
 }
 
+/**
+ * #949: the one active row of this kind and subject, matched on the normalized subject so a mere
+ * case or spacing difference still names the same state. A new item supersedes it rather than
+ * leaving a second active copy of the same transient state behind.
+ */
+export function activeItem(tx: Transaction, kind: MemoryKind, subject: string): MemoryItem | null {
+  const row = tx.get(
+    "SELECT * FROM memory_items WHERE status='active' AND kind=? AND lower(trim(subject))=lower(trim(?))" +
+    ' ORDER BY created_at DESC, id DESC LIMIT 1',
+    [kind, subject],
+  );
+  return row === undefined ? null : mapItem(row);
+}
+
 /** The turns a fact came from, with their text joined at read time. */
 export function sources(tx: Transaction, id: string): MemorySourceTurn[] {
   return tx.all(

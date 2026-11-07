@@ -195,7 +195,7 @@ export class VaultWriter {
     const properties = input.inputSchema.properties as Record<string, unknown> | undefined;
     if (!properties || Object.keys(payload).some(key => !Object.hasOwn(properties, key))) return emit(refuse('unknown_wire_parameter'));
     const authorized = this.#store.transaction(tx => {
-      const turn = tx.get('SELECT id,role,text,at FROM history_turns WHERE live_session_id=? AND id=?', [input.sessionId, String(input.args.requested_turn_id ?? '')]);
+      const turn = tx.get("SELECT journal_id AS id,'owner' AS role,text,arrived_at AS at FROM live_journal WHERE live_session_id=? AND journal_id=? AND kind='inputTranscription' AND finished=1", [input.sessionId, String(input.args.requested_turn_id ?? '')]);
       if (!turn || turn.role !== 'owner') return { refused: refuse('requested_turn_id must name a persisted owner turn in this call') };
       // Canonicalize the stored id: SQL aliases such as 01 must not mint another authorization.
       const turnId = String(turn.id), stageId = `helper:${turnId}`;

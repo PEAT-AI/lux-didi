@@ -12,7 +12,7 @@ for (const call of ['vault_save', 'remember_note'] as const) {
       inputs = request.input; outputEvidence = JSON.stringify(request.outputs);
       if (request.turns.length !== 0) return { text: call === 'vault_save' ? 'The full synthetic note is saved to the configured vault.' : 'The full synthetic note is remembered locally.', calls: [] };
       // The write names the persisted owner turn that asked for it; the host never trusts a model claim of consent.
-      const turnId = String(f.store.transaction(tx => tx.get("SELECT id FROM history_turns WHERE live_session_id=? AND role='owner' ORDER BY id DESC LIMIT 1", [f.session.liveSessionId]))?.id);
+      const turnId = String(f.store.transaction(tx => tx.get("SELECT journal_id AS id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 1", [f.session.liveSessionId]))?.id);
       return { text: '', calls: [{ id: 'local-note', name: call, args: call === 'vault_save' ? { requested_turn_id: turnId, payload: { content: body, insight_title: 'Synthetic note' } } : { text: body } }] };
     }, call === 'vault_save' ? { bindings: [luxVaultBinding()] } : {});
     f.bind(); f.finalize('Remember this synthetic note');

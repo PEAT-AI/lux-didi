@@ -1,3 +1,4 @@
+import { seedLuxTurn } from './lux-turn-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { projectTaskPayload } from '../tasks/connectors.js';
@@ -203,10 +204,7 @@ test('helper writes require persisted owner consent, retain update ids and bound
   const directory = mkdtempSync(join(tmpdir(), 'm23-vault-'));
   const store = new Store(directory, [...domainMigrations, ...liveMigrations]);
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  store.transaction(tx => {
-    for (let id = 1; id <= 14; id++) tx.run('INSERT INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)',
-      [id, 'synthetic-call', id, id, id === 1 ? 'assistant' : 'owner', 'Please save this synthetic fact.', 1794009600000]);
-  });
+  for (let id = 1; id <= 14; id++) seedLuxTurn(store, 'synthetic-call', id, id === 1 ? 'assistant' : 'owner', 'Please save this synthetic fact.', 1794009600000);
   const calls: { tool: string; args: Record<string, unknown> }[] = [];
   const writer = new VaultWriter({ store, now: () => 1794009600000, log: () => {}, transport: {
     save: async () => ({ outcome: 'failed' }),

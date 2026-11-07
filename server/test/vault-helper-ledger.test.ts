@@ -1,3 +1,4 @@
+import { seedLuxTurn } from './lux-turn-fixture.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -14,9 +15,7 @@ function harness(t: TestContext, write: NonNullable<VaultTransport['write']>) {
   const directory = mkdtempSync(join(tmpdir(), 'helper-ledger-'));
   const store = new Store(directory, [...domainMigrations, ...liveMigrations]);
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  store.transaction(tx => {
-    for (let id = 1; id <= 12; id++) tx.run('INSERT INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)', [id, 'synthetic-call', id, id, id === 12 ? 'assistant' : 'owner', 'Save this synthetic fact.', 1000]);
-  });
+  for (let id = 1; id <= 12; id++) seedLuxTurn(store, 'synthetic-call', id, id === 12 ? 'assistant' : 'owner', 'Save this synthetic fact.', 1000);
   const log: Record<string, unknown>[] = [];
   const writer = () => new VaultWriter({ store, now: () => 1000, log: event => { log.push(event); }, transport: { save: async () => ({ outcome: 'failed' }), write } });
   const args = (turn: string) => ({ requested_turn_id: turn, payload: { [P.title]: 'Synthetic title', [P.content]: 'Synthetic fact', [P.category]: 'PATTERN', [P.followUpState]: 'open' } });
@@ -67,4 +66,14 @@ test('a failed helper write is settled without retry and keeps its uncertain out
   assert.equal(h.store.transaction(tx => tx.get("SELECT state FROM vault_writes WHERE utterance_id='helper:1'"))?.state, 'uncertain');
   await h.writer().recovery;
   assert.equal(calls, 1, 'restart must not replay an unknown helper mutation');
+});
+
+test('an unfinished live owner transcript cannot authorize a helper mutation', async t => {
+  let writes = 0;
+  const h = harness(t, async () => { writes++; return { disposition: 'created', insight_id: 42 }; });
+  h.store.transaction(tx => tx.run('UPDATE live_journal SET finished=0 WHERE journal_id=1'));
+  const result = await h.writer().writeTask({ sessionId: 'synthetic-call', tool: 'vault_save', operation: LUX_TOOLS.create,
+    inputSchema, maxPayloadBytes: 65536, authorized: () => true, args: h.args('1') });
+  assert.equal(result.disposition, 'refused');
+  assert.equal(writes, 0);
 });

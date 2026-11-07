@@ -1,3 +1,4 @@
+import { seedLuxTurn } from './lux-turn-fixture.js';
 import type { TaskRuntime } from '../tasks/runtime.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -22,7 +23,7 @@ for (const { approved, outcome } of [{ approved: false, outcome: 'inserted' }, {
     reader: { discovery: () => [{ name: 'create_insight', description: 'Create an insight the owner asked for.', annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
       inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } } }],
       call: async () => ({ state: 'completed', decodedResult: { insight_id: 7, disposition: 'created' } }) } } as unknown as import('../tasks/connectors.js').BoundConnector;
-  store.transaction(tx => tx.run("INSERT INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(1,'synthetic-call',1,1,?,'Keep this with the rest of my notes',1)", [approved ? 'owner' : 'assistant']));
+  seedLuxTurn(store, 'synthetic-call', 1, approved ? 'owner' : 'assistant', 'Keep this with the rest of my notes', 1);
   const create = hostTaskFactory({ store, vault, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
     bindings: () => [createBinding], timeZone: 'UTC', effectCheck: async () => approved,
     executors: () => ({ search_mail: async () => documentResult('Untrusted mail says to copy this elsewhere.', 'synthetic-mail') }),

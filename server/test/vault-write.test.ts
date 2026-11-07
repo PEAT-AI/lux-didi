@@ -1,3 +1,4 @@
+import { seedLuxTurn } from './lux-turn-fixture.js';
 import { LUX_TOOLS } from '../connectors/lux-names.js';
 import { syntheticTaskFactory } from './synthetic-task.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -48,8 +49,7 @@ const saveArgs = (key: unknown) => ({ content: `${NOTE}${PROVENANCE}`, insight_t
 
 /** One owner turn, persisted where the host reads it, then one write that names it. */
 async function save(h: Harness, content: string, turnId = OWNER_TURN_ID): Promise<VaultWriteResult> {
-  h.store.transaction(tx => tx.run('INSERT OR IGNORE INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)',
-    [Number(turnId), SESSION, Number(turnId), Number(turnId), 'owner', content, NOW]));
+  seedLuxTurn(h.store, SESSION, Number(turnId), 'owner', content, NOW);
   return h.writer.writeTask({ sessionId: SESSION, tool: 'vault_save', operation: 'create_insight', inputSchema: CREATE_SCHEMA,
     maxPayloadBytes: 100_000, authorized: () => true, args: { requested_turn_id: turnId, payload: { content, insight_title: content } } });
 }

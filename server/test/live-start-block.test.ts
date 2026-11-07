@@ -28,7 +28,8 @@ test('one aggregated omission record per start block carries counts by reason an
     item('expired-plan', { kind: 'plan', eventAt: now - day, text: 'Old plan: he flies to Phuket' }),
     item('duplicate', { text: 'Fact 0: his sister Ana lives in Lisbon 0' }),
   ], entries: legacy });
-  const record = omissionRecord(block);
+  const kindOf = (id: string) => [...facts, ...preferences, item('expired-plan', { kind: 'plan', eventAt: now - day })].find(candidate => candidate.id === id)?.kind;
+  const record = omissionRecord({ ...block, kindOf });
   assert.equal(record.event, 'live_context_items_omitted');
   assert.equal(record.omitted, block.omitted.length);
   assert.equal(record.selected, block.selectedIds.length);
@@ -46,7 +47,7 @@ test('the aggregated record is content free and counts only the kinds the memory
     item('fact-a', { text: 'Fact: he moved to Lisbon' }),
     item('plan-a', { kind: 'plan', eventAt: now + 86_400_000, text: 'Plan: he drives to Bogor' }),
   ] });
-  const record = omissionRecord(block);
+  const record = omissionRecord({ ...block, kindOf: () => 'durable_fact' });
   assert.equal(JSON.stringify(record).includes('Lisbon'), false);
   for (const kind of Object.keys(record.kinds)) assert.ok(['durable_fact', 'preference', 'person_role', 'transient_state', 'plan', 'promise', 'open_question', 'correction', 'decision'].includes(kind), kind);
   assert.deepEqual(record.kinds, {});

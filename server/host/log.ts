@@ -4,6 +4,7 @@ import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
 import { MONGOOSE_REQUEST_STAGES } from '../connectors/mongoose.js';
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
+import { MEMORY_KINDS } from '../domain/memory-items.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
@@ -856,6 +857,21 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'id', 'reason']) || typeof value.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(value.id)) return;
     if (typeof value.reason !== 'string' || !['budget', 'duplicate', 'superseded', 'invalid', 'expired', 'not-yet-valid'].includes(value.reason)) return;
     return { event: value.event, id: value.id, reason: value.reason };
+  }
+  // L6 (#940): one aggregated startup omission record instead of one line per omitted item.
+  if (value.event === 'live_context_items_omitted') {
+    if (!closedKeys(value, ['event', 'selected', 'omitted', 'reasons', 'kinds', 'selectedIds'])) return;
+    if (['selected', 'omitted'].some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
+    const reasons = value.reasons, kinds = value.kinds;
+    if (!reasons || typeof reasons !== 'object' || Array.isArray(reasons) || !closedKeys(reasons as Record<string, unknown>, ['budget', 'duplicate', 'superseded', 'invalid', 'expired', 'not-yet-valid'])) return;
+    if (Object.values(reasons).some(count => !Number.isSafeInteger(count) || Number(count) < 0)) return;
+    if (!kinds || typeof kinds !== 'object' || Array.isArray(kinds)) return;
+    const names = Object.keys(kinds);
+    if (names.length > MEMORY_KINDS.length || names.some(kind => !(MEMORY_KINDS as readonly string[]).includes(kind))) return;
+    if (Object.values(kinds).some(count => !Number.isSafeInteger(count) || Number(count) < 0)) return;
+    if (!Array.isArray(value.selectedIds) || value.selectedIds.length > 128) return;
+    if (value.selectedIds.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(id))) return;
+    return { event: value.event, selected: value.selected, omitted: value.omitted, reasons: value.reasons, kinds, selectedIds: value.selectedIds };
   }
   if (value.event === 'live_context_target_overrun') {
     if (!closedKeys(value, ['event', 'estimatedTokens', 'fixedEstimatedTokens', 'sections'])) return;

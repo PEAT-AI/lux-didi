@@ -20,7 +20,7 @@ cd "$root"
 # are not staged, and TypeScript resolves each current transitive dependency itself.
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
-sources=(server/test/context-budget.test.ts server/test/memory-block.test.ts server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/live-opening-facts.test.ts
+sources=(server/test/context-budget.test.ts server/test/memory-block.test.ts server/test/live-start-block.test.ts server/test/prompt.test.ts server/test/model.test.ts server/test/live-persona.test.ts server/test/live-opening-facts.test.ts
   server/test/runtime-context.test.ts server/test/chat-prompt.test.ts server/test/context-ceiling.test.ts)
 # The plain-JS integration imports the retained Text history tool outside the TS test graph.
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \

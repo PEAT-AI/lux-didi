@@ -41,7 +41,7 @@ bash scripts/run-local.sh --build-only
 server/node_modules/.bin/tsc --ignoreConfig --types node --typeRoots server/node_modules/@types \
   --target ES2023 --module NodeNext --moduleResolution NodeNext --strict \
   --noUnusedLocals --noUnusedParameters --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck \
-  --rootDir server --outDir server/dist server/test/context-budget.test.ts server/test/memory-block.test.ts
+  --rootDir server --outDir server/dist server/test/context-budget.test.ts server/test/memory-block.test.ts server/test/live-start-block.test.ts
 
 for f in server/dist/chat/index.js server/dist/domain/facade.js server/dist/runtime/store.js \
          server/dist/memory/cli.js server/dist/test/memory-import.test.js \
@@ -56,7 +56,7 @@ status=0
 # New selection tests + impacted CHAT/HTTP/HOST accept/dispatch/fingerprint/recovery
 # and CONNECTED authorization/context regressions, against the real compiled build.
 node_test_files_bounded 1200 --test-reporter=tap --test-timeout=30000 \
-  server/dist/test/context-budget.test.js server/dist/test/memory-block.test.js \
+  server/dist/test/context-budget.test.js server/dist/test/memory-block.test.js server/dist/test/live-start-block.test.js \
   server/dist/test/live-memory-note.test.js \
   server/dist/test/memory-import.test.js server/dist/test/memory-context.test.js server/dist/test/memory-delete.test.js \
   server/dist/test/summaries.test.js \

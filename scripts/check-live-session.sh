@@ -32,7 +32,7 @@ group_build() {
     --target ES2023 --module NodeNext --moduleResolution NodeNext --strict \
     --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --esModuleInterop \
     --rootDir . --outDir dist test/task-call.test.ts test/task-delivery.test.ts \
-    test/tasks-lifecycle.test.ts test/task-authority.test.ts test/context-budget.test.ts test/memory-block.test.ts || return 1
+    test/tasks-lifecycle.test.ts test/task-authority.test.ts test/context-budget.test.ts test/memory-block.test.ts test/live-start-block.test.ts || return 1
   # Historical direct-save comparison used the deleted voice-tool carrier. Current helper receipts run below.
 
 }
@@ -41,7 +41,7 @@ group_build() {
 # Public tool guidance is also composed by text, memory and summary surfaces.
 group_guidance() {
   node_test_files --test-reporter=tap --test-timeout=30000 dist/test/tools-builtin-intent.test.js  || return 1
-  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/context-budget.test.js dist/test/memory-block.test.js dist/test/prompt.test.js dist/test/live-persona.test.js dist/test/chat.test.js dist/test/memory-context.test.js dist/test/memory-import.test.js dist/test/summaries.test.js || return 1
+  node_test_files --test-reporter=tap --test-timeout=30000 dist/test/context-budget.test.js dist/test/memory-block.test.js dist/test/live-start-block.test.js dist/test/prompt.test.js dist/test/live-persona.test.js dist/test/chat.test.js dist/test/memory-context.test.js dist/test/memory-import.test.js dist/test/summaries.test.js || return 1
   node test/prompt-content.integration.mjs || return 1
 }
 

@@ -35,7 +35,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, TurnFailedReason } from '../adapters/live-voice/index.js';
 import type { DebtPhase, DebtReason } from '../trace/kinds.js';
 import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
-import { ESTIMATED_CHARS_PER_TOKEN, estimatedTokens } from '../prompt/context-budget.js';
+import { CONTEXT_BUDGET, ESTIMATED_CHARS_PER_TOKEN, estimatedTokens } from '../prompt/context-budget.js';
+import { omissionRecord } from '../prompt/memory-block.js';
 import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
@@ -1824,6 +1825,7 @@ export class LiveSessionOwner {
         commitments: loops.map(loop => `${new Date(loop.lastSeenAt).toISOString()} ${loop.text}`),
         savedForHim: admittedRecords
           .map(record => `As of ${date}: ${record.text}`), excludeTopics });
+      let memoryAllowance: number | undefined;
       const composeSession = (calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, ownerProfile: configuredPrompt.ownerProfile, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
@@ -1835,6 +1837,9 @@ export class LiveSessionOwner {
           entries: admittedRecords.filter(record => !record.memoryItem).map(record => ({ id: record.id, text: record.text, ...(record.capturedAt === undefined ? {} : { capturedAt: record.capturedAt }) })),
           sources: Object.fromEntries(admittedRecords.filter(record => record.memoryItem).map(record => [record.id, record.sourceSessionIds ?? []])),
           summaries: seededSummaries.map(summary => ({ id: summary.id, sessionId: summary.liveSessionId, startedAt: summary.endedAt, text: summary.summary })),
+          // DREAM-1 (#940): the fixed layers compose larger than their reservation, so the block is told
+          // the room the composed instruction actually leaves and gives back its lowest ranked whole item.
+          ...(memoryAllowance === undefined ? {} : { allowanceTokens: memoryAllowance }),
         },
         records: admittedRecords, trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         now, timeZone,
@@ -1854,10 +1859,20 @@ export class LiveSessionOwner {
       let composed: ReturnType<typeof composeLiveSessionInstruction>;
       try { composed = compose(); }
       catch (error) { if (error instanceof Error && 'code' in error && error.code === 'instruction_too_large') throw new LiveError('instruction_too_large'); throw error; }
+      // DREAM-1 (#940): a start that would overrun asks the block for exactly the room that is left and
+      // recomposes once, so the memory that does arrive is the memory the budget can actually carry.
+      if (composed.overTarget) {
+        const memoryTokens = composed.sections.find(section => section.id === 'memory')?.estimatedTokens ?? 0;
+        memoryAllowance = Math.max(0, memoryTokens - (composed.estimatedTokens - CONTEXT_BUDGET.target));
+        composed = compose();
+      }
       console.error(JSON.stringify({ event: 'live_instruction_sizes', total: composed.text.length, estimatedTokens: composed.estimatedTokens, stablePrefixChars: composed.stablePrefixChars, stablePrefixEstimatedTokens: composed.stablePrefixEstimatedTokens, fixedChars: composed.fixedChars, fixedEstimatedTokens: composed.fixedEstimatedTokens, overTarget: composed.overTarget, sections: Object.fromEntries(composed.sections.map(section => [section.id, section.chars])), languageCode: this.#profile.language === undefined ? 'unset' : effectiveLanguageCode(this.#profile.language), voice: this.#profile.voice }));
       const summaryIds = new Set(seededSummaries.map(summary => summary.id));
       const summaryOmissions = composed.itemOmissions.filter(item => summaryIds.has(item.id));
-      for (const omission of composed.itemOmissions) console.error(JSON.stringify({ event: 'live_context_item_omitted', id: omission.id, reason: omission.reason }));
+      // L6 (#940): one record per start block, counted by reason and kind, naming what was selected.
+      const kindOf = new Map(admittedRecords.map(record => [record.id, record.memoryItem?.kind]));
+      console.error(JSON.stringify(omissionRecord({ selectedIds: [...kindOf.keys(), ...summaryIds].filter(id => !composed.itemOmissions.some(item => item.id === id)),
+        omitted: composed.itemOmissions, kindOf: id => kindOf.get(id) })));
       if (composed.overTarget) console.error(JSON.stringify({ event: 'live_context_target_overrun', estimatedTokens: composed.estimatedTokens, fixedEstimatedTokens: composed.fixedEstimatedTokens, sections: composed.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) }));
       // M20-R1: a start that lost authored text to the last-resort clip is never a silent one.
       if (composed.clipped.length) console.error(JSON.stringify({ event: 'live_instruction_clipped', estimatedTokens: composed.estimatedTokens, total: composed.text.length, clipped: composed.clipped.map(item => ({ id: item.id, chars: item.chars })) }));

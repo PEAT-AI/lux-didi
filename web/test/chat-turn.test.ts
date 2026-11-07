@@ -73,7 +73,7 @@ test('the answer is the only body text and its evidence is folded under it, newe
   assert.match(html, /chat-evidence-snippet">moving the sync to ten</);
   assert.match(html, /<h4>Gmail<\/h4>[\s\S]*Dana · Quarterly numbers · yesterday/);
   assert.match(html, /<h4>Calendar<\/h4>[\s\S]*14:30 · Release review/);
-  assert.match(html, /<h4>Knowledge<\/h4>[\s\S]*Release rhythm · PATTERN/);
+  assert.match(html, /<h4>Tool<\/h4>[\s\S]*Release rhythm · PATTERN/);
   assert.equal(evidenceMarkup([], NOW), '');
 });
 

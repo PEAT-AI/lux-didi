@@ -96,6 +96,7 @@ test('the ninth session in the pool survives the five-session cut when it is the
     seedPool(f.store);
     const hits = read(f.store, 'when is the dentist');
     assert.equal(hits.length, 5, 'the output shape stays five sessions');
+    assert.equal(new Set(hits).size, 5, `one slot per call, never the same call twice: ${hits.join(',')}`);
     assert.ok(hits.includes('call-09'), `the call about the appointment is in the top five: ${hits.join(',')}`);
   } finally { f.cleanup(); }
 });

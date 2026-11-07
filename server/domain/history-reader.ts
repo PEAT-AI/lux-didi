@@ -304,7 +304,16 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
           || Number(b.value.ref.kind === 'live') - Number(a.value.ref.kind === 'live')
           || (a.value.ref.kind === 'live' && b.value.ref.kind === 'live' ? Number(a.value.metadata['recallRank']) - Number(b.value.metadata['recallRank']) : 0)
           || b.value.date - a.value.date);
-      const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: ranked.map(row => row.value.ref), references: [], coverage, limit: Math.min(args.limit ?? 5, 5), snippets: ranked.map(row => String(row.value.metadata['recallExcerpt'] ?? row.value.text.slice(0, 550))) };
+      // One slot per call: a turn hit and the summary of the same call are two views of one five-slot answer.
+      const seenSessions = new Set<string>();
+      const distinct = ranked.filter(({ value }) => {
+        if (value.ref.kind === 'entry') return true;
+        const session = String(value.metadata['sessionId'] ?? '');
+        if (seenSessions.has(session)) return false;
+        seenSessions.add(session);
+        return true;
+      });
+      const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: distinct.map(row => row.value.ref), references: [], coverage, limit: Math.min(args.limit ?? 5, 5), snippets: ranked.map(row => String(row.value.metadata['recallExcerpt'] ?? row.value.text.slice(0, 550))) };
       snapshot.references = snapshot.sources.map((_, index) => token({ snapshot, index, offset: 0, detail: true }));
       position = { snapshot, index: 0, offset: 0, detail: false };
     }

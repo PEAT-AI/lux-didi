@@ -684,6 +684,18 @@ test('host log: alarm_speech_failed admits one closed reason and the alarm id on
   assert.equal(safeEvent({ event: 'alarm_speech_failed', reason: 'socket_lost' }), undefined, 'the line names the alarm');
 });
 
+// M1-R1 (#926): the delegation hand-off is one closed line: the provider's delegation key and nothing else, so
+// the timeline can place it inside a turn without ever carrying owner text.
+test('M1-R1: delegation_created admits the delegation key only', () => {
+  assert.deepEqual(safeEvent({ event: 'delegation_created', delegationKey: 'item_9tA2bF3h7K9m2P5q8R1s4' }),
+    { event: 'delegation_created', delegationKey: 'item_9tA2bF3h7K9m2P5q8R1s4' });
+  assert.equal(safeEvent({ event: 'delegation_created', delegationKey: 'item_1', text: 'Synthetic owner words' }), undefined,
+    'the line is closed: no owner words ride it');
+  assert.equal(safeEvent({ event: 'delegation_created' }), undefined, 'a hand-off with no key cannot join a turn');
+  assert.equal(safeEvent({ event: 'delegation_created', delegationKey: 'item 1 with spaces' }), undefined,
+    'a key that is not a provider id is refused');
+});
+
 // C-DIAG109: a stall and a rebuild say whether the provider announced a response for the owner final, and how
 // old that response was, so a model that never spoke and one whose answer cannot be read are told apart.
 test('C-DIAG109: a stall and a rebuild carry the owner final response pair', () => {

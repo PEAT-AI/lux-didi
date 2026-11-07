@@ -977,6 +977,9 @@ class Session implements LiveVoiceSession {
     const delegation = object(message.delegation) ? message.delegation : message;
     if (typeof delegation.id !== 'string' || !delegation.id.length) { this.touch(); return; }
     this.latestDelegationId = delegation.id;
+    // M1-R1 (#926): the hand-off itself, keyed by the provider's delegation id; the log envelope supplies the turn
+    // id, so a latency question that spans the boundary has one event to place it.
+    hostLogEvent({ event: 'delegation_created', delegationKey: delegation.id });
     this.emit({ type: 'delegation', delegationId: delegation.id }); this.touch();
   }
   private readonly recentCommands = new Map<string, string>();

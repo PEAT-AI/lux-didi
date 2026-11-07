@@ -1566,6 +1566,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.ms)) return;
     return { event: value.event, ms: value.ms };
   }
+  if (value.event === 'delegation_created') {
+    // M1-R1 (#926): the provider's delegation key only, so the timeline places the hand-off inside its turn.
+    if (!closedKeys(value, ['delegationKey', 'event'])) return;
+    if (!isProviderId(value.delegationKey)) return;
+    return { event: 'delegation_created', delegationKey: value.delegationKey };
+  }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.
     const base = ['event', 'sequence', 'toolCallsThisTurn', 'toolLatencyMs', 'toolResponseWhileGenerating'];

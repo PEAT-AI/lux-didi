@@ -70,7 +70,7 @@ for (const gone of ['freshly worded', 'nothing summarised', 'Close with a costly
   'Say still about one only'])
   assert.equal(voice.includes(gone) || persona.NAYA_CHARACTER.includes(gone), false, `the contradictory or garbled line is gone: ${gone}`);
 assert.match(persona.NAYA_CHARACTER, /Ask a closing question only if its answer changes your next action/);
-assert.match(persona.NAYA_CHARACTER, /Call something still open or true only if confirmed within 24 hours/);
+assert.match(persona.NAYA_CHARACTER, /Call things still open or true only if confirmed within 24 hours/);
 assert.match(persona.NAYA_VOICE_SURFACE, /greet the moment if none is open/,
   'a call with nothing open greets the moment');
 // C-PROMPT: the class one topic belongs to is the class the note names and the plan refuses.
@@ -85,7 +85,7 @@ for (const rule of [
   'A no_action means answer from this conversation and your own mind',
   'You cannot see work in progress',
   'give what is there rather than only that it is incomplete',
-  'no reflex tag',
+  'a reflex tag',
   'His floor includes thinking',
 ]) assert.ok(voice.includes(rule) || persona.NAYA_VOICE_SURFACE.includes(rule), `the new conduct is stated: ${rule}`);
 for (const rule of [
@@ -169,7 +169,7 @@ for (const reasonCode of ['credential_missing', 'credential-unavailable', 'crede
     connectors: [{ connector: 'mongoose', state: 'error', reasonCode }] });
   assert.match(one, /^Connectors: company knowledge not signed in\./mu, `host sign-in code classified as a sign-in: ${reasonCode}`);
 }
-for (const rule of ['say you cannot hear it', 'not that you are unchanged', 'no reflex tag']) {
+for (const rule of ['say you cannot hear it', 'not that you are unchanged', 'a reflex tag']) {
   assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
 }
 // Result honesty belongs to the work policy, not a host-authored line for her to say.
@@ -200,7 +200,7 @@ node --input-type=module - "$out/dist" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
-assert.ok(persona.NAYA_LIVE_BASE.includes('helper-returned conversations allow word-for-word lookback'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('helper-returned history permits word-for-word lookback'));
 assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only returned words, since past quotes cannot be invented.'));
 assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE

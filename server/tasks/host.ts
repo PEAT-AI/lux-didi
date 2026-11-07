@@ -16,6 +16,7 @@ import { createEffectRole, createModelPort, type RoleModels } from './model.js';
 import { documentResult, failed } from './results.js';
 import { TaskRuntime } from './runtime.js';
 import { canonical, type Infer } from './worker.js';
+import { calendarResponseStatus } from '../tools/calendar-rsvp.js';
 export interface HostTaskOptions {
   now?: () => number;
   store: Store; credentials: Credentials; models: RoleModels;
@@ -107,6 +108,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
           create_event: { tool: 'calendar_create_event', arguments: { summary: args.title, start: args.start, end: args.end, timeZone: options.timeZone,
             clientRequestId: createHash('sha256').update(`${identity?.task_id}:${canonical(args)}`).digest('hex') } },
           delete_event: { tool: 'calendar_delete_event', arguments: { eventId: args.id } },
+          respond_event: { tool: 'calendar_respond_event', arguments: { eventId: args.id, response: calendarResponseStatus(args.response) ?? '', ...(typeof args.note === 'string' && args.note.length > 0 ? { note: args.note } : {}) } },
         };
         const write = writes[name];
         if (write) {

@@ -6,7 +6,7 @@ import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
 import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
-import { GOOGLE_FAMILIES, GOOGLE_HELPER_FAMILY, createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
+import { GOOGLE_FAMILIES, GOOGLE_HELPER_FAMILY, createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GcalRespondEventInput, type GmailDraftInput } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, mongoosePublishedTool, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
@@ -329,7 +329,7 @@ function googleStatus(evidence: ConnectorResult, endpoint?: ConnectionEndpoint):
       const named = `${endpoint?.id ?? ''} ${endpoint?.resource ?? ''}`.toLowerCase();
       const tool = typeof (evidence as { tool?: unknown }).tool === 'string' ? String((evidence as { tool?: unknown }).tool) : '';
       const family = tool === 'gmail_create_draft' ? 'compose'
-        : tool === 'calendar_create_event' || tool === 'calendar_delete_event' ? 'calendar_write'
+        : tool === 'calendar_create_event' || tool === 'calendar_delete_event' || tool === 'calendar_respond_event' ? 'calendar_write'
         : /compose/.test(named) ? 'compose' : /calendar-write|calendar_write/.test(named) ? 'calendar_write'
         : /gmail/.test(named) ? 'gmail' : /drive/.test(named) ? 'drive' : 'calendar';
       return { state: row.pinned ? 'configured' : 'error', reason: googleOwnerLine(row, family, endpoint), code: refused };
@@ -378,6 +378,7 @@ const googleDescriptor: ConnectorDescriptor = {
         if (tool === 'gmail_create_draft') return await reader.gmailCreateDraft(args as unknown as GmailDraftInput, signal);
         if (tool === 'calendar_create_event') return await reader.calendarCreateEvent(args as unknown as GcalCreateEventInput, signal);
         if (tool === 'calendar_delete_event') return await reader.calendarDeleteEvent(args as unknown as GcalDeleteEventInput, signal);
+        if (tool === 'calendar_respond_event') return await reader.calendarRespondEvent(args as unknown as GcalRespondEventInput, signal);
         return await reader.gcalList(args as GcalListInput, signal);
       },
     };

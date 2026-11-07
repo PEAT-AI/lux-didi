@@ -1,3 +1,4 @@
+import { LUX_TOOLS } from '../connectors/lux-names.js';
 import { cleanMailBody, decodeEntities } from '../tasks/clean.js';
 export { cleanMailBody, htmlToText, stripQuotedReply, stripSignature, stripTrackingUrls } from '../tasks/clean.js';
 /**
@@ -625,7 +626,7 @@ function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted
   const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `use read_knowledge with id=${id} for the whole note` : 'use read_knowledge with this note id for the whole note'}]` : '';
   return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
-/** A get_insight body, returned in full up to a generous final bound (OUTCOME 1). */
+/** A by-id insight body, returned in full up to a generous final bound (OUTCOME 1). */
 function knowledgeBody(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
   const body = field(hit, 'content', 'text', 'body');
   const cut = cutAtSentence(body, Number.POSITIVE_INFINITY);
@@ -647,7 +648,7 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       const hits = list.filter(isRecord);
       if (hits.length) return knowledgeList(hits);
     }
-    if (tool === 'get_insight') {
+    if (tool === LUX_TOOLS.get) {
       const body = field(parsed, 'content', 'text', 'body');
       if (body || parsed['insights'] === undefined && parsed['results'] === undefined) {
         const hit = knowledgeBody(parsed);
@@ -721,7 +722,7 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
   const shapedHits = hits.map(knowledgeExcerpt);
-  const body = listed(shapedHits.map(hit => hit.text), Number.POSITIVE_INFINITY, 'hits', `call search_insights again with limit=${hits.length} for the rest`);
+  const body = listed(shapedHits.map(hit => hit.text), Number.POSITIVE_INFINITY, 'hits', `call ${LUX_TOOLS.search} again with limit=${hits.length} for the rest`);
   const omitted = body.omitted + shapedHits.reduce((sum, hit) => sum + hit.omitted, 0);
   return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted, sources: hits.flatMap(hit => bodySourceLinks(field(hit, 'content', 'excerpt', 'snippet', 'summary'))) });
 }

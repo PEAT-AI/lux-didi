@@ -1,3 +1,4 @@
+import { LUX_WRITE_TOOLS } from '../connectors/lux-names.js';
 import { redactSecrets } from '../tools/redact.js';
 import { FAILURE_CATEGORIES, REASON_CODES } from '../tasks/results.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
@@ -906,8 +907,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'vault_write' && value.tool !== undefined) {
     if (!closedKeys(value, ['event', 'tool', 'outcome', 'insight_id_prefix'])) return;
-    if (!['vault_save', 'vault_update'].includes(String(value.tool))) return;
-    if (!['created', 'duplicate_of', 'refused', 'updated', 'completed'].includes(String(value.outcome))) return;
+    if (!['vault_save', 'vault_update', ...LUX_WRITE_TOOLS].includes(String(value.tool))) return;
+    if (!['created', 'duplicate_of', 'refused', 'updated', 'linked', 'recorded', 'completed', 'unknown'].includes(String(value.outcome))) return;
     if (typeof value.insight_id_prefix !== 'string' || !/^[0-9]{0,8}$/.test(value.insight_id_prefix)) return;
     return { event: 'vault_write', tool: value.tool, outcome: value.outcome, insight_id_prefix: value.insight_id_prefix };
   }

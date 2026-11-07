@@ -1,4 +1,4 @@
-import { LUX_TOOLS } from '../connectors/lux-names.js';
+import { LUX_TOOLS, LUX_PARAMS as P } from '../connectors/lux-names.js';
 import type { SchemaMigration } from '../contracts/storage.js';
 import { canonicalJSON, sha256 } from './canonical.js';
 
@@ -31,7 +31,7 @@ const VAULT_PROJECT = 'didi-voice';
 export type FrozenNote = { readonly state: 'frozen'; readonly payload: string; readonly payloadSha: string }
   | { readonly state: 'refused'; readonly code: 'payload_empty' | 'too_long' };
 
-/** The whole save_insight payload and its digest are frozen here; nothing later may change them. */
+/** Freeze the owner payload and tool identity; dispatch adds deterministic host attribution, not model edits. */
 export function freezeNote(note: { readonly title: string; readonly body: string; readonly externalContextPresent?: boolean }): FrozenNote {
   const title = note.title.replace(/\s+/g, ' ').trim();
   const body = note.body.trim();
@@ -39,7 +39,7 @@ export function freezeNote(note: { readonly title: string; readonly body: string
   if (title.length > TITLE_MAX_CHARS || body.length > NOTE_MAX_CHARS + (note.externalContextPresent ? 512 : 0)) {
     return { state: 'refused', code: 'too_long' };
   }
-  const payload = canonicalJSON({ content: body, insight_title: title, insight_type: VAULT_TYPE, project: VAULT_PROJECT });
+  const payload = canonicalJSON({ [P.content]: body, [P.title]: title, [P.category]: VAULT_TYPE, [P.project]: VAULT_PROJECT });
   return { state: 'frozen', payload, payloadSha: sha256(`${LUX_TOOLS.create}\n${payload}`) };
 }
 
@@ -58,7 +58,7 @@ export const luxNoteMigrations: readonly SchemaMigration[] = [{
        evidence_json TEXT NOT NULL,
        state TEXT NOT NULL CHECK (state IN ('staged','armed','settling','committed','cancelled','invalidated')),
        code TEXT,
-       insight_id TEXT,
+       ${P.insightId} TEXT,
        staged_at INTEGER NOT NULL,
        armed_at INTEGER,
        settle_at INTEGER,

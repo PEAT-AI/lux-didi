@@ -67,8 +67,6 @@ export interface Definition { name: string; description: string; fields: Record<
 const chatFields = strictSchema({ type: 'object', ...MATTERMOST_CHAT_PARAMETERS }).properties as Record<string, Schema>;
 const chatPage = Object.fromEntries(['from_date', 'to_date', 'offset', 'limit', 'order'].map(key => [key, chatFields[key]!]));
 const topicPage = Object.fromEntries(['from_date', 'to_date', 'offset', 'limit'].map(key => [key, chatFields[key]!]));
-/** Strict mode refuses uniqueItems, so the reader's distinct ids stay a validation rule. */
-const distinctIds = (args: Record<string, unknown>): boolean => !Array.isArray(args.ids) || new Set(args.ids).size === args.ids.length;
 const definitions: Definition[] = [
   { outside: true, name: 'chat_attention', description: 'Read what is waiting for the owner: mentions, direct/group messages and open threads awaiting a reply, newest first within the requested days.', fields: strictSchema({ type: 'object', ...MATTERMOST_ATTENTION_PARAMETERS }).properties as Record<string, Schema> },
   { outside: true, name: 'chat_person', description: 'Read a named person or username and their direct conversation. Choose both sides or only their messages, with explicit dates and paging.', fields: { person: string, sides: chatFields.sides!, ...chatPage } },

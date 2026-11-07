@@ -1,3 +1,5 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
+import { LUX_TOOLS, LUX_WRITE_TOOLS, luxWriteAdmitted } from '../connectors/lux-names.js';
 import { ServiceError } from '../contracts/errors.js';
 import { readerFailure } from './results.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
@@ -84,7 +86,20 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
         }
         if (name === 'vault_save' || name === 'vault_update') {
           if (!options.vault) return failed('The vault write port is unavailable. Nothing was saved.');
-          const write = options.vault.writeTask({ sessionId, tool: name, args }).then(receipt => documentResult(JSON.stringify(receipt), 'vault-receipt'));
+          const validator = new AjvJsonSchemaValidator();
+          const matches = bindings().filter(binding => binding.connector === 'lux-knowledge').flatMap(binding =>
+            (binding.reader.discovery?.() ?? []).filter(tool => binding.policy.toolNames.includes(tool.name)
+              && (LUX_WRITE_TOOLS as readonly string[]).includes(tool.name) && luxWriteAdmitted(tool)
+              && (name === 'vault_save' ? tool.name === LUX_TOOLS.create : tool.name !== LUX_TOOLS.create)
+              && validator.getValidator(tool.inputSchema)(args.payload).valid).map(tool => ({ binding, tool })));
+          if (matches.length !== 1) return failed('The payload must match exactly one currently granted discovered write schema. Nothing was written.');
+          const selected = matches[0]!;
+          const authorized = () => bindings().some(binding => binding.connector === 'lux-knowledge'
+            && binding.policy.connectionId === selected.binding.policy.connectionId && binding.policy.generation === selected.binding.policy.generation
+            && binding.policy.toolNames.includes(selected.tool.name) && binding.reader.discovery?.().some(tool => tool.name === selected.tool.name && luxWriteAdmitted(tool)));
+          const write = options.vault.writeTask({ sessionId, tool: name, operation: selected.tool.name,
+            inputSchema: selected.tool.inputSchema, maxPayloadBytes: selected.binding.policy.bounds.maxEntityBytes, authorized, args })
+            .then(receipt => documentResult(JSON.stringify(receipt), 'vault-receipt'));
           // Cancellation stops waiting, not a write that may already have reached lux.
           let onAbort: (() => void) | undefined;
           const pending = new Promise<ReturnType<typeof documentResult>>(resolve => {

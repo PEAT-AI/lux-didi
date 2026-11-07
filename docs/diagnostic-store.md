@@ -147,3 +147,26 @@ is what an owner reads to confirm that a lux release was picked up without an op
 endpoint's own read tools are granted at the digest just observed, under a generation the host
 advances itself. Every other connector keeps its digest approval, so a changed catalogue there still
 produces `connector_approval_refused` with its closed reason.
+
+## Helper vault writes
+
+Helper mutations use the existing local `vault_writes` ledger. Migration `live/16`
+rebuilds its operation check for the current create, update, link and search-feedback
+operations, preserving historical receipts. The ledger is application data: it
+contains the authorized request, call id, canonical owner turn, dispatch state and
+receipt identity. It is not the content-free host log.
+
+The helper form of `vault_write` is closed to `event`, `tool`, `outcome` and
+`insight_id_prefix`. Tool identities come from the central Lux identity module;
+outcomes distinguish create, duplicate, update, link, feedback and refusal.
+Payloads, quotes, note text, credentials and extra keys are rejected by the log
+whitelist. The older dictated-note event form retains its state/code/id/latency
+shape, so the two operation lifecycles remain distinguishable without logging
+content.
+
+Dynamic Lux arguments use the diagnostic projector's existing hash-only fallback,
+not a manually maintained list of query fields. The original argument digest is
+retained for identity checks without copying query or write content into the
+content-free projection. Lux itself retains insight revisions and provenance;
+Naya cannot archive, purge, revert, remove expiry or invoke review tools to undo
+her own work.

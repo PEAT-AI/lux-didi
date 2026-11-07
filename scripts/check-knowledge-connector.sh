@@ -5,5 +5,6 @@ set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/../server"
+node ../scripts/check-lux-names.mjs
 npm run build
-node_test_files --test-timeout=15000 dist/test/knowledge-connector.test.js
+node_test_files --test-timeout=15000 dist/test/knowledge-connector.test.js dist/test/vault-helper-ledger.test.js dist/test/lux-discovery-policy.test.js

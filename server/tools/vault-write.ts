@@ -1,7 +1,5 @@
-import { LUX_TOOLS } from '../connectors/lux-names.js';
-import { hostLogEvent } from './host-events.js';
-import type { Identity } from '../tasks/authority.js';
-import { freezeNote } from './lux-note.js';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
+import { LUX_TOOLS, LUX_PARAMS as P, LUX_WRITE_TOOLS } from '../connectors/lux-names.js';
 import { randomUUID } from 'node:crypto';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
@@ -49,13 +47,13 @@ export interface VaultSaveArgs { readonly content: string; readonly title: strin
 /** One MCP write attempt. The client owns the wire; nothing above it retries. */
 export interface VaultWriteResult {
   disposition: string;
-  insight_id?: number;
+  [P.insightId]?: number;
   candidates?: unknown[];
   reason?: string;
   [key: string]: unknown;
 }
 export interface VaultTransport {
-  write?(tool: string, args: Record<string, unknown>): Promise<VaultWriteResult>;
+  write?(tool: string, args: Record<string, unknown>, authorized?: () => boolean): Promise<VaultWriteResult>;
   save(args: VaultSaveArgs): Promise<VaultTransportResult>;
   backoff?(milliseconds: number): Promise<void>;
 }
@@ -116,7 +114,7 @@ export const validInsightId = (value: unknown): value is string => typeof value 
 
 function receiptFromRow(row: SQLRow): VaultReceipt {
   const state = String(row['state']) as VaultState;
-  const insightId = row['insight_id'] === null || row['insight_id'] === undefined ? undefined : String(row['insight_id']);
+  const insightId = row[P.insightId] === null || row[P.insightId] === undefined ? undefined : String(row[P.insightId]);
   if (state === 'confirmed' && validInsightId(insightId)) return { saved: true, insightId };
   if (state === 'failed') return refusal(row['code'] === 'vault_unavailable' ? 'vault_unavailable' : 'write_failed');
   return refusal('outcome_unknown');
@@ -155,11 +153,13 @@ export class VaultWriter {
     this.#store = options.store; this.#transport = options.transport; this.#now = options.now; this.#log = options.log;
     this.#backoff = options.backoff ?? options.transport.backoff?.bind(options.transport) ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
     const claims = this.#store.transaction(tx => {
+      // Helper claims require their active call and grant. Never replay them after a process restart.
+      tx.run("UPDATE vault_writes SET state='failed',code='write_failed' WHERE state='authorized' AND utterance_id LIKE 'helper:%'");
       // A dispatched row may have reached lux. Never replay it without a remote receipt.
       tx.run("UPDATE vault_writes SET state='uncertain' WHERE state='dispatched'");
       // Authorized means the execution never crossed the dispatch boundary. Claim by op_id,
       // not by content, so recovery cannot bind to another authorization for the same note.
-      return tx.all("SELECT * FROM vault_writes WHERE state='authorized' OR (state='failed' AND code='vault_unavailable' AND retry_count=0)").map(row => {
+      return tx.all("SELECT * FROM vault_writes WHERE utterance_id NOT LIKE 'helper:%' AND (state='authorized' OR (state='failed' AND code='vault_unavailable' AND retry_count=0))").map(row => {
         const retry = row.state === 'failed';
         if (retry) tx.run("UPDATE vault_writes SET state='authorized',retry_count=1 WHERE op_id=? AND state='failed' AND retry_count=0", [String(row.op_id)]);
         return { claim: claimRow(tx, retry ? { ...row, state: 'authorized' } : row), retry };
@@ -173,63 +173,87 @@ export class VaultWriter {
     })).then(() => {});
   }
 
-  readonly #helperTurns = new Map<string, Set<string>>();
+  readonly #validator = new AjvJsonSchemaValidator();
 
-  /** Helper writes use persisted owner turns, never model claims of consent or session identity. */
-  async writeTask(input: { sessionId: string; tool: 'vault_save' | 'vault_update'; args: Record<string, unknown> }): Promise<VaultWriteResult> {
-    const turnId = String(input.args.requested_turn_id ?? '');
-    const refused = (reason: string): VaultWriteResult => ({ disposition: 'refused', reason });
+  /** The host selects an operation by discovered schema; the model supplies only the nested payload. */
+  async writeTask(input: {
+    sessionId: string; tool: 'vault_save' | 'vault_update'; operation: string;
+    inputSchema: Record<string, unknown>; maxPayloadBytes: number; authorized: () => boolean;
+    args: Record<string, unknown>;
+  }): Promise<VaultWriteResult> {
+    const emit = (receipt: VaultWriteResult): VaultWriteResult => {
+      this.#log({ event: 'vault_write', tool: (LUX_WRITE_TOOLS as readonly string[]).includes(input.operation) ? input.operation : input.tool,
+        outcome: receipt.disposition, insight_id_prefix: Number.isSafeInteger(receipt[P.insightId]) ? String(receipt[P.insightId]).slice(0, 8) : '' });
+      return receipt;
+    };
+    const refuse = (reason: string): VaultWriteResult => ({ disposition: 'refused', reason });
+    if (!(LUX_WRITE_TOOLS as readonly string[]).includes(input.operation)) return emit(refuse('write_operation_not_supported'));
+    if (!input.authorized()) return emit(refuse('write_grant_revoked'));
     const raw = input.args.payload;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return refused('payload must match the discovered write schema');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return emit(refuse('payload must match the discovered write schema'));
     const payload = structuredClone(raw) as Record<string, unknown>;
-    const turn = this.#store.transaction(tx => tx.get('SELECT id,role,text,at FROM history_turns WHERE live_session_id=? AND id=?', [input.sessionId, turnId]));
-    if (!turn || turn.role !== 'owner') return refused('requested_turn_id must name a persisted owner turn in this call');
-    const used = this.#helperTurns.get(input.sessionId) ?? new Set<string>();
-    if (used.has(turnId)) return refused('one write per owner turn');
-    if (used.size >= 10) return refused('ten writes per call');
-    if (!this.#transport.write) return refused('vault write transport unavailable');
-    used.add(turnId); this.#helperTurns.set(input.sessionId, used);
-    const tool = input.tool === 'vault_save' ? LUX_TOOLS.create : Object.hasOwn(payload, 'source_insight_id') ? LUX_TOOLS.link : Object.hasOwn(payload, 'verdict') ? LUX_TOOLS.feedback : LUX_TOOLS.update;
-    const provenance = `\n\nProvenance: lux-didi; speaker=owner; confidence=1; session=${input.sessionId}; requested_turn_id=${turnId}.`;
-    if (tool === LUX_TOOLS.create || tool === LUX_TOOLS.update) {
-      payload.source_kind = 'voice_call';
-      payload.source_ref = { app: 'lux-didi', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString() };
-      if (typeof payload.content === 'string') payload.content += provenance;
-      if (tool === LUX_TOOLS.create) {
-        payload.idempotency_key = `${input.sessionId}:${turnId}:${turnId}`;
-        if (payload.quote === undefined) payload.quote = String(turn.text).slice(0, 600);
-      } else payload.revision_reason = provenance.trim();
-    }
+    const properties = input.inputSchema.properties as Record<string, unknown> | undefined;
+    if (!properties || Object.keys(payload).some(key => !Object.hasOwn(properties, key))) return emit(refuse('unknown_wire_parameter'));
+    const authorized = this.#store.transaction(tx => {
+      const turn = tx.get('SELECT id,role,text,at FROM history_turns WHERE live_session_id=? AND id=?', [input.sessionId, String(input.args.requested_turn_id ?? '')]);
+      if (!turn || turn.role !== 'owner') return { refused: refuse('requested_turn_id must name a persisted owner turn in this call') };
+      // Canonicalize the stored id: SQL aliases such as 01 must not mint another authorization.
+      const turnId = String(turn.id), stageId = `helper:${turnId}`;
+      if (tx.get('SELECT op_id FROM vault_writes WHERE live_session_id=? AND utterance_id=?', [input.sessionId, stageId])) return { refused: refuse('one write per owner turn') };
+      const count = tx.get("SELECT count(*) AS n FROM vault_writes WHERE live_session_id=? AND utterance_id LIKE 'helper:%'", [input.sessionId]);
+      if (Number(count?.n) >= 10) return { refused: refuse('ten writes per call') };
+      if (!this.#transport.write) return { refused: refuse('vault write transport unavailable') };
+      const provenance = `\n\nProvenance: lux-didi; speaker=owner; confidence=1; session=${input.sessionId}; requested_turn_id=${turnId}.`;
+      if (input.operation === LUX_TOOLS.create || input.operation === LUX_TOOLS.update) {
+        if (!Object.hasOwn(properties, P.sourceKind) || !Object.hasOwn(properties, P.sourceRef)) return { refused: refuse('provenance_schema_missing') };
+        payload[P.sourceKind] = 'voice_call';
+        payload[P.sourceRef] = { app: 'lux-didi', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString() };
+        if (typeof payload[P.content] === 'string') payload[P.content] = String(payload[P.content]) + provenance;
+        if (input.operation === LUX_TOOLS.create) {
+          if (!Object.hasOwn(properties, P.idempotencyKey)) return { refused: refuse('idempotency_schema_missing') };
+          payload[P.idempotencyKey] = `${input.sessionId}:${turnId}:${turnId}`;
+          if (payload[P.quote] === undefined && Object.hasOwn(properties, P.quote)) payload[P.quote] = String(turn.text).slice(0, 600);
+        } else if (Object.hasOwn(properties, P.revisionReason)) payload[P.revisionReason] = String(payload[P.revisionReason] ?? '') + provenance;
+      } else if (input.operation === LUX_TOOLS.link && Object.hasOwn(properties, P.provenanceSource)) {
+        payload[P.provenanceSource] = 'TRANSCRIPT';
+      } else if (input.operation === LUX_TOOLS.feedback && Object.hasOwn(properties, P.note)) {
+        payload[P.note] = String(payload[P.note] ?? '') + provenance;
+      }
+      if (!this.#validator.getValidator(input.inputSchema)(payload).valid) return { refused: refuse('invalid_arguments_after_host_provenance') };
+      const content = JSON.stringify(payload);
+      if (Buffer.byteLength(content, 'utf8') > input.maxPayloadBytes) return { refused: refuse('request_bound_exceeded') };
+      const claim = authorizeComposedWrite(tx, { liveSessionId: input.sessionId, stageId, operation: input.operation, content, title: input.operation, now: this.#now() });
+      return { claim };
+    });
+    if (!authorized.claim) return emit(authorized.refused!);
+    const claim = authorized.claim;
+    if (claim.state !== 'dispatch') return emit(refuse('outcome_unknown'));
+    const started = this.#now();
     let receipt: VaultWriteResult;
-    try { receipt = await this.#transport.write(tool, payload); }
-    catch { receipt = refused('outcome_unknown'); }
-    hostLogEvent({ event: 'vault_write', tool: input.tool, outcome: receipt.disposition ?? 'completed', insight_id_prefix: receipt.insight_id ? String(receipt.insight_id).slice(0, 8) : '' });
-    return receipt;
+    try { receipt = await this.#transport.write!(input.operation, payload, input.authorized); }
+    catch { receipt = refuse('outcome_unknown'); }
+    const successful = ['created', 'duplicate_of', 'updated', 'linked', 'recorded'].includes(receipt.disposition);
+    const uncertain = receipt.reason === 'outcome_unknown';
+    const insightId = receipt[P.insightId] ?? payload[P.insightId] ?? payload[P.sourceInsightId];
+    this.#store.transaction(tx => tx.run(`UPDATE vault_writes SET state=?,${P.insightId}=?,code=?,latency_ms=?,settled_at=? WHERE op_id=? AND state='dispatched'`, [
+      successful ? 'confirmed' : uncertain ? 'uncertain' : 'failed', Number.isSafeInteger(insightId) ? String(insightId) : null,
+      successful ? null : uncertain ? 'outcome_unknown' : 'write_failed', Math.max(0, this.#now() - started), this.#now(), claim.opId,
+    ]));
+    return emit(receipt);
   }
 
-  /** Task admission is owned by Authority; this boundary only validates and atomically claims its exact payload. */
-  async saveTask(input: { sessionId: string; identity: Identity; content: string; title: string; outsideTextSeen: boolean }): Promise<VaultReceipt> {
-    const frozen = freezeNote({ title: input.title, body: input.content, externalContextPresent: input.outsideTextSeen });
-    if (frozen.state !== 'frozen') return { saved: false, code: 'write_failed', guidance: 'The note payload was invalid. Nothing was written.' };
-    const claim = this.#store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: input.sessionId,
-      stageId: `task:${input.identity.task_id}:${input.identity.operation_id}`, content: input.content.trim(), title: input.title.trim(),
-      externalContextPresent: input.outsideTextSeen, payloadSha: frozen.payloadSha, now: this.#now() }));
-    if (claim.state === 'dispatch') return this.dispatch(claim);
-    this.#attempt(claim.receipt, 0); return claim.receipt;
-  }
-
-  /** One line per save attempt: the closed outcome and code, never the note. */
   #attempt(receipt: VaultReceipt, latencyMs: number): void {
     this.#log(vaultAttemptEvent(receipt, latencyMs));
   }
 
   async dispatch(claim: { opId: string; content: string; title: string }): Promise<VaultReceipt> {
     const sourceRow = this.#store.transaction(tx => tx.get('SELECT live_session_id,utterance_id,created_at FROM vault_writes WHERE op_id=?', [claim.opId]));
-    const source = sourceRow ? { source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: String(sourceRow.live_session_id), turn_start_id: String(sourceRow.utterance_id), turn_end_id: String(sourceRow.utterance_id), spoken_at: new Date(Number(sourceRow.created_at)).toISOString() }, idempotency_key: claim.opId } : undefined;
+    const source = sourceRow ? { [P.sourceKind]: 'voice_call', [P.sourceRef]: { app: 'lux-didi', session_id: String(sourceRow.live_session_id), turn_start_id: String(sourceRow.utterance_id), turn_end_id: String(sourceRow.utterance_id), spoken_at: new Date(Number(sourceRow.created_at)).toISOString() }, [P.idempotencyKey]: `${String(sourceRow.live_session_id)}:${String(sourceRow.utterance_id)}:${String(sourceRow.utterance_id)}` } : undefined;
 
+    const content = sourceRow ? `${claim.content}\n\nProvenance: lux-didi; speaker=owner; confidence=1; session=${String(sourceRow.live_session_id)}; requested_turn_id=${String(sourceRow.utterance_id)}.` : claim.content;
     const started = this.#now();
     let result: VaultTransportResult;
-    try { result = await this.#transport.save({ content: claim.content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT, ...(source ? { source } : {}) }); }
+    try { result = await this.#transport.save({ content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT, ...(source ? { source } : {}) }); }
     catch { result = { outcome: 'unknown' }; }
     let retried = false;
     if (result.outcome === 'unavailable') {
@@ -239,7 +263,7 @@ export class VaultWriter {
       if (retry === 1) {
         retried = true;
         await this.#backoff(250);
-        try { result = await this.#transport.save({ content: claim.content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT, ...(source ? { source } : {}) }); }
+        try { result = await this.#transport.save({ content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT, ...(source ? { source } : {}) }); }
         catch { result = { outcome: 'unknown' }; }
       }
     }
@@ -253,7 +277,7 @@ export class VaultWriter {
     const state: VaultState = result.outcome === 'inserted' ? 'confirmed' : result.outcome === 'failed' || result.outcome === 'unavailable' ? 'failed' : result.outcome === 'duplicate' ? 'failed' : 'uncertain';
     const insightId = result.outcome === 'inserted' ? result.insightId : undefined;
     const code = result.outcome === 'inserted' ? undefined : result.outcome === 'unavailable' ? 'vault_unavailable' : result.outcome === 'failed' || result.outcome === 'duplicate' ? 'write_failed' : 'outcome_unknown';
-    this.#store.transaction(tx => tx.run('UPDATE vault_writes SET state=?,insight_id=?,code=?,latency_ms=?,settled_at=? WHERE op_id=? AND state=?',
+    this.#store.transaction(tx => tx.run(`UPDATE vault_writes SET state=?,${P.insightId}=?,code=?,latency_ms=?,settled_at=? WHERE op_id=? AND state=?`,
       [state, insightId ?? null, code ?? null, latencyMs, this.#now(), opId, 'dispatched']));
     const receipt = state === 'confirmed' && insightId ? { saved: true, insightId } : refusal(code === 'vault_unavailable' ? 'vault_unavailable' : code === 'write_failed' ? 'write_failed' : 'outcome_unknown');
     this.#attempt(receipt, latencyMs);

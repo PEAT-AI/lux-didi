@@ -535,13 +535,15 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       });
     },
     taskVisible(runId, name) {
-      if (!isConnectorTaskRead(name)) return true;
       return store.transaction(tx => {
         const { snapshot } = readRun(tx, runId);
+        const luxRead = snapshot.connections.some(bound => bound.policy.connector === 'lux-knowledge' && bound.policy.toolNames.includes(name));
+        if (!isConnectorTaskRead(name) && !luxRead) return true;
         return snapshot.connections.some(bound => {
           const p = bound.policy, c = p.sourcePolicy.unknownClass;
           return snapshot.acceptance.connectionIds.includes(bound.connectionId)
             && (nativeTaskReadTool(name, p.connector) !== undefined || name === 'query_company' && p.connector === 'mongoose')
+            && (p.connector !== 'lux-knowledge' || nativeTaskReadGranted(p, name))
             && p.enabled && p.bindingMode === 'connection' && c !== null
             && [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(classes => classes.includes(c));
         });
@@ -760,7 +762,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         return store.transaction(tx => {
           const latest = connection(tx, id); const p = latest.policy;
           if (!p.enabled || latest.sha256 !== selected.sha256 || !endpointMatches(p)) return { state: 'refused', reason: 'authority-changed' };
-          registry.restore({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: 'read' });
+          registry.restore({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: p.connector === 'lux-knowledge' ? 'read-write' : 'read' });
           return { state: 'restored' };
         });
       } catch { return { state: 'refused', reason: 'binding-or-consent-not-current' }; }
@@ -772,7 +774,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (endpointBinding(endpoint) !== endpointBinding(p.endpoint)) throw Error('projection_endpoint_mismatch');
       const grant = registry.currentGrant(p.endpoint.id);
       if (grant && grant.generation === p.generation && grant.schemaDigest === p.schemaDigest && canonicalJSON(grant.toolNames) === canonicalJSON(p.toolNames)) return;
-      registry.approve({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: 'read' });
+      registry.approve({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: p.connector === 'lux-knowledge' ? 'read-write' : 'read' });
     },
     snapshotRun(tx, input) {
       const acceptance = validateAcceptance(input);

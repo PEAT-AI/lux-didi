@@ -344,7 +344,7 @@ test('live migration 16 preserves old vault receipts and permits all new write o
   const migrated = new Store(directory, liveMigrations);
   t.after(() => migrated.close());
   const row = migrated.transaction(tx => tx.get("SELECT operation,insight_id,state FROM vault_writes WHERE op_id='old'"));
-  assert.deepEqual(row, { operation: 'create_insight', insight_id: '42', state: 'confirmed' });
+  assert.deepEqual({ ...row }, { operation: 'create_insight', insight_id: '42', state: 'confirmed' });
   migrated.transaction(tx => {
     for (const operation of ['create_insight', 'update_insight', 'create_insight_link', 'record_search_feedback']) tx.run('INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES(?,?,?,?,?,?,?,?,?)', [operation, 'synthetic', operation, operation, 'synthetic', 'synthetic', 'Synthetic', 'authorized', 1]);
     assert.throws(() => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES('forbidden','synthetic','forbidden','purge_insight','synthetic','synthetic','Synthetic','authorized',1)"));

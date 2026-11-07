@@ -12,8 +12,8 @@ import { FakeAuthority } from '../tasks/authority.js';
 // FR5: the vault search's own two modes. `fast` is keyword-only titles and snippets; `full` is the
 // ranked hybrid search the owner's server runs by default.
 const tools: ToolDefinition[] = [
-  { name: 'search_insights', description: 'Synthetic search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, mode: { type: 'string' } }, required: ['query'] } },
-  { name: 'get_insight', description: 'Synthetic by-id read', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } } }, required: ['ids'] } },
+  { name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, mode: { type: 'string' } }, required: ['query'] } },
+  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic by-id read', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } } }, required: ['ids'] } },
 ];
 const CONFIG: LuxKnowledgeConfig = { endpointId: 'vault', account: 'account-a', resource: 'resource-a', generation: 1, maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200 };
 

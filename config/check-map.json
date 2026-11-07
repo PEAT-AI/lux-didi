@@ -78,7 +78,8 @@
       ],
       "checks": [
         "scripts/check-domain.sh",
-        "scripts/check-memory-context.sh"
+        "scripts/check-memory-context.sh",
+        "scripts/check-history.sh"
       ]
     },
     {
@@ -327,6 +328,14 @@
       ],
       "checks": [
         "scripts/check-memory-eval.sh"
+      ]
+    },
+    {
+      "paths": [
+        "server/test/history-*.integration.mjs"
+      ],
+      "checks": [
+        "scripts/check-history.sh"
       ]
     }
   ]

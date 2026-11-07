@@ -1,4 +1,4 @@
-import { LUX_TOOLS, luxWriteAdmitted } from '../connectors/lux-names.js';
+import { LUX_TOOLS, LUX_WRITE_TOOLS, luxWriteAdmitted } from '../connectors/lux-names.js';
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
@@ -165,7 +165,7 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[], cata
   const envelope = (payload: Record<string, unknown>): Record<string, unknown> => ({ type: 'object', properties: { requested_turn_id: { type: 'string', minLength: 1 }, payload }, required: ['requested_turn_id', 'payload'], additionalProperties: false });
   const create = unique.find(tool => tool.name === LUX_TOOLS.create && luxWriteAdmitted(tool));
   if (create) lux.push({ name: 'vault_save', description: `Save only when the owner asks or confirms. Name that owner turn. ${create.description ?? ''}`, fields: {}, parameters: envelope(create.inputSchema), outside: false });
-  const updates = unique.filter(tool => tool.name !== LUX_TOOLS.create && luxWriteAdmitted(tool));
+  const updates = unique.filter(tool => tool.name !== LUX_TOOLS.create && (LUX_WRITE_TOOLS as readonly string[]).includes(tool.name) && luxWriteAdmitted(tool));
   if (updates.length) lux.push({ name: 'vault_update', description: 'Correct an insight, link to a hub or record search feedback only on an owner-requested turn. Use the discovered payload shape; say what changed.', fields: {}, parameters: envelope(updates.length === 1 ? updates[0]!.inputSchema : { oneOf: updates.map(tool => tool.inputSchema) }), outside: false });
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy).filter(item => nativeTaskReadGranted(binding.policy, item.name)));
   const typed = Object.entries(companySteps).flatMap<Definition>(([name, description]) => {

@@ -22,4 +22,5 @@ export const LUX_PARAMS = {
   sourceKind: 'source_kind', sourceRef: 'source_ref', quote: 'quote', idempotencyKey: 'idempotency_key',
   followUpState: 'follow_up_state', revisionReason: 'revision_reason',
   sourceInsightId: 'source_insight_id', targetInsightId: 'target_insight_id', verdict: 'verdict',
+  provenanceSource: 'provenance_source', note: 'note',
 } as const;

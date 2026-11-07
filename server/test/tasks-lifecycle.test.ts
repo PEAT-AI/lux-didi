@@ -320,3 +320,35 @@ test('a write from an obsolete hop is fenced and the next hop runs it once', asy
   assert.equal(answer.receipts?.length, 1);
   assert.equal(answer.receipts?.[0]?.receipt?.state, 'committed');
 });
+
+test('#901: the final composition draws from the same revision deadline and never outlives it', async () => {
+  const clock = new FakeClock();
+  const startAt = clock.now();
+  const hub = new FakeAuthority();
+  const registry = createRegistry({ authority: hub, execute: async () => documentResult('Thursday 5 November 09:00 CET is free', 'plan:1') });
+  let hopSeen = 0, finalSignal: AbortSignal | undefined, finalStarted!: () => void;
+  const composing = new Promise<void>(resolve => { finalStarted = resolve; });
+  const work = runWorker({ registry, identity, input: 'synthetic request', signal: new AbortController().signal, clock,
+    infer: async (request, signal): Promise<Inference> => {
+      if (request.tools.length > 0) {
+        hopSeen += 1;
+        // The hop spends 30 of the 36 s: only 6 s of the revision budget are left for the composition.
+        clock.advance(30_000);
+        return { text: '', calls: [{ id: '1', name: 'read_mail', args: { id: 'm', cursor: null } }] };
+      }
+      finalSignal = signal; finalStarted();
+      return new Promise((_, reject) => { signal.addEventListener('abort', () => reject(new Error('final stopped')), { once: true }); });
+    } });
+  await composing;
+  assert.equal(hopSeen, 1);
+  // 6 s are left, so a composition still pending one millisecond before the budget cannot be the 24 s timer.
+  clock.advance(5_999);
+  assert.equal(finalSignal?.aborted, false, 'the composition keeps working while the budget has room');
+  clock.advance(1);
+  const answer = await work;
+  assert.equal(finalSignal?.aborted, true, 'the composition stops when the revision budget is spent');
+  assert.ok(clock.now() - startAt <= 36_000, `the revision settled at ${clock.now() - startAt} ms, over the 36 s budget`);
+  assert.equal(answer.status, 'incomplete');
+  assert.equal(answer.failure?.stage, 'final');
+  assert.equal(answer.failure?.reason_code, 'deadline');
+});

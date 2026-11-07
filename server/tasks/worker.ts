@@ -97,7 +97,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     const next = options.reconcile?.();
     if (!next) return false;
     input = next.input; anchor = clock.now() - Math.max(0, next.elapsed);
-    clearRevision(); clearRevision = clock.timer(expire, REVISION_DEADLINE_MS);
+    clearRevision(); clearRevision = clock.timer(expireRevision, REVISION_DEADLINE_MS);
     return true;
   };
   let failure: WorkerFailure | undefined;
@@ -112,7 +112,10 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const incomplete = (): WorkerResult => ({ status: 'incomplete', text: partialText(), findings, failures, receipts, ...(failure ? { failure } : expired ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, failures, receipts };
   async function compose(): Promise<WorkerResult> {
-    if (revisionExpired || clock.now() - start >= REVISION_DEADLINE_MS) { expired = true; return incomplete(); }
+    // #901: the final composition draws from the same revision deadline, so a slow hop can never spend
+    // the whole budget here and still reach the voice: whatever is left of the 36 s is all it gets.
+    const remaining = REVISION_DEADLINE_MS - Math.max(0, clock.now() - anchor);
+    if (revisionExpired || expired || remaining <= 0) { expired = true; return incomplete(); }
     if (options.signal.aborted || !(options.isCurrent?.() ?? true)) return finish();
     if (!findings.length) return incomplete();
     const finalAbort = new AbortController();
@@ -121,7 +124,6 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     });
     const cancel = (): void => finalAbort.abort();
     options.signal.addEventListener('abort', cancel, { once: true });
-    const remaining = REVISION_DEADLINE_MS + 2000 - (clock.now() - start);
     const clear = clock.timer(cancel, Math.min(FINAL_INFERENCE_DEADLINE_MS, remaining));
     try {
       const answer = await Promise.race([options.infer({ instructions,

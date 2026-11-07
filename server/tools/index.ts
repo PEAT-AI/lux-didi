@@ -1,9 +1,10 @@
+import { projectLuxResult } from './lux-knowledge.js';
 import { checkOwnerTime } from './time-check.js';
 import { commitAlarmEffect } from '../runtime/store.js';
 import { authorizedTaskEffect } from '../tasks/authority.js';
 import { connectorFailures } from '../tasks/results.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
-import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead } from '../tasks/connectors.js';
+import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead, configuredCompanyTools, luxWriteHelper } from '../tasks/connectors.js';
 import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
@@ -96,7 +97,12 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   const declaration = connectorDescriptor(p.connector);
   const writes = declaration?.writeEnvelope ?? [];
   const grantable = [...envelope, ...composed.map(tool => tool.name), ...writes];
-  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > grantable.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !grantable.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
+  // Ruling M21-R3: a connector with an admission hook grants the names that hook admits, so the
+  // policy is bounded by shape here and the hook decides read or write when the endpoint is discovered.
+  const shape = (name: unknown): boolean => typeof name === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name);
+  const named = declaration?.admits ? (name: unknown): boolean => shape(name) : (name: unknown): boolean => shape(name) && grantable.includes(name as string);
+  const listed = declaration?.admits ? 64 : grantable.length;
+  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > listed || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => !named(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
   if (composed.some(tool => p.toolNames.includes(tool.name) && !tool.requires.every(child => p.toolNames.includes(child)))) throw Error('invalid_read_tools');
   // The same closure for a write family: a write name is grantable only beside the read-only probe.
   if (writes.some(name => p.toolNames.includes(name)) && (declaration?.writeProbe === undefined || !p.toolNames.includes(declaration.writeProbe))) throw Error('invalid_read_tools');
@@ -240,8 +246,23 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     return call;
   };
   const pageForCall = (call: ToolCallRefusal): ReceivedBodyPage | undefined => [...bodyPages.values()].find(page => page.runId === call.runId && page.argumentsHash === call.argumentsHash);
+  const currentLuxTaskTool = (snapshot: RunSnapshot, name: string): boolean => {
+    const bindings = snapshot.connections.flatMap(bound => {
+      const policy = bound.policy;
+      if (policy.connector !== 'lux-knowledge' || !policy.enabled || policy.bindingMode !== 'connection') return [];
+      const descriptor = connectorDescriptor(policy.connector);
+      if (!descriptor) return [];
+      const reader = descriptor.createReader({ port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
+      return [{ connector: policy.connector, policy, reader }];
+    });
+    return configuredCompanyTools(bindings).some(tool => tool.name === name);
+  };
+  const boundLuxTaskTool = (snapshot: RunSnapshot, name: string): boolean => snapshot.connections.some(bound =>
+    bound.policy.connector === 'lux-knowledge' && (bound.policy.toolNames.includes(name) || bound.policy.toolNames.some(tool => luxWriteHelper(tool) === name)));
+  // Recognition is frozen with the run; target/dispatch separately enforce live authority.
+  const taskToolRecorded = (snapshot: RunSnapshot, name: string): boolean => TASK_TOOL_NAMES.has(name) || boundLuxTaskTool(snapshot, name);
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal, transaction?: Transaction): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
-    if (TASK_TOOL_NAMES.has(call.toolName) && call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE) {
+    if (taskToolRecorded(snapshot, call.toolName) && call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE) {
       // Native source admission and completion bind the selected source in runTask/evidenceCurrent, not every unrelated connector.
       return { connectionId: TASK_ACCOUNT, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
     }
@@ -330,7 +351,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       try { originalCall(tx, call.runId, evidence.parent); return authorizedStoredResult(tx, snapshot, evidence.parent) !== undefined; } catch { return false; }
     }
     if (evidence.kind === 'local-history') return call.toolName === HISTORY_IDENTITY.name && historyEvidenceCurrent(tx, ownerId, evidence);
-    const taskRead = call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE && TASK_TOOL_NAMES.has(call.toolName);
+    const taskRead = call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE && taskToolRecorded(snapshot, call.toolName);
     const bound = taskRead
       ? snapshot.connections.find(item => item.policy.endpoint.id === evidence.source.endpointId && item.policy.endpoint.account === evidence.source.account && item.policy.endpoint.resource === evidence.source.resource)
       : snapshot.connections.find(item => item.connectionId === target(snapshot, call, tx).connectionId);
@@ -524,19 +545,27 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
         const call = storedCall(tx, row), { signal: _signal, ...execution } = context;
         const expected = { ...execution, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-        if (!TASK_TOOL_NAMES.has(name) || context.accountId !== TASK_ACCOUNT || context.resourceId !== TASK_RESOURCE || canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-        const snapshot = validateCallRun(tx, call); target(snapshot, call, tx);
+        const snapshot = validateCallRun(tx, call);
+        if (!taskToolRecorded(snapshot, name) || context.accountId !== TASK_ACCOUNT || context.resourceId !== TASK_RESOURCE || canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+        target(snapshot, call, tx);
         return call as ToolCallIntent;
       });
     },
     taskVisible(runId, name) {
-      if (!isConnectorTaskRead(name)) return true;
       return store.transaction(tx => {
         const { snapshot } = readRun(tx, runId);
+        const luxRead = boundLuxTaskTool(snapshot, name);
+        if (luxRead) return currentLuxTaskTool(snapshot, name) && snapshot.connections.some(bound => {
+          const p = bound.policy, c = p.sourcePolicy.unknownClass;
+          return p.connector === 'lux-knowledge' && snapshot.acceptance.connectionIds.includes(bound.connectionId) && p.enabled && c !== null
+            && [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(classes => classes.includes(c));
+        });
+        if (!isConnectorTaskRead(name) && !luxRead) return true;
         return snapshot.connections.some(bound => {
           const p = bound.policy, c = p.sourcePolicy.unknownClass;
           return snapshot.acceptance.connectionIds.includes(bound.connectionId)
             && (nativeTaskReadTool(name, p.connector) !== undefined || name === 'query_company' && p.connector === 'mongoose')
+            && (p.connector !== 'lux-knowledge' || nativeTaskReadGranted(p, name))
             && p.enabled && p.bindingMode === 'connection' && c !== null
             && [p.sourcePolicy.allowedClasses, p.route.allowedClasses, snapshot.acceptance.allowedClasses, snapshot.acceptance.route.allowedClasses].every(classes => classes.includes(c));
         });
@@ -657,7 +686,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       return executors;
     },
     taskBindings(connectionIds) {
-      const policies = store.transaction(tx => connectionIds.map(id => connection(tx, id).policy).filter(policy => policy.enabled));
+      const policies = store.transaction(tx => connectionIds.map(id => connection(tx, id).policy).filter(policy => policy.enabled && (policy.connector !== 'lux-knowledge' || policy.bindingMode === 'connection')));
       return policies.map(policy => {
         const descriptor = connectorDescriptor(policy.connector);
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', policy.connectionId, policy.connector);
@@ -689,7 +718,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (options.log) options.log(event); else hostLogEvent(event);
         }, project: (evidence: import('../connectors/index.js').ConnectorEvidence) => {
           const origins = [evidence[SOURCE_DISPATCH], ...(evidence[SOURCE_CHILD_DISPATCHES] ?? [])].flatMap(ref => ref ? [ref] : []);
-          return { ...descriptor.project(evidence, dispatch.port, policy), sourceDispatchRefs: origins.map(ref => ref.id), sourcePolicyRefs: [{ connectionId: policy.connectionId, sha256: sha256(canonicalJSON(policy)) }],
+          return { ...(policy.connector === 'lux-knowledge' ? projectLuxResult(evidence, policy, dispatch.port, undefined, true) : descriptor.project(evidence, dispatch.port, policy)), sourceDispatchRefs: origins.map(ref => ref.id), sourcePolicyRefs: [{ connectionId: policy.connectionId, sha256: sha256(canonicalJSON(policy)) }],
             recordRedaction: (tool: string, count: number) => { const event = { event: 'tool_redaction' as const, tool, count }; if (options.log) options.log(event); else hostLogEvent(event); },
             recordReuse: () => { for (const origin of origins) dispatch.port.recordReuse?.(origin); } };
         } };
@@ -755,7 +784,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         return store.transaction(tx => {
           const latest = connection(tx, id); const p = latest.policy;
           if (!p.enabled || latest.sha256 !== selected.sha256 || !endpointMatches(p)) return { state: 'refused', reason: 'authority-changed' };
-          registry.restore({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: 'read' });
+          registry.restore({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: p.connector === 'lux-knowledge' ? 'read-write' : 'read' });
           return { state: 'restored' };
         });
       } catch { return { state: 'refused', reason: 'binding-or-consent-not-current' }; }
@@ -767,7 +796,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (endpointBinding(endpoint) !== endpointBinding(p.endpoint)) throw Error('projection_endpoint_mismatch');
       const grant = registry.currentGrant(p.endpoint.id);
       if (grant && grant.generation === p.generation && grant.schemaDigest === p.schemaDigest && canonicalJSON(grant.toolNames) === canonicalJSON(p.toolNames)) return;
-      registry.approve({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: 'read' });
+      registry.approve({ endpointId: p.endpoint.id, schemaDigest: p.schemaDigest, generation: p.generation, account: p.endpoint.account, resource: p.endpoint.resource, toolNames: p.toolNames, effect: p.connector === 'lux-knowledge' ? 'read-write' : 'read' });
     },
     snapshotRun(tx, input) {
       const acceptance = validateAcceptance(input);

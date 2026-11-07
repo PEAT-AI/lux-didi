@@ -540,9 +540,9 @@ const integer = { type: 'integer' } as const;
 const SCHEMAS = [
   // The properties the real knowledge declarations carry, so the host's own research fan-out
   // (`knowledgeSearchArgs` in server/tools/research.ts) is a legal call and not an argument error.
-  { name: 'search_knowledge', inputSchema: { type: 'object', properties: {
+  { name: 'search_insights', inputSchema: { type: 'object', properties: {
     query: string, limit: integer, include_sensitive: { type: 'boolean' }, detail: string, max_chars: integer, snippet_chars: integer,
-    project_hint: string, meeting_date_from: string, meeting_date_to: string, deadline_ms: integer,
+    project_boost: string, meeting_date_from: string, meeting_date_to: string, deadline_ms: integer,
   }, required: ['query', 'limit'], additionalProperties: false } },
   { name: 'get_insight', inputSchema: { type: 'object', properties: {
     ids: { type: 'array', items: integer }, id: integer, include_links: { type: 'boolean' }, detail: string, max_chars: integer, deadline_ms: integer,
@@ -598,7 +598,7 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
   };
   toolOwner.applyConnection({
     schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
-    endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(SCHEMAS),
+    endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_insights', 'get_insight'], schemaDigest: canonicalToolDigest(SCHEMAS),
     sourcePolicy: { id: 'voice-replay', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
     route: { identity: routeIdentity, allowedClasses: ['ordinary'] },
     // The host's own research fan-out asks the knowledge read for six hits (`RESEARCH.knowledgeHits`), so

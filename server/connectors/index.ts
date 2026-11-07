@@ -1,10 +1,10 @@
-import { validateKnowledgeLookup } from './lux-knowledge.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { SourceDispatchEvidence, CompletedResult, McpPort, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
-import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
+import { createLuxKnowledgeReader, luxToolAdmitted } from './lux-knowledge.js';
+import { luxWriteAdmitted } from './lux-names.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { GOOGLE_FAMILIES, GOOGLE_HELPER_FAMILY, createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
@@ -28,7 +28,7 @@ export * from './mattermost.js';
  * list further. One line per connector.
  */
 export const CONNECTOR_ENVELOPES: Readonly<Record<string, readonly string[]>> = {
-  'lux-knowledge': LUX_KNOWLEDGE_TOOLS,
+  'lux-knowledge': [],
   'google': GOOGLE_TOOLS,
   'mongoose': MONGOOSE_READ_TOOLS,
   'mattermost': MATTERMOST_READ_TOOLS,
@@ -50,6 +50,7 @@ export interface ConnectorEvidence extends SourceDispatchEvidence {
 export type ConnectorResult = ConnectorEvidence | { state: 'refused' | 'unknown'; reason: string };
 
 export interface ConnectorReader {
+  discovery?(): readonly import('../adapters/mcp/port.js').ToolDefinition[];
   call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ConnectorResult>;
 }
 export interface ConnectorToolDeclaration {
@@ -68,6 +69,12 @@ export interface ConnectorToolDeclaration {
 export interface ConnectorDescriptor {
   id: string;
   envelope: readonly string[];
+  /**
+   * Rulings M21-R2 and M21-R3: the one admission decision for a discovered tool of this connector.
+   * When present, this hook, not `envelope`, decides which published names are callable, so a
+   * release that adds a read tool needs no host change.
+   */
+  admits?(tool: { name: string; annotations?: unknown }): boolean;
   /** W1030: the write calls this connector may reach for the host's compose port, never for the model. */
   writeEnvelope?: readonly string[];
   /**
@@ -97,188 +104,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function toInsightId(value: unknown): number | undefined {
-  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-  if (typeof value === 'string') {
-    // Accept an integer-valued numeric string, and the `#123`/`lux 123` forms the search result text uses.
-    const match = /^(?:#\s*|lux\s+)?(\d+)(?:\.0+)?$/i.exec(value.trim());
-    if (!match) return undefined;
-    const id = Number(match[1]);
-    return Number.isSafeInteger(id) && id > 0 ? id : undefined;
-  }
-  return undefined;
-}
-
-/** Split a string that holds several ids: JSON array text, or comma/semicolon/whitespace separated tokens. */
-function splitInsightIdText(text: string): unknown[] | undefined {
-  const trimmed = text.trim();
-  let tokens: unknown[] | undefined;
-  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (Array.isArray(parsed)) tokens = parsed;
-    } catch { /* not JSON array text; fall back to a delimiter split */ }
-  }
-  if (tokens === undefined) tokens = trimmed.split(/[,;\s]+/);
-  // Only a string carrying several ids is split; a single value (or single-element array text) stays whole.
-  return tokens.length >= 2 ? tokens : undefined;
-}
-
-/** A bounded, value-free label for one dropped argument, so the model can correct itself. */
-function droppedLabel(value: unknown): string {
-  const text = typeof value === 'string' ? value : (() => { try { return JSON.stringify(value) ?? String(value); } catch { return 'unreadable'; } })();
-  return text.length > 48 ? `${text.slice(0, 48)}...` : text;
-}
-
-/** Normalize get_insight arguments before validation: accept an id array, a single id, or the `id` alias. */
-/** Normalize get_insight arguments before validation: accept an id array, a single id, the `id` alias
- * or a bare id in any servable form, pass `include_links` through, and drop unknown read keys or
- * unreadable ids with a visible notice instead of refusing. */
-export function normalizeGetInsightArgs(args: unknown, maxGetIds: number): { args: { ids: number[]; include_links?: boolean }; notice?: string } | undefined {
-  let candidate: unknown;
-  let includeLinks: boolean | undefined;
-  const droppedKeys: string[] = [];
-  if (Array.isArray(args) || typeof args === 'number' || typeof args === 'string') candidate = args;
-  else if (isRecord(args)) {
-    for (const key of Object.keys(args)) if (key !== 'ids' && key !== 'id' && key !== 'include_links') droppedKeys.push(key);
-    if ('include_links' in args) {
-      if (typeof args['include_links'] === 'boolean') includeLinks = args['include_links'];
-      else droppedKeys.push('include_links');
-    }
-    if ('ids' in args && 'id' in args) return undefined;
-    if ('ids' in args) candidate = args['ids'];
-    else if ('id' in args) candidate = args['id'];
-    else return undefined;
-  } else return undefined;
-  const list = Array.isArray(candidate)
-    ? candidate
-    : typeof candidate === 'string' && toInsightId(candidate) === undefined
-      ? splitInsightIdText(candidate) ?? [candidate]
-      : [candidate];
-  const ids: number[] = [];
-  const droppedIds: unknown[] = [];
-  for (const item of list) {
-    const id = toInsightId(item);
-    if (id === undefined) { droppedIds.push(item); continue; }
-    if (!ids.includes(id)) ids.push(id);
-  }
-  if (ids.length === 0) return undefined;
-  const notices: string[] = [];
-  if (droppedIds.length > 0) notices.push(`Ignored ${droppedIds.length} unreadable id${droppedIds.length === 1 ? '' : 's'}: ${droppedIds.map(droppedLabel).join(', ')}.`);
-  if (droppedKeys.length > 0) notices.push(`Ignored unknown argument${droppedKeys.length === 1 ? '' : 's'}: ${droppedKeys.join(', ')}.`);
-  let capped = ids;
-  if (ids.length > maxGetIds) {
-    capped = ids.slice(0, maxGetIds);
-    notices.push(`Only the first ${maxGetIds} of ${ids.length} requested ids were fetched.`);
-  }
-  const prepared: { ids: number[]; include_links?: boolean } = includeLinks === undefined ? { ids: capped } : { ids: capped, include_links: includeLinks };
-  return notices.length === 0 ? { args: prepared } : { args: prepared, notice: notices.join(' ') };
-}
-
 const luxKnowledgeDescriptor: ConnectorDescriptor = {
   id: 'lux-knowledge',
-  envelope: LUX_KNOWLEDGE_TOOLS,
-  declarations(policy) {
-    const bounds = policy.bounds;
-    return [
-      ...(['list_meetings', 'get_meeting', 'list_insights'] as const).map(name => ({
-        name, description: name === 'list_meetings' ? 'Find meetings by participant and calendar dates.' : name === 'get_meeting' ? 'Read a known meeting and its entries.' : 'List vault entries with a true total; use for all or counts.',
-        effect: 'read' as const, guidance: 'Use literal identifiers, calendar dates and bounded pages. Never use ranked search for complete sets.',
-        parameters: { type: 'object', additionalProperties: false, properties: {
-          ...(name === 'list_meetings' ? { participant: { type: 'string' }, date_from: { type: 'string' }, date_to: { type: 'string' }, order: { type: 'string', enum: ['newest', 'oldest'] } }
-          : name === 'get_meeting' ? { meeting_id: { type: 'string' }, offset: { type: 'integer', minimum: 0 } }
-          : { project: { type: 'string' }, status: { type: 'string', enum: ['active', 'archived', 'all'] }, count_only: { type: 'boolean' }, offset: { type: 'integer', minimum: 0 }, participant: { type: 'string' }, meeting_date_from: { type: 'string' }, meeting_date_to: { type: 'string' } }),
-          limit: { type: 'integer', minimum: 1, maximum: Math.min(50, bounds.maxSearchLimit) },
-        }, required: name === 'get_meeting' ? ['meeting_id'] : [] },
-        validate(args: unknown) { return isRecord(args) && validateKnowledgeLookup(name, args, bounds.maxSearchLimit); },
-      })),
-      {
-        name: 'search_knowledge',
-        description: 'Search the owner knowledge base. Pass 2 to 5 core terms, not a sentence; returns matching entry ids with short excerpts. Fetch an entry by id with get_insight for the full body. Returns the top 3 entries with 400-character bodies; call get_insight only to read one entry in full.',
-        effect: 'read',
-        parameters: {
-          type: 'object', additionalProperties: false, required: ['query', 'limit'],
-          properties: { query: { type: 'string', minLength: 1, maxLength: bounds.maxQueryChars, description: 'Two to five core terms: names, projects and exact technical words, never conversational filler.' }, limit: { type: 'integer', minimum: 1, maximum: bounds.maxSearchLimit, description: 'How many results to return, within the configured search cap.' } },
-        },
-        validate(args) {
-          if (!isRecord(args)) return false;
-          const keys = Object.keys(args);
-          // 3r K1: the bounded-body fields are accepted from the research path, which is the voice
-          // lookup. They are not offered in `parameters`, so the text-chat call shape is unchanged.
-          // K4 (#1021): a project tag or hint from the research path travels the same way, and never
-          // widens the text-chat call shape, because neither key is offered in `parameters`.
-          // MED-1022: the voice shape and the meeting day travel the same way, accepted here and never
-          // offered in `parameters`, so the text-chat call shape is unchanged.
-          if (!keys.every(key => key === 'query' || key === 'limit' || key === 'detail' || key === 'max_chars' || key === 'deadline_ms' || key === 'project' || key === 'project_hint'
-            || key === 'snippet_chars' || key === 'meeting_date_from' || key === 'meeting_date_to' || key === 'mode')) return false;
-          if (!keys.includes('query') || !keys.includes('limit')) return false;
-          const query = args['query']; const limit = args['limit'];
-          if (!(typeof query === 'string' && query.trim().length > 0 && query.length <= bounds.maxQueryChars && Number.isSafeInteger(limit) && (limit as number) > 0 && (limit as number) <= bounds.maxSearchLimit)) return false;
-          const detail = args['detail']; const maxChars = args['max_chars']; const deadlineMs = args['deadline_ms'];
-          if (detail !== undefined && detail !== 'snippets' && detail !== 'bodies' && detail !== 'voice') return false;
-          if (maxChars !== undefined && (!Number.isSafeInteger(maxChars) || (maxChars as number) < KNOWLEDGE_BODY_MIN_CHARS || (maxChars as number) > KNOWLEDGE_BODY_MAX_CHARS)) return false;
-          if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return false;
-          // K4: a tag is one corpus project name, never a pattern the model composed.
-          const projectName = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^[\w.@-]{1,64}$/u.test(value));
-          if (!projectName(args['project']) || !projectName(args['project_hint'])) return false;
-          const snippetChars = args['snippet_chars'];
-          if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return false;
-          // MED-1022: the day bounds are two calendar days, never a date expression.
-          if (!isCalendarDay(args['meeting_date_from']) || !isCalendarDay(args['meeting_date_to'])) return false;
-          // FR5: the vault's own fast keyword search or its ranked full search, never a third spelling.
-          const mode = args['mode'];
-          if (mode !== undefined && mode !== 'fast' && mode !== 'full') return false;
-          return true;
-        },
-      },
-      {
-        name: 'get_insight',
-        description: 'Read full knowledge-base entries by id. Pass one to three entry ids from a knowledge search; requested ids are unverified input. Returns each whole entry.',
-        effect: 'read',
-        guidance: 'Needs ids as a list of entry ids from the knowledge search results, like {"ids": [89820, 89933]}.',
-        parameters: {
-          // A read tool drops an unknown key instead of refusing it, so the schema admits extra
-          // keys and names `include_links`; the validator accepts exactly these and drops the rest.
-          // #1013: the provider's strict mode refuses uniqueItems, so a repeated id stays a rule of
-          // normalizeGetInsightArgs, which drops it before dispatch.
-          type: 'object', additionalProperties: true, required: ['ids'],
-          properties: {
-            ids: { type: 'array', minItems: 1, maxItems: bounds.maxGetIds, items: { type: 'integer', minimum: 1 }, description: 'One or more entry ids from a knowledge search. A single id, an integer-valued numeric string, the "#123"/"lux 123" form, or one such string holding several ids separated by comma, semicolon or whitespace (or JSON array text) is accepted; unreadable ids are dropped and named.' },
-            include_links: { type: 'boolean', description: 'Ask the knowledge server to include linked entries in the result.' },
-          },
-        },
-        normalize(args) { return normalizeGetInsightArgs(args, bounds.maxGetIds); },
-        validate(args) { return normalizeGetInsightArgs(args, bounds.maxGetIds) !== undefined; },
-      },
-    ];
-  },
+  envelope: [],
+  admits: luxToolAdmitted,
+  // Helper declarations are obtained from reader.discovery(), never synthesized from policy names.
+  declarations: () => [],
   createReader({ port, registry, policy }) {
     const reader = createLuxKnowledgeReader({
       port, registry,
-      config: { endpointId: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource, schemaDigest: policy.schemaDigest, generation: policy.generation, includeSensitive: policy.sourcePolicy.unknownClass === 'sensitive' && policy.sourcePolicy.allowedClasses.includes('sensitive') && policy.route.allowedClasses.includes('sensitive'), ...policy.bounds },
+      config: { endpointId: policy.endpoint.id, account: policy.endpoint.account, resource: policy.endpoint.resource, generation: policy.generation, ...policy.bounds },
     });
     return {
-      async call(tool, args, signal) {
-        if (tool === 'list_meetings' || tool === 'get_meeting' || tool === 'list_insights') return await reader.lookup(tool, args, signal);
-        if (tool !== 'search_knowledge') return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
-        // The declaration speaks the wire names; the reader takes the connector's own field names.
-        const search = args as {
-          query: string; limit: number; detail?: 'snippets' | 'bodies' | 'voice'; max_chars?: number; deadline_ms?: number;
-          project?: string; project_hint?: string; snippet_chars?: number; meeting_date_from?: string; meeting_date_to?: string; mode?: 'fast' | 'full';
-        };
-        return await reader.search({
-          query: search.query, limit: search.limit,
-          ...(search.detail === undefined ? {} : { detail: search.detail }),
-          ...(search.max_chars === undefined ? {} : { maxChars: search.max_chars }),
-          ...(search.deadline_ms === undefined ? {} : { deadlineMs: search.deadline_ms }),
-          ...(search.project === undefined ? {} : { project: search.project }),
-          ...(search.project_hint === undefined ? {} : { projectHint: search.project_hint }),
-          ...(search.snippet_chars === undefined ? {} : { snippetChars: search.snippet_chars }),
-          ...(search.meeting_date_from === undefined ? {} : { meetingDateFrom: search.meeting_date_from }),
-          ...(search.meeting_date_to === undefined ? {} : { meetingDateTo: search.meeting_date_to }),
-          ...(search.mode === undefined ? {} : { mode: search.mode }),
-        }, signal);
+      discovery: () => {
+        const grant = registry.currentGrant(policy.endpoint.id);
+        if (!grant || grant.generation !== policy.generation || grant.account !== policy.endpoint.account || grant.resource !== policy.endpoint.resource) return [];
+        return registry.visibleTools(policy.endpoint.id).filter(tool => luxToolAdmitted(tool) && (!luxWriteAdmitted(tool) || grant.effect === 'read-write'));
       },
+      call: (tool, args, signal) => reader.call(tool, args, signal),
     };
   },
   project(evidence, port, policy) {

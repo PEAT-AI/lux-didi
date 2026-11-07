@@ -9,6 +9,7 @@ import type { ApprovalRefusalReason } from './events.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS, type McpTransportState } from '../adapters/mcp/adapter.js';
+import { isTrustedRediscovery, luxToolAdmitted } from '../connectors/lux-knowledge.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongoosePublishedTool, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -127,7 +128,7 @@ export interface McpRuntimeComposition {
 }
 /** The local read candidate list per connector; the Mongoose classifier narrows it at discovery. */
 /** Connectors that classify one discovered tool themselves, instead of trusting a static name list. */
-const readClassifiers: Readonly<Record<string, (tool: ToolDefinition) => boolean>> = { mongoose: mongooseReadOnly };
+const readClassifiers: Readonly<Record<string, (tool: ToolDefinition) => boolean>> = { mongoose: mongooseReadOnly, 'lux-knowledge': luxToolAdmitted };
 /**
  * A registry that also admits exactly one bounded identity probe per endpoint before any read
  * grant exists: the connector, its tool and its generation, never a model-facing tool. The
@@ -260,6 +261,8 @@ export type ConnectorLifecycleEvent =
   | { event: 'connector_envelope_widened'; endpointId: string; addedToolNames: readonly string[] }
   /** W2-R1: a rebuilt child kept its id; which fields moved, never a value. */
   | { event: 'connector_endpoint_changed'; endpointId: string; fields: readonly string[] }
+  /** M21: a trusted first-party endpoint rediscovered at a new digest; prefixes only, never content. */
+  | { event: 'mcp_trusted_rediscovered'; endpointId: string; previousDigest: string; observedDigest: string }
   /** W2-R1: the one closed reason a stored approval refused this connect. */
   | { event: 'connector_approval_refused'; endpointId: string; reason: ApprovalRefusalReason };
 
@@ -740,8 +743,11 @@ export async function composeMcpRuntime(options: {
         recordPublishedCatalogue(store, { endpointId: entry.id, resource: entry.resource }, discovery.tools);
       }
       const accepts = readClassifiers[entry.connector] ?? (() => true);
-      const names = grantMode === 'owner-trusted-reads'
-        ? discovery.tools.filter(tool => (entry.connector !== 'mongoose' || mongoosePublishedTool(entry.id, tool.name) !== undefined) && envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()
+      // M21: the trusted first-party endpoint is granted its own reads at the observed digest on
+      // every discovery, whatever the profile's approval mode says for the other connectors.
+      const trustedFirstParty = isTrustedRediscovery(entry.connector);
+      const names = grantMode === 'owner-trusted-reads' || trustedFirstParty
+        ? discovery.tools.filter(tool => (entry.connector !== 'mongoose' || mongoosePublishedTool(entry.id, tool.name) !== undefined) && (trustedFirstParty || envelope.includes(tool.name)) && accepts(tool)).map(tool => tool.name).sort()
         : [];
       // #604: a connector composite is granted under its own name, and only beside every child read
       // it stands on. It is never a published name, so the envelope above cannot carry it.
@@ -835,14 +841,16 @@ export async function composeMcpRuntime(options: {
         // command, args or defining env between releases: the owner's approval is the envelope, not a path.
         const stdioMoved = trusted && sameEndpoint && approved && isStdioEndpointRecord(stored.endpoint) && isStdioEndpointRecord(policy.endpoint);
         const endpointMoved = endpointIdentity(stored.endpoint) !== endpointIdentity(policy.endpoint);
-        const reconciledWidening = widened && trusted && approved && addedNames.every(name => envelope.includes(name));
+        const reconciledWidening = widened && (trusted || trustedFirstParty) && approved
+          && (trustedFirstParty || addedNames.every(name => envelope.includes(name)));
         const refusal = (endpointMoved || widened) && !approved ? 'row_invalid'
           : endpointMoved && !stdioMoved ? 'endpoint_changed'
           : widened && !reconciledWidening ? 'tools_widened'
           : oldClass !== null && rank[entry.unknownClass] < rank[oldClass] ? 'class_tightened'
-          : (trusted ? readableChanged : stored.schemaDigest !== policy.schemaDigest) ? 'schema_changed'
+          : !trustedFirstParty && (trusted ? readableChanged : stored.schemaDigest !== policy.schemaDigest) ? 'schema_changed'
           : null;
         if (refusal !== null) return refuseApproval(refusal, addedNames);
+        if (trustedFirstParty && stored.schemaDigest !== policy.schemaDigest) options.lifecycleLog?.({ event: 'mcp_trusted_rediscovered', endpointId: entry.id, previousDigest: stored.schemaDigest.slice(0, 12), observedDigest: policy.schemaDigest.slice(0, 12) });
         if (endpointMoved) options.lifecycleLog?.({ event: 'connector_endpoint_changed', endpointId: entry.id, fields: changedEndpointFields(stored.endpoint, policy.endpoint) });
         if (reconciledWidening) options.lifecycleLog?.({ event: 'connector_envelope_widened', endpointId: entry.id, addedToolNames: [...addedNames].sort() });
         // Persisted approval fields are authoritative. A restart cannot re-enable a revocation.
@@ -861,7 +869,9 @@ export async function composeMcpRuntime(options: {
         // W2-R4: the launch environment is the current entry's env (registry.register below, adapter.ts:362),
         // so the stored copy carrying an older PATH is not a policy change: the shell session is excluded from
         // the compared identity, and a PATH move alone neither bumps the generation nor rewrites policy_sha256.
-        if (!stored || policyIdentity(stored) !== policyIdentity(policy)) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
+        // M21: the trusted first-party endpoint's grant is fresh on every discovery, so the host
+        // advances its generation itself instead of reusing the stored approval's one.
+        if (!stored || trustedFirstParty || policyIdentity(stored) !== policyIdentity(policy)) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
       approvedSchemas.set(entry.id, schemas);
       // Identity proof before any read grant. A failed proof never falls back to publication.
@@ -936,7 +946,13 @@ export async function composeMcpRuntime(options: {
         // policy name, so it is the approval that covers it, never this projection (#604).
         // W1030: a write name rides in the callable grant too, because the compose port reaches the
         // endpoint through the same registry a read does. It is still never a model-facing read tool.
-        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name) || writes.includes(name)), effect: 'read' });
+        // M21: the trusted first-party endpoint is granted at the digest just observed, under the
+        // generation this host advanced, never under the stored owner approval's digest.
+        if (trustedFirstParty) {
+          registry.approve({ endpointId: stored.endpoint.id, schemaDigest: discovery.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name) || writes.includes(name)), effect: stored.connector === 'lux-knowledge' ? 'read-write' : 'read' });
+          return true;
+        }
+        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name) || writes.includes(name)), effect: stored.connector === 'lux-knowledge' ? 'read-write' : 'read' });
         return true;
       });
       if (!published) {

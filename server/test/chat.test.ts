@@ -626,7 +626,7 @@ test('the model-only omission note is stripped from the owner-facing evidence co
   const notes = [
     '[omitted: 4 more messages; final, this tool has no paging argument]',
     '[omitted: 12 characters; final, this read has no paging argument]',
-    '[omitted: 3 hits; call search_knowledge again with limit=9 for the rest]',
+    '[omitted: 3 hits; call search_insights again with limit=9 for the rest]',
     '[omitted: 40 characters to keep this result under 8000; ask a narrower question or for fewer items for the rest]',
   ];
   for (const note of notes) {

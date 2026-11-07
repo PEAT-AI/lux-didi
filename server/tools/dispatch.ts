@@ -2,7 +2,6 @@ import { diagnosticEpochCovers } from '../trace/diagnostic-context.js';
 import { projectDiagnosticInput, projectionAuthentic } from './diagnostic-input.js';
 export { projectDiagnosticInput } from './diagnostic-input.js';
 import { historyForgotten } from '../domain/history-lifecycle.js';
-import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { GOOGLE_TOOLS } from '../connectors/google.js';
 import { MONGOOSE_READ_TOOLS } from '../connectors/mongoose.js';
 import { MATTERMOST_READ_TOOLS } from '../connectors/mattermost.js';
@@ -148,10 +147,18 @@ function fail(reason: string): never { throw new SourceCaptureError(reason); }
  * The read envelope the capture gate admits, per connector: the connector module's own published read
  * list, so a tool the module can call is never refused here as `unsupported_source_tool`.
  */
-export const SOURCE_TOOL_GATE: Readonly<Record<string,readonly string[]>> = {'lux-knowledge':LUX_KNOWLEDGE_TOOLS,google:GOOGLE_TOOLS,mongoose:MONGOOSE_READ_TOOLS,mattermost:MATTERMOST_READ_TOOLS};
+// Ruling M21-R3: a connector whose callable set is an admission hook (lux-knowledge) has no static
+// entry here, so no lux tool name is written outside its own module.
+export const SOURCE_TOOL_GATE: Readonly<Record<string,readonly string[]>> = {google:GOOGLE_TOOLS,mongoose:MONGOOSE_READ_TOOLS,mattermost:MATTERMOST_READ_TOOLS};
 function extractVerifiedSource(result: CompletedResult,request: CallRequest,bound: BoundConnection,port: McpPort) {
   const p = bound.policy,source = result.source,payload = result.payload;
-  if (!SOURCE_TOOL_GATE[p.connector]?.includes(request.toolName)) fail('unsupported_source_tool');
+  // M21-R1: the trusted first-party endpoint is gated by the read names the host granted from
+  // discovery, so a read tool this module never named in code is captured too. A write is never in
+  // that grant. Every other connector keeps its module's own list.
+  const admitted = p.connector === 'lux-knowledge'
+    ? p.toolNames.includes(request.toolName)
+    : SOURCE_TOOL_GATE[p.connector]?.includes(request.toolName) ?? false;
+  if (!admitted) fail('unsupported_source_tool');
   const expected = 'transport' in p.endpoint ? bindingDigestOf(p.endpoint) : p.endpoint.url;
   if (source.endpointId !== request.endpointId || source.toolName !== request.toolName || sourceBindingOf(source) !== expected || source.account !== request.account || source.resource !== request.resource || source.generation !== request.generation || source.schemaDigest !== p.schemaDigest) fail('source_scope_mismatch');
   if (payload.state !== 'available' || payload.encoding !== 'http-response-entity' || !Number.isSafeInteger(payload.byteLength) || payload.byteLength < 1 || payload.byteLength > p.bounds.maxEntityBytes || !/^[a-f0-9]{64}$/.test(payload.sha256) || payload.expiresAt <= Date.now()) fail('source_entity_unavailable');

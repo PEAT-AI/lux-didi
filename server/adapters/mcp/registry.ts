@@ -49,7 +49,12 @@ interface Entry {
   lastGeneration: number;
   revision: number;
 }
-/** Entirely local authority. Remote annotations are never consulted. */
+/**
+ * Entirely local authority. Remote annotations are never consulted here; the one exception sits in
+ * the connector that owns it: a trusted first-party endpoint's tools carry `readOnlyHint`, and its
+ * module's admission hook (connectors/lux-knowledge.ts) is what reads it, before this registry is
+ * asked for a grant.
+ */
 export class McpRegistry {
   private readonly entries = new Map<string, Entry>();
   register(config: EndpointConfig): void {
@@ -107,13 +112,13 @@ export class McpRegistry {
   }
   approve(grant: ReadGrant): void {
     const entry = this.entry(grant.endpointId); this.endpoint(grant.endpointId);
-    if (!entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || grant.account !== entry.config.account || grant.resource !== entry.config.resource || !Number.isSafeInteger(grant.generation) || grant.generation <= entry.lastGeneration || !Array.isArray(grant.toolNames) || new Set(grant.toolNames).size !== grant.toolNames.length || grant.toolNames.some(name => !entry.tools?.some(tool => tool.name === name))) throw new Error('invalid-local-read-grant');
+    if (!entry.digest || grant.schemaDigest !== entry.digest || !['read', 'read-write'].includes(grant.effect) || grant.account !== entry.config.account || grant.resource !== entry.config.resource || !Number.isSafeInteger(grant.generation) || grant.generation <= entry.lastGeneration || !Array.isArray(grant.toolNames) || new Set(grant.toolNames).size !== grant.toolNames.length || grant.toolNames.some(name => !entry.tools?.some(tool => tool.name === name))) throw new Error('invalid-local-read-grant');
     entry.grant = structuredClone(grant); entry.consent = structuredClone(grant); entry.lastGeneration = grant.generation;
   }
   /** Trusted owner projection of durable consent; never a new operator approval. */
   restore(grant: ReadGrant): void {
     const entry = this.entry(grant.endpointId); this.endpoint(grant.endpointId);
-    if (!entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || grant.account !== entry.config.account || grant.resource !== entry.config.resource || !Number.isSafeInteger(grant.generation) || grant.generation < 1 || grant.generation <= entry.revokedGeneration || grant.generation < entry.lastGeneration || !Array.isArray(grant.toolNames) || new Set(grant.toolNames).size !== grant.toolNames.length || grant.toolNames.some(name => !entry.tools?.some(tool => tool.name === name))) throw new Error('invalid-standing-read-grant');
+    if (!entry.digest || grant.schemaDigest !== entry.digest || !['read', 'read-write'].includes(grant.effect) || grant.account !== entry.config.account || grant.resource !== entry.config.resource || !Number.isSafeInteger(grant.generation) || grant.generation < 1 || grant.generation <= entry.revokedGeneration || grant.generation < entry.lastGeneration || !Array.isArray(grant.toolNames) || new Set(grant.toolNames).size !== grant.toolNames.length || grant.toolNames.some(name => !entry.tools?.some(tool => tool.name === name))) throw new Error('invalid-standing-read-grant');
     if (grant.generation === entry.lastGeneration && (!entry.consent || entry.consent.schemaDigest !== grant.schemaDigest || JSON.stringify(entry.consent.toolNames) !== JSON.stringify(grant.toolNames))) throw new Error('standing-consent-mismatch');
     entry.grant = structuredClone(grant); entry.consent = structuredClone(grant); entry.lastGeneration = grant.generation;
   }
@@ -125,7 +130,7 @@ export class McpRegistry {
   }
   authorize(request: CallRequest): ResultScope {
     const entry = this.entry(request.endpointId); const config = this.endpoint(request.endpointId); const grant = entry.grant;
-    if (!grant || !entry.digest || grant.schemaDigest !== entry.digest || grant.effect !== 'read' || !grant.toolNames.includes(request.toolName) || request.generation !== grant.generation || request.account !== grant.account || request.resource !== grant.resource) throw new Error('local-read-grant-refused');
+    if (!grant || !entry.digest || grant.schemaDigest !== entry.digest || !['read', 'read-write'].includes(grant.effect) || !grant.toolNames.includes(request.toolName) || request.generation !== grant.generation || request.account !== grant.account || request.resource !== grant.resource) throw new Error('local-read-grant-refused');
     if (isStdioEndpoint(config)) return { endpointId: config.id, transport: 'stdio', bindingDigest: bindingDigestOf(config), schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
     return { endpointId: config.id, url: config.url, schemaDigest: grant.schemaDigest, toolName: request.toolName, generation: grant.generation, account: grant.account, resource: grant.resource };
   }

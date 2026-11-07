@@ -8,6 +8,10 @@ import { FakeAuthority } from '../tasks/authority.js';
 import { documentResult } from '../tasks/results.js';
 import { TaskController, FakeDelivery } from '../tasks/controller.js';
 
+/** The discovered knowledge read, handed to the runtime the way the host hands it: name, schema, no static list. */
+const discoveredRead = { name: 'search_insights', description: 'Search the synthetic knowledge source.', fields: {},
+  parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false }, outside: true };
+
 test('worker concurrently dedupes identical reads and repairs unknown calls', async () => {
   let executed = 0; let inferred = 0;
   const registry = createRegistry({ execute: async () => { executed++; return documentResult('verified', 'fixture'); }, authority: new FakeAuthority() });
@@ -148,11 +152,11 @@ for (const mode of ['inference failure', 'deadline expiry', 'no action'] as cons
   let now = 0, inferred = 0, expireRevision = () => {};
   const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => {
     return documentResult('Verified partial synthetic finding.', 'synthetic-read');
-  } });
+  } }, [discoveredRead]);
   const result = await runWorker({ registry, identity: { task_id: 'partial-fixture', task_revision: 1, connection_generation: 1 },
     input: 'Read the synthetic source', signal: new AbortController().signal,
     clock: { now: () => now, timer: (callback, ms) => { if (ms === 36000) expireRevision = callback; return () => {}; } }, infer: async () => {
-      if (!inferred++) return { text: '', calls: [{ id: 'synthetic-read', name: 'search_knowledge', args: { query: 'synthetic' , mode: null } }] };
+      if (!inferred++) return { text: '', calls: [{ id: 'synthetic-read', name: 'search_insights', args: { query: 'synthetic' } }] };
       if (mode === 'no action') return { text: '', calls: [], no_action: true };
       if (mode === 'deadline expiry') { now = 36001; expireRevision(); return { text: '', calls: [] }; }
       throw Error('synthetic inference failure');

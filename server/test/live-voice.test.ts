@@ -698,7 +698,7 @@ test('P1: 3.8 Live keeps its 800 ms silence window and exposes only helper deleg
   const f = await providerFixture(t);
   const modelId = 'models/gemini-3.8-live-test';
   const tools = [
-    { name: 'search_knowledge', description: 'Search', parameters: { type: 'OBJECT' } },
+    { name: 'search_insights', description: 'Search', parameters: { type: 'OBJECT' } },
     { name: 'remember_note', description: 'Remember', parameters: { type: 'OBJECT' } },
   ];
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, modelId,

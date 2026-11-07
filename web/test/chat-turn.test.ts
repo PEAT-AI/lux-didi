@@ -61,7 +61,7 @@ test('the answer is the only body text and its evidence is folded under it, newe
     ].join('\n'), sources: [{ title: 'Mattermost: moving the sync', url: 'https://mm.example.org/p/1' }] },
     { name: 'gmail_search_messages', markdown: '- Quarterly numbers | from: Dana | date: 2026-10-16T08:00:00Z | the deck is ready', sources: [{ title: 'Gmail: Quarterly numbers', url: 'https://mail.example.org/1' }] },
     { name: 'calendar_list_events', markdown: '- 2026-10-17T14:30:00, Release review [id e1]', sources: [] },
-    { name: 'search_knowledge', markdown: '### Release rhythm (PATTERN | 2026-10-10) [id 42]\nReleases ship on fridays.', sources: [] },
+    { name: 'search_insights', markdown: '### Release rhythm (PATTERN | 2026-10-10) [id 42]\nReleases ship on fridays.', sources: [] },
   ];
   const html = evidenceMarkup(evidence, NOW);
   // One folded block, never the raw shaped output as the body.
@@ -73,7 +73,7 @@ test('the answer is the only body text and its evidence is folded under it, newe
   assert.match(html, /chat-evidence-snippet">moving the sync to ten</);
   assert.match(html, /<h4>Gmail<\/h4>[\s\S]*Dana · Quarterly numbers · yesterday/);
   assert.match(html, /<h4>Calendar<\/h4>[\s\S]*14:30 · Release review/);
-  assert.match(html, /<h4>Knowledge<\/h4>[\s\S]*Release rhythm · PATTERN/);
+  assert.match(html, /<h4>Tool<\/h4>[\s\S]*Release rhythm · PATTERN/);
   assert.equal(evidenceMarkup([], NOW), '');
 });
 

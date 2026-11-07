@@ -1,3 +1,4 @@
+import { LUX_TOOLS } from '../connectors/lux-names.js';
 import { cleanMailBody, decodeEntities } from '../tasks/clean.js';
 export { cleanMailBody, htmlToText, stripQuotedReply, stripSignature, stripTrackingUrls } from '../tasks/clean.js';
 /**
@@ -586,54 +587,31 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
 
 // --- lux-knowledge -------------------------------------------------------------------------
 
-/** The remote search returns its digest as Markdown whose first line is an H1 header and whose
- * next block is an italic retrieval-metadata line. Neither belongs in front of the Live model or in
- * the answer card (#254); the hits and their ids stay untouched. */
-const KNOWLEDGE_HEADER = /^#\s*Knowledge Search\b.*$/u;
-const KNOWLEDGE_METADATA = /^_.*(?:confidence:|top score:|relevant candidate:).*$/u;
-/** #6: the confidence line is stripped from the model text but never lost: research reads it here. */
-function knowledgeConfidenceOf(raw: string): KnowledgeConfidence | undefined {
-  for (const line of raw.split('\n')) {
-    if (!KNOWLEDGE_METADATA.test(line.trim())) continue;
-    const confidence = /confidence:\s*([a-z]+)/u.exec(line)?.[1];
-    if (confidence === undefined) continue;
-    const top = /top score:\s*([\d.]+)/u.exec(line)?.[1];
-    const candidates = /relevant candidate:\s*([a-z]+)/u.exec(line)?.[1];
-    return { confidence, ...(top === undefined ? {} : { top }), ...(candidates === undefined ? {} : { candidates }) };
-  }
-  return undefined;
+/** The remote search returns its digest as Markdown whose first line is an H1 header and whose next
+ * block is an italic retrieval-metadata line. Both are lux's own words and reach the helper as text
+ * (#254 keeps the opening heading marker off the card); nothing in either line is parsed into a
+ * field, so a renamed or reworded header still arrives whole (F1). */
+const KNOWLEDGE_HEADING_MARK = /^\s*#+\s*/u;
+function knowledgeHeaderAsText(raw: string): string {
+  const [header, ...rest] = raw.split('\n');
+  return header === undefined ? raw : [header.replace(KNOWLEDGE_HEADING_MARK, ''), ...rest].join('\n');
 }
-function stripKnowledgePreamble(raw: string): string {
-  return raw.split('\n').filter(line => {
-    const trimmed = line.trim();
-    return !KNOWLEDGE_HEADER.test(trimmed) && !KNOWLEDGE_METADATA.test(trimmed);
-  }).join('\n').replace(/^\n+/u, '');
-}
-function knowledgeHeading(hit: Record<string, unknown>): string {
-  const title = field(hit, 'insight_title', 'title', 'name') || `insight ${scalar(hit['id']) || '(untitled)'}`;
-  const kind = field(hit, 'insight_type', 'type');
-  const date = field(hit, 'updated_at', 'created_at', 'date', 'meeting_date_local');
-  const meta = [kind, date].filter(Boolean).join(' | ');
-  const id = scalar(hit['id']);
-  return `### ${title}${meta ? ` (${meta})` : ''}${id ? ` [id ${id}]` : ''}`;
-}
-/** A search hit's excerpt. The cut names the research tool, which reads the whole entry by its id. */
+/** A search hit, rendered as the text the server sent. No field name is read (F1). */
 function knowledgeExcerpt(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
-  const body = field(hit, 'content', 'excerpt', 'snippet', 'summary');
+  const body = JSON.stringify(hit);
   const cut = cutAtSentence(body, Number.POSITIVE_INFINITY);
-  const id = scalar(hit['id']);
-  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; ${id ? `use read_knowledge with id=${id} for the whole note` : 'use read_knowledge with this note id for the whole note'}]` : '';
-  return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
+  const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; this search result is capped, a narrower question returns the rest]` : '';
+  return { text: `${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
-/** A get_insight body, returned in full up to a generous final bound (OUTCOME 1). */
+/** A by-id insight body, returned in full up to a generous final bound (OUTCOME 1). */
 function knowledgeBody(hit: Record<string, unknown>): { text: string; omitted: number; original: number } {
   const body = field(hit, 'content', 'text', 'body');
   const cut = cutAtSentence(body, Number.POSITIVE_INFINITY);
   const note = cut.omitted > 0 ? `\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
-  return { text: `${knowledgeHeading(hit)}\n${cut.text}${note}`, omitted: cut.omitted, original: body.length };
+  return { text: `${cut.text}${note}`, omitted: cut.omitted, original: body.length };
 }
 
-/** Shape a lux-knowledge result. JSON hits become title/type/date/excerpt; anything else is kept. */
+/** Shape a lux-knowledge result. Anything the server sends is kept as the text it sent. */
 export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { parsed = undefined; }
@@ -647,7 +625,7 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       const hits = list.filter(isRecord);
       if (hits.length) return knowledgeList(hits);
     }
-    if (tool === 'get_insight') {
+    if (tool === LUX_TOOLS.get) {
       const body = field(parsed, 'content', 'text', 'body');
       if (body || parsed['insights'] === undefined && parsed['results'] === undefined) {
         const hit = knowledgeBody(parsed);
@@ -655,17 +633,12 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       }
     }
   }
-  const confidence = knowledgeConfidenceOf(raw);
-  // #6/#580: the ranker line never reaches the model text; it travels as a field on the shape, where
-  // research reads it and voices the hedge. Never invented: only the fields the server itself sent.
-  const carry = (result: ShapedResult): ShapedResult => confidence === undefined ? result
-    : { ...result, knowledgeConfidence: confidence };
   const ranked = knowledgeRanked(raw);
-  if (ranked) return carry(ranked);
-  const clean = stripKnowledgePreamble(raw);
+  if (ranked) return ranked;
+  const clean = knowledgeHeaderAsText(raw);
   const cut = cutAtSentence(clean, Number.POSITIVE_INFINITY);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
-  return carry(withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) }));
+  return withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) });
 }
 
 const KNOWLEDGE_HIT_START = /^(?:- )?\*\*#([0-9]+)\*\*/u;
@@ -674,7 +647,7 @@ const KNOWLEDGE_SCORE_LINE = /^\s*Score:/u;
 /** ROUTE-1022 K17: the hit count the digest states above its hits, so the coverage line is the server's. */
 const KNOWLEDGE_HIT_COUNT = /\b(\d{1,3})\s+(?:hits?|results?|insights?|entries|matches)\b/iu;
 function statedHitCount(raw: string): number | undefined {
-  const header = raw.split('\n').map(line => line.trim()).find(line => KNOWLEDGE_HEADER.test(line));
+  const header = raw.split('\n').map(line => line.trim()).find(line => line.length > 0);
   if (header === undefined) return undefined;
   const count = Number(KNOWLEDGE_HIT_COUNT.exec(header)?.[1] ?? Number.NaN);
   return Number.isSafeInteger(count) && count > 0 ? count : undefined;
@@ -682,9 +655,13 @@ function statedHitCount(raw: string): number | undefined {
 
 /** A ranked Markdown search reply: every '**#id**' block is one hit, and no hit is dropped silently. */
 function knowledgeRanked(raw: string): ShapedResult | undefined {
-  const clean = stripKnowledgePreamble(raw);
-  const parts = clean.split(/^(?=(?:- )?\*\*#[0-9]+\*\*)/mu).filter(part => KNOWLEDGE_HIT_START.test(part));
-  if (parts.length === 0) return undefined;
+  const clean = knowledgeHeaderAsText(raw);
+  const blocks = clean.split(/^(?=(?:- )?\*\*#[0-9]+\*\*)/mu);
+  const firstHit = blocks.findIndex(block => KNOWLEDGE_HIT_START.test(block));
+  if (firstHit === -1) return undefined;
+  // F1: the digest's own header and retrieval line are text the helper reads, never a preamble to drop.
+  const preamble = blocks.slice(0, firstHit).join('').trim();
+  const parts = blocks.slice(firstHit).filter(block => KNOWLEDGE_HIT_START.test(block));
   const kept: string[] = [];
   let used = 0;
   let omitted = 0;
@@ -715,13 +692,13 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
   const total = Math.max(statedHitCount(raw) ?? 0, parts.length);
   const short = trimmed > 0 || total > kept.length;
   const tail = short ? `\n\n[showing ${kept.length} of ${total} hits; ask a narrower question or a higher limit for the rest]` : '';
-  const text = `${kept.join('\n\n')}${tail}`;
+  const text = `${preamble.length > 0 ? `${preamble}\n\n` : ''}${kept.join('\n\n')}${tail}`;
   return withOpenHandles({ text, partial: short || omitted > 0, originalCharacters: original, omittedCharacters: omitted, sources: bodySourceLinks(text) });
 }
 
 function knowledgeList(hits: Record<string, unknown>[]): ShapedResult {
   const shapedHits = hits.map(knowledgeExcerpt);
-  const body = listed(shapedHits.map(hit => hit.text), Number.POSITIVE_INFINITY, 'hits', `call search_knowledge again with limit=${hits.length} for the rest`);
+  const body = listed(shapedHits.map(hit => hit.text), Number.POSITIVE_INFINITY, 'hits', `call ${LUX_TOOLS.search} again with limit=${hits.length} for the rest`);
   const omitted = body.omitted + shapedHits.reduce((sum, hit) => sum + hit.omitted, 0);
-  return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted, sources: hits.flatMap(hit => bodySourceLinks(field(hit, 'content', 'excerpt', 'snippet', 'summary'))) });
+  return capped({ text: body.text, partial: omitted > 0, originalCharacters: shapedHits.map(hit => hit.text).join('\n\n').length, omittedCharacters: omitted, sources: shapedHits.flatMap(hit => bodySourceLinks(hit.text)) });
 }

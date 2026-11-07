@@ -1,3 +1,5 @@
+import { renderLuxText } from '../connectors/lux-knowledge.js';
+import { LUX_TOOLS, LUX_WRITE_TOOLS, luxWriteAdmitted } from '../connectors/lux-names.js';
 import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { isToolFailureCode, type ToolFailureCode } from '../adapters/model/types.js';
 import { TASK_CONNECTOR_FAILURE_CODE } from './results.js';
@@ -21,9 +23,6 @@ export interface ExistingExecutors {
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
-  vault_meetings: { connector: 'lux-knowledge', tool: 'list_meetings', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
-  read_vault_meeting: { connector: 'lux-knowledge', tool: 'get_meeting', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
-  list_vault: { connector: 'lux-knowledge', tool: 'list_insights', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
   chat_attention: { connector: 'mattermost', tool: 'mattermost_attention', args: a => ({ ...a }) },
   chat_person: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'person' }) },
   chat_channel: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'channel' }) },
@@ -39,8 +38,6 @@ const mappings: Record<string, Mapping> = {
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
   // FR5: the mode the model chose travels with the search; an unstated mode keeps the ranked default.
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(12, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'snippets', ...(a.mode === undefined || a.mode === null ? {} : { mode: a.mode }) }) },
-  read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: Array.isArray(a.ids) ? a.ids : [Number(a.id)], include_links: a.include_links ?? true }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query, mode: a.mode ?? 'answer', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
 };
@@ -102,18 +99,10 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   const id = text(args.id ?? args.ref) || name;
   if ((name === 'search_company' || name === 'read_company' || name === 'query_company' || Object.hasOwn(companySteps, name))
     && !(name === 'search_company' && typeof data === 'string' && rankedText(data).length)) return companyPayload(data);
-  if (['vault_meetings', 'read_vault_meeting', 'list_vault'].includes(name)) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name, text(args.cursor) || '0');
-  if (name === 'search_knowledge' && typeof data === 'string') {
-    const rows = rankedText(data).slice(0, 12).map(row => ({ ...row, title: row.title.slice(0, 300) }));
-    const empty = !rows.length && /\bNo (?:results|matches|insights)(?: found)?\b/i.test(data);
-    return { status: rows.length ? 'ok' : empty ? 'empty' : 'partial',
-      text: data.slice(0, 24000),
-      references: rows.map((row, index) => ({ id: row.id, title: row.title, rank: index + 1, ...(row.snippet_status ? { snippet_status: row.snippet_status } : {}) })), next_cursor: null,
-      coverage: `${rows.length} ranked vault candidates in source order. Semantic retrieval, not exact-name matching.${data.length > 24000 ? ' Source text truncated.' : ''}`,
-      repair: rows.length || empty ? null : 'Unrecognized vault search response; do not infer corpus absence.' };
-  }
+  if (name === LUX_TOOLS.search) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name);
+
   if (typeof data === 'string' && !name.startsWith('read_')) {
-    const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
+    const rows = name === LUX_TOOLS.search || name === 'search_company' ? rankedText(data) : [];
     return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };
   }
   if (name.startsWith('read_')) {
@@ -145,7 +134,7 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     const subject = name === 'search_mail' ? (Array.isArray(item.headers) ? item.headers.map(record).find(header => text(header.name).toLowerCase() === 'subject')?.value : record(item.headers).Subject) : undefined;
     return [{ id: itemId, title: text(item.title ?? item.name ?? item.subject ?? subject ?? item.summary ?? item.author), text: (name === 'calendar_events' ? `${eventTime(item.start)} to ${eventTime(item.end)} ${text(item.location)}` : text(item.snippet ?? item.excerpt ?? item.text ?? item.message)).slice(0, 500), ...(text(item.url ?? item.permalink) ? { url: text(item.url ?? item.permalink) } : {}) }];
   });
-  if (name === 'search_knowledge' || name === 'search_company') return rankedResult(text(args.query), items);
+  if (name === LUX_TOOLS.search || name === 'search_company') return rankedResult(text(args.query), items);
   const next = text(root.nextPageToken ?? root.next_cursor);
   const cursor = name === 'search_mail' ? next : '';
   const incomplete = !!next || root.sourceIncomplete === true;
@@ -169,7 +158,21 @@ function companySignInRepair(binding: BoundConnector): string {
   return `The Mongoose ${endpoint === 'crm' ? 'CRM' : endpoint ?? 'company'} endpoint is unavailable. Sign-in is needed for that endpoint in Settings.`;
 }
 /** Typed company steps preserve each endpoint's published schema and authoritative grants. */
+/** Host wrapper identity follows the granted mutation capability, never a read-name allowlist. */
+export function luxWriteHelper(tool: string): string | undefined {
+  if (tool === LUX_TOOLS.create) return 'vault_save';
+  if ((LUX_WRITE_TOOLS as readonly string[]).includes(tool)) return 'vault_update';
+  return undefined;
+}
 export function configuredCompanyTools(bindings: readonly BoundConnector[], catalogues: readonly PublishedCatalogue[] = []): Definition[] {
+  const discovered = bindings.filter(binding => binding.connector === 'lux-knowledge').flatMap(binding => (binding.reader.discovery?.() ?? []).filter(tool => binding.policy.toolNames.includes(tool.name)));
+  const unique = [...new Map(discovered.map(tool => [tool.name, tool])).values()];
+  const lux: Definition[] = unique.filter(tool => !luxWriteAdmitted(tool)).map(tool => ({ name: tool.name, description: tool.description ?? tool.name, fields: {}, parameters: tool.inputSchema, outside: true }));
+  const envelope = (payload: Record<string, unknown>): Record<string, unknown> => ({ type: 'object', properties: { requested_turn_id: { type: 'string', minLength: 1 }, payload }, required: ['requested_turn_id', 'payload'], additionalProperties: false });
+  const create = unique.find(tool => tool.name === LUX_TOOLS.create && luxWriteAdmitted(tool));
+  if (create) lux.push({ name: luxWriteHelper(create.name)!, description: `Save only when the owner asks or confirms. Name that owner turn. ${create.description ?? ''}`, fields: {}, parameters: envelope(create.inputSchema), outside: false });
+  const updates = unique.filter(tool => tool.name !== LUX_TOOLS.create && (LUX_WRITE_TOOLS as readonly string[]).includes(tool.name) && luxWriteAdmitted(tool));
+  if (updates.length) lux.push({ name: luxWriteHelper(updates[0]!.name)!, description: 'Correct an insight, link to a hub or record search feedback only on an owner-requested turn. Use the discovered payload shape; say what changed.', fields: {}, parameters: envelope(updates.length === 1 ? updates[0]!.inputSchema : { oneOf: updates.map(tool => tool.inputSchema) }), outside: false });
   const capabilities = bindings.filter(binding => binding.connector === 'mongoose').flatMap(binding => CONNECTOR_DESCRIPTORS.mongoose!.declarations(binding.policy).filter(item => nativeTaskReadGranted(binding.policy, item.name)));
   const typed = Object.entries(companySteps).flatMap<Definition>(([name, description]) => {
     const declaration = capabilities.find(item => item.name === name);
@@ -196,14 +199,16 @@ export function configuredCompanyTools(bindings: readonly BoundConnector[], cata
   });
   // Explores and saved content are navigation only, never a route to compute or verify metrics.
   const navigation = capabilities.filter(item => ['search', 'read', 'list_companies', 'search_content', 'read_content', 'list_content', 'list_explores', 'get_metadata', 'list_verified_content'].includes(item.name));
-  if (!navigation.length) return typed;
-  return [...typed, { outside: true, name: 'query_company', description: 'Browse company records, explores and saved content with declared filters. Never use this to answer or check metrics: use ask_data_agent. Customer records belong to get_company; coverage belongs to check_data_capability.', fields: {
+  if (!navigation.length) return [...lux, ...typed];
+  return [...lux, ...typed, { outside: true, name: 'query_company', description: 'Browse company records, explores and saved content with declared filters. Never use this to answer or check metrics: use ask_data_agent. Customer records belong to get_company; coverage belongs to check_data_capability.', fields: {
     resource: { type: 'string', enum: [...new Set(navigation.map(item => item.name))] },
     filters: { anyOf: navigation.map(item => strictSchema(item.parameters)) },
   }, validate: args => navigation.some(item => item.name === args.resource && item.validate(args.filters)) }];
 }
 export function isConnectorTaskRead(name: string): boolean { return Object.hasOwn(mappings, name) || Object.hasOwn(companySteps, name) || name === 'query_company'; }
 export function nativeTaskReadTool(name: string, connector: string, args?: Record<string, unknown>): string | undefined {
+  // Lux names are already approved by discovery; never translate them through a fixed helper map.
+  if (connector === 'lux-knowledge') return name;
   if (Object.hasOwn(companySteps, name) && connector === 'mongoose') return name;
   if (name === 'query_company' && connector === 'mongoose' && typeof args?.resource === 'string') return args.resource;
   const mapping = mappings[name];
@@ -212,16 +217,17 @@ export function nativeTaskReadTool(name: string, connector: string, args?: Recor
 export function connectorExecutor(bindings: readonly BoundConnector[], existing: ExistingExecutors = {}, handoffsRemaining = 2): ToolPorts['execute'] {
   return async (name, args, signal, outsideTextSeen = false, identity) => {
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
-    const mapping = mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
+    const discovered = bindings.find(binding => binding.connector === 'lux-knowledge' && binding.policy.toolNames.includes(name) && binding.reader.discovery?.().some(tool => tool.name === name && !luxWriteAdmitted(tool)));
+    const mapping = discovered ? { connector: 'lux-knowledge', tool: name, args: (value: Record<string, unknown>) => value } : mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.', 'upstream_error', 'not_configured');
     const candidates = bindings.filter(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool));
-    const binding = candidates.find(binding => CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool)) ?? candidates.find(binding => binding.connector === 'mongoose');
+    const binding = discovered ?? candidates.find(binding => CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool)) ?? candidates.find(binding => binding.connector === 'mongoose');
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).find(declaration => declaration.name === mapping.tool);
-    if (!declaration) return failed(binding.connector === 'mongoose' ? companySignInRepair(binding) : 'This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
+    if (!discovered && !declaration) return failed(binding.connector === 'mongoose' ? companySignInRepair(binding) : 'This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
     if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
-    const mapped = mapping.args(args, declaration.parameters);
-    if (!declaration.validate(mapped)) return readerFailure(name, name === 'read_mail' ? 'wrong_source_id' : 'invalid_argument');
+    const mapped = discovered ? args : mapping.args(args, declaration!.parameters);
+    if (!discovered && !declaration!.validate(mapped)) return readerFailure(name, name === 'read_mail' ? 'wrong_source_id' : 'invalid_argument');
     const scope = createResultScope();
     try {
       return await scope.run(async () => {
@@ -252,7 +258,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
             // display snapshot below as the outside-text disclosure provenance.
             const payloadSource = binding.connector === 'lux-knowledge' ? (record(result.decodedResult).content as unknown[]).map(part => text(record(part).text)).join('\n') : ['read_mail', 'calendar_events', 'search_mail', 'search_drive', 'search_company', 'search_chat', 'chat_person', 'chat_group', 'chat_channel'].includes(name) ? result.decodedResult
               : snapshot.response.text ?? snapshot.response;
-            const shaped = projectTaskPayload(name, payloadSource, args);
+            const shaped = binding.connector === 'lux-knowledge' ? documentResult(renderLuxText(payloadSource), name) : projectTaskPayload(name, payloadSource, args);
             if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
             return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
             }
@@ -291,7 +297,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
           }
           if (follow.omitted) return disclose({ ...companyPayload(payload(nativeResult)), status: 'partial', coverage: 'Native read coverage incomplete; follow-up pages were unavailable.' });
         }
-        return disclose(projectTaskPayload(name, nativeResult, args));
+        return disclose(binding.connector === 'lux-knowledge' ? documentResult(renderLuxText(nativeResult), name) : projectTaskPayload(name, nativeResult, args));
       });
     } catch { return readerFailure(name, signal.aborted ? 'cancelled' : 'upstream_error', signal.aborted ? 'cancelled' : 'source_down'); } finally { scope.release(); }
   };

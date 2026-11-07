@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { hostTaskFactory } from '../tasks/host.js';
+import type { BoundConnector } from '../tasks/connectors.js';
 import { resolveTaskModels } from '../config/tasks.js';
 import { FakeDelivery } from '../tasks/controller.js';
 import { taskDefinitions } from '../tasks/chat.js';
@@ -26,11 +27,22 @@ function violations(schema: unknown, path: string): string[] {
   return errors;
 }
 
+/** The synthetic daemon's published reads: the annotations are the admission, the schema is the declaration. */
+const discoveredReads = [
+  { name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false },
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer' } } } },
+  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false },
+    inputSchema: { type: 'object', required: ['insight_ids'], properties: { insight_ids: { type: 'array', items: { type: 'integer' }, minItems: 1 }, include_links: { type: 'boolean' } } } },
+];
+function luxBinding(): BoundConnector {
+  return { connector: 'lux-knowledge', policy: { toolNames: discoveredReads.map(tool => tool.name), endpoint: { account: 'synthetic-account', resource: 'lux-knowledge:vault' } },
+    reader: { discovery: () => discoveredReads, call: async () => ({ state: 'completed', decodedResult: {} }) } } as unknown as BoundConnector;
+}
 function helperSurface(t: import('node:test').TestContext) {
   const directory = mkdtempSync(join(tmpdir(), 'task-declarations-synthetic-'));
   const store = new Store(directory, domainMigrations);
   const runtime = hostTaskFactory({ store, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
-    bindings: () => [], timeZone: 'UTC', effectCheck: async () => true })('synthetic-declarations', new FakeDelivery());
+    bindings: () => [luxBinding()], timeZone: 'UTC', effectCheck: async () => true })('synthetic-declarations', new FakeDelivery());
   const revision = runtime.begin('Synthetic declaration audit', 1, 1);
   const registry = taskDefinitions(runtime, revision.identity, {
     journal: { fail: () => { throw Error('declaration audit must not execute'); } },
@@ -49,17 +61,17 @@ test('shared helper and chat declarations conform to the provider schema dialect
   for (const declaration of declarations) assert.deepEqual(violations(declaration.parameters, declaration.name), []);
   assert.ok(declarations.some(tool => tool.name === 'open'));
   assert.ok(declarations.some(tool => tool.name === 'find_file'));
-  for (const retired of ['research', 'get_insight', 'open_source', 'open_home', 'open_app', 'open_web']) {
+  for (const retired of ['research', 'read_knowledge', 'open_source', 'open_home', 'open_app', 'open_web']) {
     assert.equal(declarations.some(tool => tool.name === retired), false, `${retired} is not a helper declaration`);
   }
 });
 test('knowledge reads expose bounded batches and linked rationale', t => {
-  const registry = helperSurface(t), knowledge = registry.find(tool => tool.name === 'read_knowledge')!;
-  assert.ok(knowledge);
-  assert.equal(knowledge.validate({ ids: [7, 8], include_links: true, cursor: null }), true);
-  assert.equal(knowledge.validate({ ids: [], include_links: true, cursor: null }), false);
-  const declaration = declarationsFor(registry).declarations.find(tool => tool.name === 'read_knowledge')!;
-  assert.deepEqual(Object.keys(declaration.parameters['properties'] as object).sort(), ['cursor', 'ids', 'include_links']);
+  const registry = helperSurface(t), knowledge = registry.find(tool => tool.name === 'get_insight')!;
+  assert.ok(knowledge, 'the discovered exact read is a task declaration');
+  assert.equal(knowledge.validate({ insight_ids: [7, 8], include_links: true }), true);
+  assert.equal(knowledge.validate({ insight_ids: [], include_links: true }), false);
+  const declaration = declarationsFor(registry).declarations.find(tool => tool.name === 'get_insight')!;
+  assert.deepEqual(Object.keys(declaration.parameters['properties'] as object).sort(), ['include_links', 'insight_ids']);
 });
 
 test('nested unsupported constraints never leak and semantic constraints remain described', () => {

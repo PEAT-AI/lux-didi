@@ -57,12 +57,12 @@ test('voice landing keeps the latest turn readable and secondary activity in a s
 });
 
 test('the thinking label never names a tool; the activity line carries the phrase', () => {
-  const thinking: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search_knowledge', status: 'called' } }] };
-  assert.deepEqual(pendingToolNames(thinking), ['search_knowledge']);
+  const thinking: LiveCurrent = { state: 'thinking', cursor: 1, entries: [{ seq: 1, kind: 'toolCall', tool: { name: 'search_insights', status: 'called' } }] };
+  assert.deepEqual(pendingToolNames(thinking), ['search_insights']);
   assert.equal(liveLabel(thinking), 'Thinking');
-  assert.doesNotMatch(liveLabel(thinking), /search_knowledge/);
+  assert.doesNotMatch(liveLabel(thinking), /search_insights/);
   assert.match(activityMarkup(liveActivity(thinking)), /activity-line/, 'the activity line carries the phrase, the label lives in the stage');
-  assert.doesNotMatch(activityMarkup(liveActivity(thinking)), /search_knowledge/, 'the activity line never names a raw tool');
+  assert.doesNotMatch(activityMarkup(liveActivity(thinking)), /search_insights/, 'the activity line never names a raw tool');
   assert.doesNotMatch(liveMarkup(thinking), /Thinking \(/);
 });
 
@@ -728,7 +728,7 @@ test('hydrate settles consent, mic, theme and last-session time and closes the p
 test('no visible Live text carries a raw url or a markdown heading marker', () => {
   const live: LiveCurrent = { state: 'speaking', cursor: 2, entries: [
     { seq: 1, kind: 'outputTranscription', text: "# Knowledge Search: 'q'\n\nsee https://www.google.com/calendar/event?eid=abc" },
-    { seq: 2, kind: 'toolResult', tool: { name: 'search_knowledge', status: 'completed', markdown: '# raw tool heading\n\ngo https://example.org/x', sources: [{ title: 'Calendar: Standup', url: 'https://www.google.com/calendar/event?eid=abc' }] } },
+    { seq: 2, kind: 'toolResult', tool: { name: 'search_insights', status: 'completed', markdown: '# raw tool heading\n\ngo https://example.org/x', sources: [{ title: 'Calendar: Standup', url: 'https://www.google.com/calendar/event?eid=abc' }] } },
   ] };
   const visible = liveMarkup(live).replace(/<[^>]+>/g, '\n');
   for (const node of visible.split('\n').map(text => text.trim()).filter(Boolean)) {

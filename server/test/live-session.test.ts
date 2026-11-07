@@ -256,7 +256,7 @@ async function harness(t: TestContext, overrides: {
       if (!published.includes(id)) published.push(id);
     };
     const schemas = [
-      { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
+      { name: 'search_insights', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
       { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
     ];
     const registry = new McpRegistry(); toolRegistry = registry;
@@ -373,7 +373,7 @@ async function harness(t: TestContext, overrides: {
       t.mock.method(toolOwner.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => { await overrides.beforeGate!(); return authorize(...args); });
     }
     toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
-      endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
+      endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_insights', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
       route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
       bounds: { maxQueryChars: 80, maxSearchLimit: overrides.knowledgeSearchLimit ?? 3, maxGetIds: 3, maxEntityBytes: overrides.knowledgeContent ? 65536 : 4096, maxResultBytes: overrides.knowledgeContent ? 65536 : 4096 } });
@@ -1436,7 +1436,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const created = h.owner.create({ idempotencyKey: 'expanded-owner-tools', inputClass: 'ordinary' }, h.ctx);
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
-  assert.equal(frozen.system, expectedSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, timeZone: 'Asia/Kolkata', openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
+  assert.equal(frozen.system, expectedSessionInstruction({ text: expectedSystem, tools: ['search_insights', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, timeZone: 'Asia/Kolkata', openingFacts: buildOpeningFacts({ now: NOW, timeZone: 'Asia/Kolkata', familyNames: [], floorSubjects: [] }).section,
     // W4: the runtime context now names the live connector state, so the expectation carries the
     // one endpoint this harness publishes.
 

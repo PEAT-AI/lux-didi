@@ -58,7 +58,7 @@ for (let index = 1; index <= 15; index++) {
   transcriptLines.push({ seq: ++seq, kind: 'outputTranscription', text: `Synthetic turn ${index}: run the release checklist, then the checks.` });
   transcriptLines.push({ seq: ++seq, kind: 'turnComplete' });
   if (index === 5 || index === 10) {
-    transcriptLines.push({ seq: ++seq, kind: 'toolResult', tool: { name: 'search_knowledge', status: 'completed', markdown: `**Synthetic note ${index === 5 ? 'one' : 'two'}** from lux.`, sources: [{ title: 'release checklist', url: 'https://example.org/synthetic' }] } });
+    transcriptLines.push({ seq: ++seq, kind: 'toolResult', tool: { name: 'search_insights', status: 'completed', markdown: `**Synthetic note ${index === 5 ? 'one' : 'two'}** from lux.`, sources: [{ title: 'release checklist', url: 'https://example.org/synthetic' }] } });
   }
 }
 const listAnswer = [

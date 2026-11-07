@@ -6,14 +6,14 @@ import { randomUUID } from 'node:crypto';
 import type { Store } from '../runtime/store.js';
 import { safeEvent } from '../host/log.js';
 import { TaskController, workerInput, type Delivery, type Revision, type RevisionIdentity } from './controller.js';
-import { runWorker, type FailureRecord, type Infer, type WorkerResult } from './worker.js';
+import { runWorker, type FailureRecord, type Infer, type WorkerResult, type Clock } from './worker.js';
 import { createRegistry, type TaskTool, type ToolPorts, type Definition } from './tools.js';
 import { Authority, createTaskAuthority, type Exposure } from './authority.js';
 import type { ToolResult } from './results.js';
 export interface TaskRuntimeOptions {
   nativeSessionId?: string;
   store: Store; execute: ToolPorts["execute"]; authority: Authority; configuredTools?: Definition[]; infer: Infer; delivery: Delivery;
-  timeZone?: string; now?: () => number;
+  timeZone?: string; now?: () => number; clock?: Clock;
   log?(event: Record<string, unknown>): void;
 }
 /** Host-owned runtime shared by live voice and text chat. */
@@ -143,6 +143,7 @@ export class TaskRuntime {
     const revision = this.begin(words, generation, ownerTurn, overlapped), { identity } = revision;
     const result = runWorker({ registry: this.registry, infer: this.options.infer, identity, input: workerInput(revision, this.verifiedStatus(identity), { now_utc: new Date(revision.askAtUtc!).toISOString(), owner_time_zone: this.options.timeZone ?? 'UTC' }), signal: revision.signal,
       ...(this.options.timeZone === undefined ? {} : { timeZone: this.options.timeZone }), ...(this.options.now ? { now: this.options.now } : {}),
+      ...(this.options.clock ? { clock: this.options.clock } : {}),
       reads: revision.reads, outsideTextSeen: revision.evidence.length > 0, event: (phase, count, ms) => this.log(phase, identity.task_revision, count, ms, identity), isCurrent: () => this.controller.isCurrent(identity),
       reportProgress: answer => {
         if (!this.controller.isCurrent(identity)) return;

@@ -6,8 +6,6 @@ export interface ToolPhrase { verb: string; object: string }
 /** Every current Live tool, keyed by its exact connector tool name. */
 export const TOOL_PHRASES: Record<string, ToolPhrase> = {
   // lux-knowledge
-  search_knowledge: { verb: 'Looking in', object: 'your knowledge base' },
-  get_insight: { verb: 'Reading', object: 'your knowledge base' },
   // Gmail
   gmail_get_profile: { verb: 'Checking', object: 'your mail profile' },
   gmail_search_messages: { verb: 'Searching', object: 'your mail' },

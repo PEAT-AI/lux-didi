@@ -1,7 +1,7 @@
 import { hostLogEvent } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import type { Identity } from './authority.js';
-import { closedFailure, failed, readerFailure, reasonCodeFor, type ReasonCode, type ToolResult } from './results.js';
+import { closedFailure, documentResult, failed, readerFailure, reasonCodeFor, type ReasonCode, type ToolResult } from './results.js';
 import { REPORT_PROGRESS_TOOL, validateArguments, type TaskTool } from './tools.js';
 import { taskInstructions } from './instructions.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -91,8 +91,9 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       stage, reason_code: failure.reason_code, status: provider?.status, http_status: provider?.status, request_id: provider?.request_id, provider_error_class: provider?.error_class ?? 'unknown', model: options.model ?? DEFAULT_WORKER_MODEL,
       tool_count: options.registry.size, instruction_chars: instructions.length, elapsed_ms: Math.max(0, clock.now() - start), detail: failure.detail });
   };
+  const pendingLuxWrites = new Map<string, ToolResult>();
   const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join(' ')).filter(Boolean).join(' ');
-  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: partialText(), findings, failures, receipts, ...(failure ? { failure } : expired ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
+  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [partialText(), ...[...pendingLuxWrites.values()].map(result => result.text)].filter(Boolean).join(' '), findings: [...findings, ...pendingLuxWrites.values()], failures, receipts, ...(failure ? { failure } : expired && !pendingLuxWrites.size ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, failures, receipts };
   async function compose(): Promise<WorkerResult> {
     if (revisionExpired || clock.now() - start >= REVISION_DEADLINE_MS) { expired = true; return incomplete(); }
@@ -172,13 +173,18 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const identity = { ...options.identity, operation_id: operationId };
       options.operation?.(identity, tool.name, validation.args, null);
       let result: ToolResult;
-      try { result = tool.effect === 'none'
+      const luxWrite = tool.name === 'vault_save' || tool.name === 'vault_update';
+      if (luxWrite) pendingLuxWrites.set(operationId, documentResult('Vault write request is pending; it is not confirmed saved. The host will log its final outcome.', 'vault-receipt'));
+      try { result = luxWrite
+        ? await tool.run(validation.args, identity, abort.signal, outsideTextSeen)
+        : tool.effect === 'none'
         ? await readBounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen))
         : await bounded(signal => tool.run(validation.args, identity, signal, outsideTextSeen), CONNECTOR_DEADLINE_MS); }
       catch (error) {
         result = tool.effect === 'none' ? readerFailure(tool.name, error instanceof ReadStopped ? error.category : 'upstream_error', error instanceof ReadStopped ? error.category : thrownReason(error)) : failed('Write outcome is unverified. Reconcile its operation receipt before any retry.', options.signal.aborted ? 'cancelled' : 'timeout');
         if (tool.effect !== 'none') result.receipt = { operation_id: identity.operation_id, state: 'unknown' };
       }
+      pendingLuxWrites.delete(operationId);
       result = closedFailure(result);
       if (result.status === 'failed') recordFailure(tool.name, result);
       if (result.receipt) receipts.push(result);

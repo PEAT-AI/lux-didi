@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { LUX_TOOLS as L, LUX_PARAMS as P } from '../server/connectors/lux-names.ts';
 // Private, manual evaluation. Never pass owner fixtures to CI.
 import { readFileSync, realpathSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, writeSync, constants } from 'node:fs';
 import { dirname, resolve, join, parse } from 'node:path';
@@ -7,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const readNames = new Set(['search_knowledge', 'read_knowledge', 'search_company', 'read_company', 'query_company', 'search_drive', 'read_drive', 'search_chat', 'read_thread', 'read_mail', 'chat_attention', 'chat_person', 'chat_channel', 'chat_topic', 'search_web']);
+const readNames = new Set([L.search, L.get, 'search_company', 'read_company', 'query_company', 'search_drive', 'read_drive', 'search_chat', 'read_thread', 'read_mail', 'chat_attention', 'chat_person', 'chat_channel', 'chat_topic', 'search_web']);
 /** Narrow the production registry, not an alternate set of tool declarations. Native open is intentionally absent. */
 export function readRegistry(registry) {
   return new Map([...registry].filter(([name, tool]) => tool.effect === 'none' && readNames.has(name)));
@@ -113,7 +114,7 @@ async function compose(fake, dataDir, usage) {
   if (fake) return { m, model: 'synthetic', effort: 'low', bindings: [], execute: async () => ({ status: 'ok', text: 'synthetic fact', references: [{ id: 'synthetic-ref' }], next_cursor: null, coverage: 'Synthetic only', repair: null }), infer: async request => {
     usage.input_tokens += 10; usage.output_tokens += 5;
     const turn = request.turns.length;
-    return turn < 2 ? { text: '', calls: [{ id: `fake-${turn}`, name: turn ? 'read_knowledge' : 'search_knowledge', args: turn ? { id: 'synthetic-ref', cursor: null } : { query: 'synthetic' } }] } : { text: 'synthetic fact', calls: [] };
+    return turn < 2 ? { text: '', calls: [{ id: `fake-${turn}`, name: turn ? L.get : L.search, args: turn ? { [P.insightIds]: [42] } : { [P.query]: 'synthetic' } }] } : { text: 'synthetic fact', calls: [] };
   }, close: async () => {} };
   const { Store } = await m.load('runtime/store');
   const { domainMigrations } = await m.load('domain/index');

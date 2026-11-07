@@ -530,7 +530,7 @@ for (const releaseNineCatalogue of [true, false]) {
     const config = join(dir, 'provider-config');
     await mkdir(config, { mode: 0o700 });
     const tools = [
-      'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
+      'search_insights', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
       'calendar_list_calendars', 'calendar_list_events', 'mattermost_whoami', 'mattermost_get_channel_history',
       'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels',
       'search', 'read', 'list_companies', 'get_company', 'list_tickets', 'get_metadata',
@@ -550,7 +550,7 @@ for (const releaseNineCatalogue of [true, false]) {
       const response = reply(JSON.parse(Buffer.concat(chunks).toString()));
       if (response && req.url && 'tools' in response.result) {
         const family = req.url.slice(1);
-        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('calendar_') : family === 'lux-knowledge' ? ['search_knowledge', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('calendar_') && !['search_knowledge', 'get_insight'].includes(tool.name));
+        response.result.tools = tools.filter(tool => family === 'gmail' ? tool.name.startsWith('gmail_') : family === 'calendar' ? tool.name.startsWith('calendar_') : family === 'lux-knowledge' ? ['search_insights', 'get_insight'].includes(tool.name) : !tool.name.startsWith('mattermost_') && !tool.name.startsWith('gmail_') && !tool.name.startsWith('calendar_') && !['search_insights', 'get_insight'].includes(tool.name));
       }
       res.writeHead(response ? 200 : 202, { 'content-type': 'application/json' });
       res.end(response ? JSON.stringify(response) : undefined);
@@ -1751,24 +1751,26 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
             const loaded = loadLiveConfig({ configDir, ownerId: options.ownerId });
             if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');
             const specs = [
-              { id: 'fixture-search', at: 0, name: 'search_knowledge', properties: { query: { type: 'string' } } },
-              { id: 'fixture-read', at: recoveredAt!, name: 'get_insight', properties: { ids: { type: 'array', items: { type: 'integer' } } } },
+              { id: 'fixture-search', at: 0, name: 'search_insights', properties: { query: { type: 'string' } } },
+              { id: 'fixture-read', at: recoveredAt!, name: 'get_insight', properties: { insight_ids: { type: 'array', items: { type: 'integer' } } } },
             ];
             const connected = new Set<string>();
             const synchronize = () => {
               for (const spec of specs) {
                 if (now < spec.at || connected.has(spec.id)) continue;
                 const endpoint = { id: spec.id, url: 'https://synthetic.invalid/mcp', account: 'synthetic', resource: spec.id };
-                const schemas = [{ name: spec.name, description: `Synthetic schema ${spec.id}`, inputSchema: { type: 'object', properties: spec.properties } }];
+                const schemas = [{ name: spec.name, description: `Synthetic schema ${spec.id}`, annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: spec.properties } }];
                 runtime.registry.register(endpoint);
                 runtime.registry.enable(spec.id); runtime.registry.allowEgress(spec.id);
-                runtime.registry.observed(spec.id, schemas, runtime.registry.revision(spec.id));
-                runtime.owner.applyConnection({ schemaVersion: 1, ownerId: options.ownerId, connectionId: spec.id,
+                runtime.owner.applyConnection({ schemaVersion: 1, bindingMode: 'connection', ownerId: options.ownerId, connectionId: spec.id,
                   generation: 1, enabled: true, connector: 'lux-knowledge', endpoint: { ...endpoint, credentialRef: null },
                   toolNames: [spec.name], schemaDigest: canonicalToolDigest(schemas),
                   sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
                   route: { identity: liveProfileIdentity(loaded.config.profile), allowedClasses: ['ordinary'] },
                   bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+                // Applying a new policy suspends prior discovery; observe and project only after it commits.
+                runtime.registry.observed(spec.id, schemas, runtime.registry.revision(spec.id));
+                runtime.owner.projectConnection(spec.id);
                 connected.add(spec.id);
               }
             };
@@ -1794,16 +1796,15 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       assert.equal(Number(row['created_at']), Math.max(requestedAt!, Math.min(recoveredAt!, 25_000)));
       const task = canonicalTaskFixture(host.store, host.tools.owner, session.liveSessionId, 'Read the synthetic knowledge source', recoveredAt === Infinity ? ['fixture-search'] : ['fixture-search', 'fixture-read']);
       try {
-        assert.ok(task.tools.some(tool => tool.name === 'search_knowledge'));
-        const read = task.tools.find(tool => tool.name === 'read_knowledge');
-        assert.ok(read, 'the canonical registry is stable while connector publication gates execution');
+        assert.ok(task.tools.some(tool => tool.name === 'search_insights'));
+        const read = task.tools.find(tool => tool.name === 'get_insight');
+        assert.equal(Boolean(read), recoveredAt !== Infinity, 'only currently discovered native reads are exposed');
         if (recoveredAt === Infinity) {
-          const unavailable = await task.runtime.runTool('read_knowledge', { ids: [1], include_links: true, cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
+          const unavailable = await task.runtime.runTool('get_insight', { insight_ids: [1] }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
           assert.equal(unavailable.status, 'failed', 'an unpublished native read must not become a usable task capability');
         }
-        // The provider's strict mode refuses uniqueItems, so the ids keep their bounds only and the
-        // distinct-id rule is a validate rule on the same agent (server/test/task-tools-provider-shape.test.ts).
-        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).ids, { type: 'array', minItems: 1, maxItems: 6, items: { type: 'integer', minimum: 1 } });
+        // Discovery owns the parameter shape; the helper must not synthesize a second batch schema.
+        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).insight_ids, { type: 'array', items: { type: 'integer' } });
       } finally { task.close(); }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
@@ -1813,7 +1814,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         assert.match(prompt.system, /"connector":"lux-knowledge"/);
         assert.match(prompt.system, /"reason":"deadline"/);
         assert.equal(incomplete.length, 1);
-        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 5, reason: 'deadline' }]);
+        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 0, reason: 'deadline' }]);
         assert.equal(JSON.stringify(incomplete).includes('fixture-read'), false);
         assert.equal(JSON.stringify(incomplete).includes('synthetic-private-endpoint-detail'), false);
       } else {

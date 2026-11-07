@@ -27,7 +27,7 @@ const WebSocket = WS;
 // read envelope (server/connectors/google.ts, mattermost.ts, mongoose.ts) is refused there.
 // A read whose arguments need the catalogue owner (the people child's person read) gets the mcp.json document.
 const CONNECTOR_READS = {
-  'lux-knowledge': { tool: 'search_knowledge', args: { query: 'Lux Didi' } },
+  'lux-knowledge': { tool: 'search_insights', args: { query: 'Lux Didi' } },
   gmail: { tool: 'gmail_get_profile', args: {} },
   calendar: { tool: 'calendar_list_calendars', args: {} },
   drive: { tool: 'drive_search_files', args: { query: 'Lux Didi' } },
@@ -60,7 +60,7 @@ export const RESEARCH_PROBES = [
 const SOURCE_TOOLS = {
   mail: ['gmail_search_messages', 'gmail_read_message'],
   chat: ['mattermost_search', 'mattermost_get_thread'],
-  knowledge: ['search_knowledge', 'get_insight'],
+  knowledge: ['search_insights', 'get_insight'],
   calendar: ['calendar_list_events'],
 };
 
@@ -350,7 +350,7 @@ async function chatTurn({ base, token, epoch, dataDir, host, readyPid }) {
   const pidStable = host.exited === null && host.pid === readyPid;
   // #241: the intent surface answers "search then open" in one call, so the text turn must make
   // exactly one tool call (the intent, or the one internal read it fans out to) and no get_insight turn.
-  const ok = names.includes('search_knowledge') && names.includes('get_insight') && answerBytes > 0 && rejections.length === 0 && pidStable;
+  const ok = names.includes('search_insights') && names.includes('get_insight') && answerBytes > 0 && rejections.length === 0 && pidStable;
   return { ok, stage: 'turn', names, answerBytes, rejections, outcome: snap.outcome, pidStable };
 }
 

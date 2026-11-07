@@ -58,16 +58,18 @@ test('A2: current builtin declarations dispatch exact arguments through the task
   } });
   const fixtures: Record<string, Record<string, unknown>> = {
     search_mail: { query: 'synthetic', cursor: null }, search_chat: { query: 'synthetic' },
-    search_knowledge: { query: 'synthetic', mode: null }, search_company: { query: 'synthetic', mode: null, cursor: null }, search_drive: { query: 'synthetic' }, search_memory: { query: 'synthetic' },
-    read_mail: { id: 'synthetic-mail', cursor: null }, read_knowledge: { ids: [7], include_links: true, cursor: null }, read_drive: { id: 'synthetic-drive', cursor: null },
+    search_company: { query: 'synthetic', mode: null, cursor: null }, search_drive: { query: 'synthetic' }, search_memory: { query: 'synthetic' },
+    read_mail: { id: 'synthetic-mail', cursor: null }, read_drive: { id: 'synthetic-drive', cursor: null },
     read_thread: { ref: 'synthetic-thread', cursor: null }, read_company: { ref: 'synthetic-company', depth: null, cursor: null }, read_memory: { ref: 'synthetic-memory', cursor: null },
     calendar_events: { start: '2026-03-05T09:00:00Z', end: '2026-03-05T10:00:00Z' }, people_lookup: { name: 'Synthetic' },
-    remember_note: { text: 'synthetic fact' }, save_to_vault: { title: 'synthetic title', text: 'synthetic note' },
+    remember_note: { text: 'synthetic fact' },
     draft_email: { to: ['synthetic@example.invalid'], subject: 'synthetic', body: 'synthetic draft' },
     draft_chat: { target: '#synthetic', text: 'synthetic draft' },
     create_event: { title: 'synthetic event', start: '2026-03-05T09:00:00Z', end: '2026-03-05T10:00:00Z', calendar_id: null },
     delete_event: { id: 'synthetic-event' },
   };
+  // The knowledge reads and the vault write come from discovery now, so they are not builtin declarations.
+  for (const retired of ['search_insights', 'read_knowledge', 'read_vault', 'save_to_vault']) assert.equal(tools.has(retired), false, `${retired} is discovered, never builtin`);
   const identity = { task_id: 'synthetic-builtin-task', task_revision: 1, operation_id: 'synthetic-operation', connection_generation: 1 };
   for (const [name, args] of Object.entries(fixtures)) {
     const tool = tools.get(name); assert.ok(tool, name);

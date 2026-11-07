@@ -4,8 +4,8 @@ import { TOOL_PHRASES, stepPhrase, toolPhrase, toolPhrases, toolConnector } from
 
 /** Every current Live tool and the phrase it must render. */
 const LIVE_TOOLS: readonly (readonly [string, string])[] = [
-  ['search_knowledge', 'Looking in your knowledge base'],
-  ['get_insight', 'Reading your knowledge base'],
+  ['search_insights', 'Using lux-knowledge'],
+  ['get_insight', 'Using lux-knowledge'],
   ['gmail_get_profile', 'Checking your mail profile'],
   ['gmail_search_messages', 'Searching your mail'],
   ['gmail_read_message', 'Reading that email'],

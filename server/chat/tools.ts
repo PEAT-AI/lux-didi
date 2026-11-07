@@ -6,7 +6,7 @@ export const CHAT_TOOL_TIMEOUT_MS = 15_000;
 
 /** Short human phrases for the step list. The end event carries counts only, never content. */
 const LABELS: Record<string, string> = {
-  search: 'searched everything', search_knowledge: 'searched the knowledge base', mail: 'searched mail', calendar: 'checked the calendar', drive: 'searched Drive',
+  search: 'searched everything', mail: 'searched mail', calendar: 'checked the calendar', drive: 'searched Drive',
   contacts: 'checked contacts', memory: 'read saved memory',
   gmail_search_messages: 'listed mail', gmail_read_message: 'read a message', gmail_search: 'searched mail',
   calendar_list_events: 'listed calendar events', gcal_read: 'read an event', gcal_search: 'searched the calendar',

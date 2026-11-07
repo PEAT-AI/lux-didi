@@ -20,7 +20,7 @@ import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 import { fixture as voiceFixture } from './live-voice-fixture.js';
 
 const endpoints = [
-  { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_knowledge', task: 'search_knowledge', args: { query: 'synthetic', mode: null } },
+  { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_insights', task: 'search_insights', args: { query: 'synthetic', limit: 3 } },
   { id: 'gmail', connector: 'google', tool: 'gmail_search_messages', task: 'search_mail', args: { query: 'synthetic', cursor: null } },
   { id: 'calendar', connector: 'google', tool: 'calendar_list_events', task: 'calendar_events', args: { start: '2026-11-03T00:00:00Z', end: '2026-11-04T00:00:00Z' } },
   { id: 'mattermost', connector: 'mattermost', tool: 'mattermost_search', task: 'search_chat', args: { query: 'synthetic' } },
@@ -54,7 +54,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
     const account = entry.connector === 'google' ? `${entry.id}@synthetic.invalid` : entry.id;
     const sdk = new Server({ name: entry.id, version: '1' }, { capabilities: { tools: {} } });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: entry.id !== 'lux-knowledge' });
-    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 3 }, include_sensitive: { type: 'boolean' }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, snippet_chars: { type: 'integer', minimum: 100, maximum: 6000 } }, required: ['query', 'limit'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' }, query: { type: 'string' }, timeMin: { type: 'string' }, timeMax: { type: 'string' }, calendarId: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: entry.id === 'mattermost' ? { query: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' }, from_date: { type: 'string' }, to_date: { type: 'string' } } : {}, additionalProperties: false } }, ...(identityTool ? [{ name: identityTool, inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] : [])] : [] }) as never);
+    sdk.setRequestHandler('tools/list', () => ({ tools: visible.has(entry.id) ? [{ name: entry.tool, ...(entry.id === 'lux-knowledge' ? { annotations: { readOnlyHint: true, destructiveHint: false } } : {}), inputSchema: entry.id === 'lux-knowledge' ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 3 }, include_sensitive: { type: 'boolean' }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, snippet_chars: { type: 'integer', minimum: 100, maximum: 6000 } }, required: ['query', 'limit'], additionalProperties: false } : entry.connector === 'google' ? { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' }, q: { type: 'string' }, query: { type: 'string' }, timeMin: { type: 'string' }, timeMax: { type: 'string' }, calendarId: { type: 'string' } }, additionalProperties: false } : { type: 'object', properties: entry.id === 'mattermost' ? { query: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' }, from_date: { type: 'string' }, to_date: { type: 'string' } } : {}, additionalProperties: false } }, ...(identityTool ? [{ name: identityTool, inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] : [])] : [] }) as never);
     sdk.setRequestHandler('tools/call', async request => {
       const tool = request.params.name;
       if (tool === entry.tool) { counts.set(entry.id, counts.get(entry.id)! + 1); await dispatch?.(entry.id); }
@@ -138,23 +138,26 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const initial = await h.start(); const run = await h.accept(initial);
   assert.deepEqual(run.acceptance.connectionIds, pair);
   const probe = canonicalTaskFixture(h.store, initial.owner, run.host.runId, 'Read synthetic knowledge', run.acceptance.connectionIds);
-  const definition = probe.tools.find(d => d.name === 'search_knowledge')!;
-  const intent: ToolCallIntent = { runId: run.host.runId, actorId: run.host.actorId, authorityEpoch: run.host.authorityEpoch, revision: run.host.revision, executionId: `${run.host.runId}:probe`, toolName: 'search_knowledge', accountId: definition.accountId, resourceId: definition.resourceId, callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
+  const definition = probe.tools.find(d => d.name === 'search_insights')!;
+  const intent: ToolCallIntent = { runId: run.host.runId, actorId: run.host.actorId, authorityEpoch: run.host.authorityEpoch, revision: run.host.revision, executionId: `${run.host.runId}:probe`, toolName: 'search_insights', accountId: definition.accountId, resourceId: definition.resourceId, callId: 'probe', argumentsHash: sha256(JSON.stringify(endpoints[0]!.args)) };
   // At the base this throws intent_policy_denied, before any connector is invoked.
   assert.equal(initial.owner.journal.intent(intent), 'fresh');
   const completed = await definition.execute(endpoints[0]!.args, { ...intent, signal });
   probe.close(); assert.equal(completed.status, 'completed');
   h.revealAll(); await initial.refresh();
   const expanded = initial;
+  const rediscovered = initial.owner.taskBindings(pair).flatMap(binding => binding.reader.discovery?.() ?? []);
+  assert.ok(rediscovered.some(tool => tool.name === 'search_insights'), 'same-schema refresh must retain the current lux read grant');
   const beforePair = new Map(h.counts);
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
   assert(batch.seen[1]!.dataClasses.includes('private'), 'private connector evidence reaches the explicitly private-capable route');
-  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify(batch.outcome.tools));
+  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + (id === 'lux-knowledge' ? 0 : 1), id + ': ' + JSON.stringify(batch.outcome.tools));
+  assert.ok(batch.outcome.tools.some(tool => tool.name === 'search_insights' && tool.status === 'refused'), 'trusted rediscovery advances lux generation, so the old accepted run cannot use its replacement grant');
   assert.equal(h.counts.get('mattermost'), 0);
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
   assert.equal(responses.length, 3);
-  assert.match(JSON.stringify(responses), /Synthetic result/);
+  assert.doesNotMatch(JSON.stringify(responses), /Synthetic result/, 'a stale lux generation discloses no replacement-source evidence');
   assert.match(JSON.stringify(responses), /Synthetic mail/);
   assert(!JSON.stringify(responses).includes('synthetic mattermost read'));
   const rows = h.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
@@ -167,9 +170,15 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id + ': ' + JSON.stringify(allRead.outcome.tools));
   const allResponses = allRead.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(allResponses.length, 5);
+  assert.match(JSON.stringify(allResponses), /Synthetic result/, 'a newly accepted run reads the current discovered lux generation');
   for (const response of allResponses) assert(typeof response['text'] === 'string' && (response['text'].length > 0 || Array.isArray(response['references']) && response['references'].length > 0), 'each admitted read releases verified text or ranked references');
   const generations = () => h.store.transaction(tx => tx.all('SELECT connection_id,generation FROM tool_connections ORDER BY connection_id'));
-  const unchanged = generations(); await h.start(); assert.deepEqual(generations(), unchanged, 'unchanged restart must not bump generations');
+  const unchanged = generations(); await h.start();
+  for (const current of generations()) {
+    const prior = unchanged.find(row => row.connection_id === current.connection_id)!;
+    if (current.connection_id === 'lux-knowledge') assert.ok(Number(current.generation) > Number(prior.generation), 'trusted lux rediscovery establishes a fresh grant identity');
+    else assert.equal(current.generation, prior.generation, 'unrelated connector generations stay unchanged');
+  }
   // Missing or invalid class is a typed local error for only that connection.
   const missing = await h.start(all, { mattermost: undefined });
   assert.deepEqual(missing.connectionIds(), all.filter(id => id !== 'mattermost'), JSON.stringify(missing.status()));
@@ -218,13 +227,13 @@ for (const failure of ['transport', 'result'] as const) test(`MCP ${failure} fai
   assert.equal(observed.outcome.status, 'complete'); assert.equal(observed.outcome.reason, 'stop', 'the helper can continue after a verified connector failure');
   const logs = h.logRows(); assert.equal(logs.length, 1);
   assert.equal(logs[0]!['event'], 'tool_failure'); assert.equal(logs[0]!['code'], expected);
-  assert.equal(logs[0]!['tool'], 'search_knowledge'); assert.equal(logs[0]!['connector'], 'lux-knowledge');
+  assert.equal(logs[0]!['tool'], 'search_insights'); assert.equal(logs[0]!['connector'], 'lux-knowledge');
   assert.equal(logs[0]!['errorClass'], 'Error'); assert.equal(logs[0]!['messageHead'], expected);
   assert(!('payload' in logs[0]!));
 });
 
 test('host log accepts only bounded tool-failure metadata and drops extra payload fields', () => {
-  const event = { event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'invalid_result' };
+  const event = { event: 'tool_failure', code: 'invalid_result', tool: 'search_insights', connector: 'lux-knowledge', errorClass: 'McpResultError', messageHead: 'invalid_result' };
   assert.deepEqual(safeEvent({ ...event, payload: 'synthetic forbidden content' }), event);
   assert.equal(safeEvent({ ...event, code: 'arbitrary_code' }), undefined);
   assert.equal(safeEvent({ ...event, messageHead: 'x'.repeat(121) }), undefined);
@@ -239,7 +248,7 @@ test('Live knowledge SSE response completes with one result and no unclassified 
   assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'completed');
   const saved = JSON.parse(String(rows[0]!.result_json));
   assert.equal(saved.response.status, 'ok', 'semantic vault candidates are successful retrievals');
-  assert.match(saved.response.text, /Synthetic result/); assert.equal(saved.response.references[0].title, 'Synthetic result', 'search evidence remains distinct from a full read');
+  assert.match(saved.response.text, /Synthetic result/); assert.equal(saved.response.references[0].id, 'search_insights', 'the opaque search response is attributed to the discovered tool, not parsed into a body read');
   const responses = observed.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(responses.length, 1); assert.equal(responses[0]!['text'], saved.response.text);
   assert(!JSON.stringify(responses).includes('synthetic-private-unclassified'));
@@ -249,7 +258,7 @@ test('Live knowledge SSE response completes with one result and no unclassified 
 test('bounded tool_failure metadata is written to host.log without an attached payload', t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-tool-failure-log-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const log = new HostLog(dir);
-  log.event({ event: 'tool_failure', code: 'child_exited', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'child_exited', payload: 'synthetic-private-payload' });
+  log.event({ event: 'tool_failure', code: 'child_exited', tool: 'search_insights', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'child_exited', payload: 'synthetic-private-payload' });
   const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8');
   const row = JSON.parse(text);
   assert.equal(row.event, 'tool_failure'); assert.equal(row.code, 'child_exited');

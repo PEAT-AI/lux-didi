@@ -1,6 +1,6 @@
 import { TaskRuntime } from '../tasks/runtime.js';
 import { Authority } from '../tasks/authority.js';
-import { connectorExecutor } from '../tasks/connectors.js';
+import { configuredCompanyTools, connectorExecutor } from '../tasks/connectors.js';
 import { taskDefinitions, TASK_ACCOUNT, TASK_RESOURCE } from '../tasks/chat.js';
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ import { attachHostLogSink } from '../tools/host-events.js';
 
 import type { ComposeDispatch } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
-import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -30,8 +30,8 @@ import { projectLuxResult } from '../tools/lux-knowledge.js';
 import type { ConnectionPolicy, LiveAuthority, RunAcceptance, ToolsOwnerOptions, ToolFailureEvent } from '../tools/types.js';
 
 const tools: McpTool[] = [
-  { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } },
-  { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
+  { name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } },
+  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' }, offset: { type: 'integer', minimum: 0 }, max_chars: { type: 'integer', minimum: 1 } }, required: ['insight_ids', 'include_links'], additionalProperties: false } },
 ];
 const route = { identity: 'synthetic-route', provider: 'gemini' as const, modelId: 'synthetic-model', allowedClasses: ['ordinary', 'private'] as const };
 // This suite drives the HTTP arm; the union's stdio arm has no url.
@@ -39,16 +39,16 @@ const policyUrl = (e: ConnectionPolicy['endpoint']): string => (e as { transport
 function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
   return { schemaVersion: 1, bindingMode: 'connection', ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
     endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
-    toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
+    toolNames: ['search_insights', 'get_insight'], schemaDigest: canonicalToolDigest(tools),
     sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
     route: { identity: route.identity, allowedClasses: ['private'] },
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 }, ...overrides };
 }
 const request: ModelRequest = { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'synthetic' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } };
-function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', mode: null }): ModelResult {
+function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: true }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string, args: Record<string, unknown>) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -63,7 +63,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let onDispatch: (() => void) | undefined;
   let result: unknown = options.result ?? { content: [{ type: 'text', text: 'nonempty synthetic α insight' }] };
   sdk.setRequestHandler('tools/list', () => ({ tools: sourceTools }) as never);
-  sdk.setRequestHandler('tools/call', request => { onDispatch?.(); return (options.resultOf ? options.resultOf(request.params.name) : result) as never; });
+  sdk.setRequestHandler('tools/call', request => { onDispatch?.(); return (options.resultOf ? options.resultOf(request.params.name, request.params.arguments ?? {}) : result) as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
@@ -86,7 +86,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   owner.applyConnection(p);
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   if (p.enabled) owner.projectConnection('lux');
-  const reader = createLuxKnowledgeReader({ port, registry, config: { endpointId: p.endpoint.id, account: p.endpoint.account, resource: p.endpoint.resource, schemaDigest: p.schemaDigest, generation: p.generation, maxSearchLimit: p.bounds.maxSearchLimit, maxQueryChars: p.bounds.maxQueryChars, maxGetIds: p.bounds.maxGetIds } });
+  const reader = createLuxKnowledgeReader({ port, registry, config: { endpointId: p.endpoint.id, account: p.endpoint.account, resource: p.endpoint.resource, generation: p.generation, maxSearchLimit: p.bounds.maxSearchLimit, maxQueryChars: p.bounds.maxQueryChars, maxGetIds: p.bounds.maxGetIds } });
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
   live.acceptedRunHash = accepted.sha256;
   const host: HostContext = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1,
@@ -102,18 +102,20 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const allDefinitions = (runId = 'run') => {
     let task = taskRuns.get(runId);
     if (!task) {
-      const runtime = new TaskRuntime({ store, execute: connectorExecutor(owner.taskBindings(acceptance.connectionIds), owner.taskExecutors(runId)),
+      const runtime = new TaskRuntime({ store, execute: connectorExecutor(owner.taskBindings(acceptance.connectionIds), owner.taskExecutors(runId)), configuredTools: configuredCompanyTools(owner.taskBindings(acceptance.connectionIds)),
         authority: new Authority({ journal: store.taskEffectJournal(), checkEffect: async () => true, log() {} }),
         infer: async () => ({ text: '', calls: [], no_action: true }), delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
       task = { runtime, identity: runtime.begin(ownerWords.get(runId)?.join(' ') ?? 'Synthetic owner request', 1).identity }; taskRuns.set(runId, task);
     }
     return taskDefinitions(task.runtime, task.identity, owner, runId);
   };
-  const definitions = () => allDefinitions().filter(tool => tool.name === 'search_knowledge' || tool.name === 'read_knowledge');
-  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic', mode: null }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
+  const definitions = () => allDefinitions().filter(tool => tool.name === 'search_insights' || tool.name === 'get_insight');
+  const intent = (executionId = 'run:1:0', name = 'search_insights', args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: true }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
     executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE });
   const binding = (ref: { id: string; sha256: string }, call = intent()): ToolResultBinding => ({ executionId: call.executionId, name: call.toolName, callId: call.callId!, contentIndex: 2, partIndex: 0, result: structuredClone(ref) });
-  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', mode: null }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
+  // A dispatched model call retains the declaration it saw before a later revocation.
+  const capturedDefinitions = definitions();
+  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: true }, useSignal = signal) => capturedDefinitions.find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner, taskRuntime: () => { allDefinitions(); return taskRuns.get('run')!.runtime; },
@@ -128,16 +130,16 @@ test('intent commits before exact MCP dispatch; collision stops actual loop with
   const f = await fixture(t);
   f.setDispatch(() => assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.state, 'intent'));
   const seen: ModelRequest[] = [];
-  const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } };
+  const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_insights') : modelResult(); } };
   const outcome = await f.run(model);
   assert.equal(outcome.status, 'complete'); assert.equal(f.calls.length, 1); assert.equal(seen.length, 2);
-  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 3, detail: 'snippets', include_sensitive: false });
+  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 3, include_sensitive: true });
   const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
   assert.equal(response['text'], 'nonempty synthetic α insight');
   assert.deepEqual(seen[1]!.dataClasses, ['ordinary', 'private']);
   assert.equal(response['sourceVersion'], undefined, 'host provenance is not a model-supplied source version'); assert.equal(JSON.stringify(response).includes('synthetic-token'), false);
   assert.equal(JSON.stringify(response).includes('private:synthetic-reference'), false);
-  const again = await f.run({ generate: async () => modelResult('search_knowledge') });
+  const again = await f.run({ generate: async () => modelResult('search_insights') });
   assert.equal(again.status, 'uncertain'); assert.equal(f.calls.length, 1);
   assert.throws(() => f.owner.journal.intent({ ...f.intent(), argumentsHash: '0'.repeat(64) }), /collision/);
 });
@@ -145,7 +147,7 @@ test('intent commits before exact MCP dispatch; collision stops actual loop with
 test('failed intent persistence and acceptance rollback cause zero dispatch and no provider continuation', async t => {
   const f = await fixture(t); let count = 0;
   f.store.transaction(tx => tx.run("CREATE TRIGGER inject_intent_failure BEFORE INSERT ON tool_calls BEGIN SELECT RAISE(ABORT,'fixture'); END"));
-  const result = await f.run({ generate: async () => { count++; return modelResult('search_knowledge'); } });
+  const result = await f.run({ generate: async () => { count++; return modelResult('search_insights'); } });
   assert.equal(result.reason, 'tool_journal_failed'); assert.equal(count, 1); assert.equal(f.calls.length, 0);
   assert.throws(() => f.store.transaction(tx => { f.owner.snapshotRun(tx, { ...f.acceptance, runId: 'rolled-back' }); throw Error('rollback'); }));
   assert.equal(f.store.transaction(tx => tx.get('SELECT run_id FROM tool_runs WHERE run_id=?', ['rolled-back'])), undefined);
@@ -154,7 +156,7 @@ test('failed intent persistence and acceptance rollback cause zero dispatch and 
 test('completion persistence failure cannot be replaced by a failed receipt or continued', async t => {
   const f = await fixture(t); let count = 0;
   f.store.transaction(tx => tx.run("CREATE TRIGGER inject_completion_failure BEFORE UPDATE ON tool_calls BEGIN SELECT RAISE(ABORT,'fixture'); END"));
-  const result = await f.run({ generate: async () => { count++; return modelResult('search_knowledge'); } });
+  const result = await f.run({ generate: async () => { count++; return modelResult('search_insights'); } });
   assert.equal(result.reason, 'tool_journal_failed'); assert.equal(count, 1); assert.equal(f.calls.length, 1);
   assert.equal(f.store.transaction(tx => tx.get('SELECT state,result_id FROM tool_calls'))?.state, 'intent');
   assert.equal(f.store.transaction(tx => tx.get('SELECT result_id FROM tool_calls'))?.result_id, null);
@@ -286,25 +288,22 @@ test('result ref, execution/name/call/scope/hash binding and detached immutable 
 
 test('task search/read strict arguments keep requested ids distinct from verified provenance', async t => {
   const f = await fixture(t);
-  const search = f.definitions().find(tool => tool.name === 'search_knowledge')!;
-  assert.equal(search.parameters['additionalProperties'], false);
-  assert.equal(search.validate({ query: 'x', limit: 4 }), false);
+  const search = f.definitions().find(tool => tool.name === 'search_insights')!;
+  assert.deepEqual(search.parameters, tools[0]!.inputSchema, 'the discovery schema reaches the helper unchanged');
+  assert.equal(search.validate({ query: 'x', limit: 3, include_sensitive: true }), true);
   assert.equal(search.validate({ query: 'x', account: 'foreign' }), false);
-  assert.equal(search.validate({ query: 'x' }), false, 'the declared mode field travels on every call, null for the ranked default');
-  assert.equal(search.validate({ query: 'x', mode: null }), true);
-  assert.equal(search.validate({ query: 'x', mode: 'fast' }), true);
-  assert.equal(search.validate({ query: 'x', mode: 'quick' }), false, 'only the vault\'s own two modes are admitted');
-  const read = f.definitions().find(tool => tool.name === 'read_knowledge')!;
-  assert.equal(read.validate({ ids: [13, 7], include_links: false, cursor: null }), true, 'a task read accepts the merged typed batch schema');
-  assert.equal(read.validate({ ids: [], include_links: false, cursor: null }), false);
+  assert.equal(search.validate({ query: 'x' }), false, 'the fixture requires limit and include_sensitive');
+  const read = f.definitions().find(tool => tool.name === 'get_insight')!;
+  assert.deepEqual(read.parameters, tools[1]!.inputSchema);
+  assert.equal(read.validate({ insight_ids: [13, 7], include_links: false }), true);
   assert.equal(read.validate({ id: '13', cursor: null, account: 'foreign' }), false);
   for (const [index, id] of [13, 7].entries()) {
-    const args = { ids: [id], include_links: false, cursor: null };
-    const call = { ...f.intent(`run:read:${index}`, 'read_knowledge', args), callId: `read-${index}` };
+    const args = { insight_ids: [id], include_links: false };
+    const call = { ...f.intent(`run:read:${index}`, 'get_insight', args), callId: `read-${index}` };
     f.owner.journal.intent(call);
     const outcome = await read.execute(args, { ...call, signal: f.signal });
     assert.equal(outcome.status, 'completed');
-    assert.deepEqual(f.calls[index]!.arguments, { ids: [id], include_links: false });
+    assert.deepEqual(f.calls[index]!.arguments, { insight_ids: [id], include_links: false });
     if (outcome.status !== 'completed') throw Error('typed read did not complete');
     const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
     assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('typed read delivery refused');
@@ -326,37 +325,33 @@ for (const bad of [null, 'absent'] as const) test(`unknown source policy ${bad} 
 });
 
 for (const [label, result, memoryBytes] of [
-  ['empty-valid', { content: [] }, 10000], ['unsupported', { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] }, 10000],
+  ['empty-content', { content: [] }, 10000], ['unsupported', { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] }, 10000],
   ['oversize', { content: [{ type: 'text', text: 'x'.repeat(5000) }] }, 10000], ['capacity', { content: [{ type: 'text', text: 'nonempty' }] }, 1],
 ] as const) test(`honest bounded Lux ${label} outcome`, async t => {
   const f = await fixture(t, { result, memoryBytes }); f.owner.journal.intent(f.intent());
   const outcome = await f.execute();
   assert.equal(outcome.status, 'completed', 'the task envelope completed, not necessarily the connector action');
   const state = f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.state;
-  assert.equal(state, label === 'empty-valid' ? 'completed' : 'failed', 'failed source reads must remain failed durable calls');
+  assert.equal(state, 'failed', 'failed source reads must remain failed durable calls');
   const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result)], ['ordinary'], f.signal);
-  if (label === 'empty-valid') {
-    assert.equal(gate.state, 'allowed'); if (gate.state === 'allowed') assert.equal(gate.results[0]!.response['text'], '');
-  } else {
-    assert.equal(gate.state, 'allowed', 'the host-authored failure repair is safe to deliver');
-    if (gate.state === 'allowed') {
-      assert.equal(gate.results[0]!.response['status'], 'failed');
-      assert.equal(typeof gate.results[0]!.response['cause'], 'string');
-      assert.equal(typeof gate.results[0]!.response['next'], 'string');
-      assert.ok(JSON.stringify(gate.results[0]!.response).length < 1_000, 'unbounded source bytes are not delivered as a repair');
-    }
+  assert.equal(gate.state, 'allowed', 'the host-authored failure repair is safe to deliver');
+  if (gate.state === 'allowed') {
+    assert.equal(gate.results[0]!.response['status'], 'failed');
+    assert.equal(typeof gate.results[0]!.response['cause'], 'string');
+    assert.equal(typeof gate.results[0]!.response['next'], 'string');
+    assert.ok(JSON.stringify(gate.results[0]!.response).length < 1_000, 'unbounded source bytes are not delivered as a repair');
   }
 });
 
 test('cancelled task reads never dispatch early or accept a late completion', async t => {
   const f = await fixture(t); f.owner.journal.intent(f.intent());
   const before = new AbortController(); before.abort();
-  assert.equal((await f.execute(f.intent(), { query: 'synthetic', mode: null }, before.signal)).status, 'completed');
+  assert.equal((await f.execute(f.intent(), { query: 'synthetic', limit: 3, include_sensitive: true }, before.signal)).status, 'completed');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [f.intent().executionId]))?.state, 'failed'); assert.equal(f.calls.length, 0);
   // Fresh independent execution identity; an aborted committed intent is never rekeyed automatically.
   const call = { ...f.intent('run:1:1'), callId: 'second' }; f.owner.journal.intent(call);
   const after = new AbortController(); f.setDispatch(() => after.abort());
-  assert.equal((await f.execute(call, { query: 'synthetic', mode: null }, after.signal)).status, 'completed');
+  assert.equal((await f.execute(call, { query: 'synthetic', limit: 3, include_sensitive: true }, after.signal)).status, 'completed');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.signal.aborted, true);
   assert.throws(() => f.owner.complete(call, { text: 'late' }, ['private']), /terminal/);
@@ -426,7 +421,7 @@ test('canonical UTF8 JSON rejects unsupported data without accessors; array orde
 });
 
 test('actual reader defaults remain untouched; trusted typed restrictions constrain separate classified snapshot', async t => {
-  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic', limit: 1 }, f.signal);
+  const f = await fixture(t); const evidence = await f.reader.call('search_insights', { query: 'synthetic', limit: 1 }, f.signal);
   assert.equal(evidence.state, 'completed');
   if (evidence.state !== 'completed') return;
   assert.equal(evidence.classification, 'unknown'); assert.equal(evidence.capability, 'local-only');
@@ -442,7 +437,7 @@ test('actual reader defaults remain untouched; trusted typed restrictions constr
 });
 
 test('bounded complete slice reader denies expired, missing, partial, hash and source scope mismatches', async t => {
-  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic', limit: 1 }, f.signal);
+  const f = await fixture(t); const evidence = await f.reader.call('search_insights', { query: 'synthetic', limit: 1 }, f.signal);
   if (evidence.state !== 'completed') { assert.fail('nonempty fixture must complete'); }
   for (const state of ['expired', 'unavailable', 'refused'] as const) {
     assert.throws(() => projectLuxResult(evidence, policy(), { ...f.port, readSlice: () => ({ state, reason: 'synthetic' }) }));
@@ -460,10 +455,10 @@ test('bounded complete slice reader denies expired, missing, partial, hash and s
 
 test('SOURCE DEFECT task identity: a captured declaration rejects a superseded task before reading', async t => {
   const f = await fixture(t);
-  const stale = f.definitions().find(tool => tool.name === 'search_knowledge')!;
+  const stale = f.definitions().find(tool => tool.name === 'search_insights')!;
   const call = f.intent(); f.owner.journal.intent(call);
   f.taskRuntime().begin('A different finalized synthetic task.', 2);
-  const outcome = await stale.execute({ query: 'synthetic', mode: null }, { ...call, signal: f.signal });
+  const outcome = await stale.execute({ query: 'synthetic', limit: 3, include_sensitive: true }, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed', 'the task boundary returns its durable failure repair');
   assert.equal(f.calls.length, 0, 'superseded task identity must never reach a connector');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
@@ -590,7 +585,7 @@ for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration
   const owner = createToolsOwner({ store, ownerId: 'owner', registry: new McpRegistry(), port: {} as McpPort, lookupAuthority: async () => null });
   const acceptance: RunAcceptance = { ownerId: 'owner', actorId: 'actor', runId: 'legacy-run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: legacyRoute, provider: 'gemini', modelId: 'synthetic', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['lux'] };
   store.transaction(tx => owner.snapshotRun(tx, acceptance));
-  assert.equal(owner.taskVisible(acceptance.runId, 'search_knowledge'), false, 'legacy route approval never becomes an exposed task read');
+  assert.equal(owner.taskVisible(acceptance.runId, 'search_insights'), false, 'legacy route approval never becomes an exposed task read');
   assert.throws(() => owner.projectConnection('lux'), /connection_not_executable/);
   assert.equal((await owner.restoreConnection('lux', () => {})).state, 'refused');
   assert.equal(store.transaction(tx => tx.get('SELECT policy_sha256 FROM tool_connections'))!.policy_sha256, hash);
@@ -599,7 +594,7 @@ for (const legacyRoute of ['endpoint', 'ambiguous-model-route']) test(`migration
 
 for (const code of ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_protocol_rejected', 'invalid_result', 'connector_error', 'handler_outcome'] as const) test(`thrown ${code} survives owner journal and tool response`, async t => {
   const f = await fixture(t); const seen: ModelRequest[] = [];
-  const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } };
+  const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_insights') : modelResult(); } };
   const registry = f.definitions().map(tool => ({ ...tool, async execute() {
     if (code === 'handler_outcome') throw Error('synthetic unclassified');
     throw Object.assign(Error('synthetic failure, not a response payload'), { code });
@@ -618,31 +613,31 @@ test('SOURCE DEFECT task failure code: a thrown MCP transport failure is logged 
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); } });
   t.mock.method(f.port, 'call', async () => { throw Object.assign(Error('synthetic-private-payload must not reach logging'), { code: 'timeout' }); });
   const seen: ModelRequest[] = [];
-  const outcome = await f.run({ generate: async request => { seen.push(request); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
+  const outcome = await f.run({ generate: async request => { seen.push(request); return seen.length === 1 ? modelResult('search_insights') : modelResult(); } });
   // ROUTE-R2: an unclassified dispatched failure takes the closed stage from the adapter's own
   // classifier (failureStage, 994bb035d #211, documented in docs/mcp-adapter.md, pinned by
   // server/test/mcp.test.ts) and dispatchedFailureCode (e27d3870). The exception's own code is never a
   // log token, so the `timeout` this mock attaches stays inert and the stage is the protocol rejection.
   assert.equal(outcome.status, 'complete');
   assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'sdk_protocol_rejected');
-  assert.deepEqual(events, [{ event: 'tool_failure', code: 'sdk_protocol_rejected', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'sdk_protocol_rejected' }]);
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'sdk_protocol_rejected', tool: 'search_insights', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'sdk_protocol_rejected' }]);
   assert(!JSON.stringify(events).includes('synthetic-private-payload'));
 });
 test('SOURCE DEFECT task failure code: an oversize unknown result stays invalid_result, never generic transport', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { result: { content: [{ type: 'text', text: 'X'.repeat(14_000) }] }, log: event => { if (event.event === 'tool_failure') events.push(event); } });
   const seen: ModelRequest[] = [];
-  const outcome = await f.run({ generate: async request => { seen.push(request); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
+  const outcome = await f.run({ generate: async request => { seen.push(request); return seen.length === 1 ? modelResult('search_insights') : modelResult(); } });
   assert.equal(outcome.status, 'complete');
   assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'invalid_result');
-  assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_insights', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
 });
 test('SOURCE DEFECT task failure code: a connector-rejected decoded content shape is logged and returned with invalid_result', async t => {
   const events: ToolFailureEvent[] = []; const f = await fixture(t, { log: event => { if (event.event === 'tool_failure') events.push(event); }, result: { content: [{ type: 'text', text: 'synthetic', annotations: { priority: 0.5 } }] } });
   const seen: ModelRequest[] = [];
-  const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_knowledge') : modelResult(); } });
+  const outcome = await f.run({ generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_insights') : modelResult(); } });
   assert.equal(outcome.status, 'complete');
   assert.equal(seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response['reason'], 'invalid_result');
-  assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_knowledge', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
+  assert.deepEqual(events, [{ event: 'tool_failure', code: 'invalid_result', tool: 'search_insights', connector: 'lux-knowledge', errorClass: 'Error', messageHead: 'invalid_result' }]);
 });
 
 test('W4-R5/F6: a batch dispatches across and within endpoints concurrently and keeps batch order', async () => {
@@ -687,31 +682,19 @@ test('W4-R5/F6: a batch dispatches across and within endpoints concurrently and 
   assert.equal(peak, 2, 'one endpoint dispatches concurrently, never refused as busy');
 });
 
-// K1: get_insight must open entries for a reasonable id shape instead of refusing at the boundary.
-test('K1: get_insight argument normalization accepts loose id shapes at the boundary', () => {
+// K1: the discovered schema is the wire contract, so the helper reads publish their own argument shape.
+test('K1: the lux descriptor declares no helper tool of its own', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 3 } } as unknown as ConnectionPolicy;
-  const get = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy)).find(declaration => declaration.name === 'get_insight')!;
-  assert.equal(get.validate({ ids: ['89820', 89933] }), true, 'integer-valued numeric strings are accepted');
-  assert.equal(get.validate({ ids: 89820 }), true, 'a single number under ids is accepted');
-  assert.equal(get.validate({ id: '89820' }), true, 'the id key is accepted');
-  assert.equal(get.validate(89820), true, 'a bare id is accepted');
-  assert.deepEqual(get.normalize!({ ids: ['89820', 89933] }), { args: { ids: [89820, 89933] } });
-  assert.deepEqual(get.normalize!({ ids: [89820, 89820] }), { args: { ids: [89820] } }, 'duplicates are deduped');
-  assert.equal(get.validate({ ids: ['abc'] }), false, 'a non-numeric id is refused');
-  assert.equal(get.validate({ ids: [] }), false, 'an empty id list is refused');
-  assert.equal(get.validate({ ids: [7, 9], include_links: false }), true, 'a declared include_links key is accepted');
-  assert.equal(get.validate({ ids: [7, 9], project: 'p' }), true, 'an unknown read key is dropped, not refused');
-  assert.deepEqual(get.normalize!({ ids: [7, 9], include_links: true }), { args: { ids: [7, 9], include_links: true } }, 'include_links is passed through');
-  const capped = normalizeGetInsightArgs({ ids: [1, 2, 3, 4, 5] }, 3)!;
-  assert.deepEqual(capped.args, { ids: [1, 2, 3] }, 'over-budget ids are truncated, not refused');
-  assert.match(capped.notice!, /first 3 of 5/);
+  const declarations = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy);
+  assert.deepEqual(declarations, [], 'reads and writes come from reader.discovery(), never a synthesized list');
+  assert.deepEqual(CONNECTOR_DESCRIPTORS['lux-knowledge']!.envelope, [], 'no fixed read envelope survives discovery');
 });
 
 function errorTool(overrides: Partial<ToolDefinition> = {}): ToolDefinition {
   return {
     name: 'get_insight', description: 'Read', effect: 'read', accountId: 'acct', resourceId: 'res',
     guidance: 'Needs ids as a list of entry ids from the knowledge search results, like {"ids": [89820, 89933]}.',
-    parameters: { type: 'object', properties: { ids: { type: 'array' } }, required: ['ids'] },
+    parameters: { type: 'object', properties: { insight_ids: { type: 'array' } }, required: ['insight_ids'] },
     validate: () => false, execute: async () => ({ status: 'failed' as const }),
     ...overrides,
   };
@@ -732,14 +715,14 @@ test('K1: an invalid tool call returns actionable guidance and an identical repe
   const tool = errorTool(); const seenIds = new Set<string>();
   const call = (id: string, args: JsonObject) => ({ id, name: 'get_insight', args });
   const ctx = () => errorContext(tool, seenIds);
-  const first = await runToolCalls(owner, [call('1', { ids: ['top-secret'] })], ctx() as never);
+  const first = await runToolCalls(owner, [call('1', { insight_ids: ['top-secret'] })], ctx() as never);
   assert.equal(first.tools[0]!.status, 'refused');
   assert.match(first.tools[0]!.reason, /Invalid arguments for get_insight/);
   assert.match(first.tools[0]!.reason, /ids/);
   assert.doesNotMatch(first.tools[0]!.reason, /top-secret/, 'never echoes the bad value');
   assert.doesNotMatch(first.tools[0]!.reason, /Stop retrying/);
-  await runToolCalls(owner, [call('2', { ids: ['top-secret'] })], ctx() as never);
-  const third = await runToolCalls(owner, [call('3', { ids: ['top-secret'] })], ctx() as never);
+  await runToolCalls(owner, [call('2', { insight_ids: ['top-secret'] })], ctx() as never);
+  const third = await runToolCalls(owner, [call('3', { insight_ids: ['top-secret'] })], ctx() as never);
   // C-ARGS: the identical call is answered from the cached rejection, so its branch closes instead of
   // being validated again, and the fix it already carries is still the one it is answered with.
   assert.match(third.tools[0]!.reason, /Invalid arguments for get_insight/);
@@ -751,12 +734,12 @@ test('K1: an invalid tool call returns actionable guidance and an identical repe
 test('K1: a declared tool without tailored guidance states its expected shape', async () => {
   const reasons: string[] = [];
   const owner = { journal: refuses(reasons), resultGate: {} as unknown as ToolResultGate };
-  const tool: ToolDefinition = { name: 'search_knowledge', description: 'Search', effect: 'read', accountId: 'acct', resourceId: 'res',
+  const tool: ToolDefinition = { name: 'search_insights', description: 'Search', effect: 'read', accountId: 'acct', resourceId: 'res',
     parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'] },
     validate: () => false, execute: async () => ({ status: 'failed' as const }) };
-  const batch = await runToolCalls(owner, [{ id: '1', name: 'search_knowledge', args: { query: '' , mode: null } }], errorContext(tool) as never);
+  const batch = await runToolCalls(owner, [{ id: '1', name: 'search_insights', args: { query: '' , mode: null } }], errorContext(tool) as never);
   // AL-R1: the refusal names the declared key it is about before it states the shape.
-  assert.match(batch.tools[0]!.reason, /Invalid arguments for search_knowledge\. Rejected argument: limit:required\. Expected an object with query \(string\), limit \(integer\)\./);
+  assert.match(batch.tools[0]!.reason, /Invalid arguments for search_insights\. Rejected argument: limit:required\. Expected an object with query \(string\), limit \(integer\)\./);
 });
 
 test('K1: an invalid tool call logs a metadata-only argument diagnostic', async () => {
@@ -764,13 +747,13 @@ test('K1: an invalid tool call logs a metadata-only argument diagnostic', async 
   const events: { event?: string }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
   try {
-    await runToolCalls(owner, [{ id: '1', name: 'get_insight', args: { ids: ['hunter2'], limit: 3 } }], errorContext(errorTool()) as never);
+    await runToolCalls(owner, [{ id: '1', name: 'get_insight', args: { insight_ids: ['hunter2'], limit: 3 } }], errorContext(errorTool()) as never);
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; violations: string[]; reason: string };
   assert.equal(event.tool, 'get_insight');
   // AL-R1: a tool whose refusal is a plain validator still names the declared key it is about, so the
   // retry has somewhere to land, and the line never carries a value.
-  assert.deepEqual(event.violations, ['ids:refused']);
+  assert.deepEqual(event.violations, ['insight_ids:refused']);
   assert.equal(event.reason, 'schema_validation_failed');
   assert.doesNotMatch(JSON.stringify(event), /hunter2/);
 });
@@ -787,7 +770,7 @@ test('C-ARGS a refused write names no value of his in the argument log', async (
   const event = events.find(line => line.event === 'tool_arguments_rejected') as { tool: string; violations: string[] };
   assert.equal(event.tool, 'create_event');
   // AL-R1: a refusal names the declared key it is about, here the required one that never arrived.
-  assert.deepEqual(event.violations, ['ids:required'], 'a refusal names the field it is about');
+  assert.deepEqual(event.violations, ['insight_ids:required'], 'a refusal names the field it is about');
   const logged = JSON.stringify(event);
   for (const value of ['cardio with Zara', '1.5', 'true']) {
     assert.equal(logged.includes(value), false, `no value of his reaches the log: ${value}`);
@@ -820,9 +803,9 @@ for (const effect of ['read', 'write'] as const) {
     const lines: Record<string, unknown>[] = [];
     const detach = attachHostLogSink({ event: raw => { lines.push(raw as Record<string, unknown>); } });
     t.after(detach);
-    const original = f.definitions().find(tool => tool.name === 'search_knowledge')!;
+    const original = f.definitions().find(tool => tool.name === 'search_insights')!;
     const throwing = { ...original, effect, execute: async () => { throw new TypeError('synthetic handler failure'); } };
-    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', mode: null } }], {
+    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', limit: 3, include_sensitive: true } }], {
       registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
       seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],
@@ -838,45 +821,46 @@ for (const effect of ['read', 'write'] as const) {
 
 // Task document continuations are typed id plus character offset, not the
 // retired owner-only read_body capability tokens.
-async function pagedTaskFixture(t: TestContext, resultOf: () => unknown) {
+async function pagedTaskFixture(t: TestContext, resultOf: (name: string, args: Record<string, unknown>) => unknown) {
   const p = policy(); p.bounds = { ...p.bounds, maxEntityBytes: 200_000, maxResultBytes: 200_000 };
   return fixture(t, { policy: p, memoryBytes: 1_000_000, responseBytes: 200_000, resultOf });
 }
-async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, cursor: string | null, executionId: string) {
-  const args = { ids: [Number(id)], include_links: false, cursor }, call = { ...f.intent(executionId, 'read_knowledge', args), callId: executionId };
+async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, offset: number, executionId: string) {
+  const args = { insight_ids: [7], include_links: false, offset, max_chars: 6000 }, call = { ...f.intent(executionId, 'get_insight', args), callId: executionId };
   f.owner.journal.intent(call);
-  const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
+  const outcome = await f.definitions().find(tool => tool.name === 'get_insight')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page execution failed');
   const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
   assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('page delivery refused');
   return gate.results[0]!.response;
 }
-test('task document pages reconstruct the complete source body and reject invalid cursors', async t => {
+test('native task document offsets reconstruct the complete source body without a cursor alias', async t => {
   const body = 'A'.repeat(25_000) + 'synthetic-tail';
-  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: body }) }] }));
-  const source = await f.reader.get({ ids: [7], include_links: false }, f.signal);
-  assert.equal(source.state, 'completed', 'the same configured reader can fetch the source before task projection');
-  const first = await readTaskPage(f, '7', null, 'page-first');
-  assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
-  const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
-  assert.equal(String(first.text) + String(next.text), JSON.stringify({ id: 7, content: body }), 'whole-body paging neither truncates nor duplicates content');
-  assert.equal(next.next_cursor, null);
-  const invalid = await readTaskPage(f, '7', 'not-a-cursor', 'page-invalid');
-  assert.equal(invalid.status, 'failed', 'malformed offsets cannot silently restart or choose another parent');
+  const f = await pagedTaskFixture(t, (_name, args) => ({ content: [{ type: 'text', text: body.slice(Number(args.offset), Number(args.offset) + Number(args.max_chars)) }] }));
+  let reconstructed = '';
+  for (let offset = 0; offset < body.length; offset += 6000) {
+    const page = await readTaskPage(f, offset, `page-${offset}`);
+    reconstructed += String(page['text']);
+    assert.deepEqual(f.calls.at(-1)!.arguments, { insight_ids: [7], include_links: false, offset, max_chars: 6000 });
+  }
+  assert.equal(reconstructed, body);
+  const read = f.definitions().find(tool => tool.name === 'get_insight')!;
+  assert.equal(read.validate({ insight_ids: [7], include_links: false, cursor: 'not-a-cursor' }), false);
 });
-test('SOURCE DEFECT task document pages: a continuation cannot silently splice changed source bytes', async t => {
-  const original = 'A'.repeat(25_000) + 'original-tail'; let current = original;
-  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: current }) }] }));
-  const first = await readTaskPage(f, '7', null, 'version-first'); assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
-  current = 'B'.repeat(25_000) + 'changed-tail';
-  const next = await readTaskPage(f, '7', first.next_cursor, 'version-next');
-  if (next.status !== 'failed') assert.equal(String(first.text) + String(next.text), `### insight 7 [id 7]\n${original}`, 'continue the captured version or explicitly refuse, never splice different documents');
-  else assert.ok(next.repair, 'a version change refusal tells the worker to restart');
+test('native task document reads retain each distinct source response instead of merging changed bytes', async t => {
+  let body = 'A'.repeat(6000);
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: body }] }));
+  const first = await readTaskPage(f, 0, 'page-before');
+  body = 'B'.repeat(6000);
+  const second = await readTaskPage(f, 0, 'page-after');
+  assert.equal(first['text'], 'A'.repeat(6000));
+  assert.equal(second['text'], 'B'.repeat(6000));
+  assert.equal(f.calls.length, 2, 'each native offset request gets fresh source evidence');
 });
-test('SOURCE DEFECT task read delivery: a captured document page is refused after its source is revoked', async t => {
-  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: 'A'.repeat(25_000) }) }] }));
-  const args = { ids: [7], include_links: false, cursor: null }, call = f.intent('pending-page', 'read_knowledge', args); f.owner.journal.intent(call);
-  const outcome = await f.definitions().find(tool => tool.name === 'read_knowledge')!.execute(args, { ...call, signal: f.signal });
+test('SOURCE DEFECT task read delivery: a captured native document page is refused after its source is revoked', async t => {
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: 'A'.repeat(6000) }] }));
+  const args = { insight_ids: [7], include_links: false, offset: 0, max_chars: 6000 }, call = f.intent('pending-page', 'get_insight', args); f.owner.journal.intent(call);
+  const outcome = await f.definitions().find(tool => tool.name === 'get_insight')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page read failed');
   f.owner.applyConnection(policy({ generation: 2, enabled: false }));
   const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result, call)], ['ordinary'], f.signal);
@@ -1193,7 +1177,7 @@ test('task bindings use configured validated connector readers without the resea
   const f = await fixture(t);
   const bindings = f.owner.taskBindings(['lux']);
   assert.equal(bindings.length, 1); assert.equal(bindings[0]?.connector, 'lux-knowledge');
-  const read = await bindings[0]!.reader.call('search_knowledge', { query: 'synthetic', limit: 1, include_sensitive: false }, f.signal);
+  const read = await bindings[0]!.reader.call('search_insights', { query: 'synthetic', limit: 1, include_sensitive: true }, f.signal);
   assert.equal(read.state, 'completed'); assert.equal(f.calls.length, 1);
   f.owner.applyConnection(policy({ enabled: false, generation: 2 }));
   assert.equal(f.owner.taskBindings(['lux']).length, 0);

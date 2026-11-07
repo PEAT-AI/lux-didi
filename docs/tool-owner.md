@@ -37,9 +37,9 @@ Alarm parsing and recurrence checks remain mechanical tool concerns after author
 
 ## Local memory and Lux notes
 
-`save_to_vault` sends the exact Task Authority-approved payload through `VaultWriter.saveTask` and the configured Lux write transport. It returns the real connector receipt; an unknown acknowledgement is not committed as success. The misleading local `stage_lux_note` tool is removed. `remember_note` remains a private local Domain memory note and must never be described as a remote Lux save.
+The helper uses `vault_save` and `vault_update` with a host envelope containing the requested owner turn and the unchanged discovered payload schema. The host verifies the persisted owner speaker in the current call, checks the active grant and schema, and claims the existing ledger before dispatch. Budgets are durable: one helper write per owner turn and ten per call. Create, correction, hub-link and feedback receipts remain distinct; candidates are never silently merged.
 
-Authorization and local state are committed before the remote writer runs outside the database transaction. A successful receipt contains the saved title/id; failure or an unknown write outcome never claims a saved note. Same-candidate retries reuse the receipt and cannot write twice. A quoted note, a source instruction or a vague comment cannot create a grant. A genuinely missing field returns a named clarification; it does not ask for a second complete confirmation. Historical nonterminal confirmation rows are cancelled by migration rather than resumed as executable requests. Existing local-memory formats remain separate from Lux knowledge writes.
+The existing dictated-note feature uses the same `VaultWriter` and Lux transport but remains its own interaction, not a helper compatibility alias. Host attribution uses `voice_call` and app `lux-didi`; content or supported provenance fields carry the owner/session/turn evidence. `remember_note` remains private local Domain memory and must never be described as a remote Lux save. See [Lux Knowledge connector](lux-knowledge-connector.md) for schema discovery, follow-ups, provenance and recovery.
 
 ## The Trello board (W7)
 
@@ -188,7 +188,7 @@ The offline synthetic replay reads this shipped policy, not a separate copy.
 
 ## Helper read recovery and deadlines (10.11)
 
-Readers take source identifiers, not interchangeable record numbers. `read_memory.ref` is the entry id from `search_memory`; `read_knowledge.ids` is a bounded batch of insight ids from `search_knowledge` or `list_vault`, with `include_links` for linked rationale; `read_company.ref` is the company search ref, passed verbatim even when the result also has a numeric id. Memory owns retained local entries, knowledge owns retained insights, and company connectors own current connected records. Company reads forward `depth` (`summary`, `full`, or `all`, default `all`) and the native continuation cursor. An incomplete page is not evidence that the remaining source is empty.
+Readers take source identifiers, not interchangeable record numbers. `read_memory.ref` is the entry id from `search_memory`; the discovered vault by-id reader takes the insight-id batch and link options declared by its schema, using ids returned by search or listing; `read_company.ref` is the company search ref, passed verbatim even when the result also has a numeric id. Memory owns retained local entries, knowledge owns retained insights, and company connectors own current connected records. Company reads forward `depth` (`summary`, `full`, or `all`, default `all`) and the native continuation cursor. An incomplete page is not evidence that the remaining source is empty.
 
 Read failures carry a closed category and source-specific repair instructions. Raw exception text is not helper evidence. A speech revision stops the old inference and write admissions, but an already-running read survives and an identical read joins its promise. Task cancellation still aborts reads. Completed read results remain in the existing per-task read cache; writes never enter it.
 
@@ -197,21 +197,12 @@ The tool phase retains its 36-second revision ceiling and individual connector l
 
 ### Vault retrieval contract
 
-Vault search is semantic retrieval: returned hits are `ok`, not failed exact-name matches.
-The helper receives the source confidence header, ordered ranks, score, type, snippet,
-validity and supersession evidence. A superseded entry is historical context; follow its
-replacement and name the change rather than presenting the old fact as current.
-Company and people exact-name behavior is separate and unchanged.
+Vault retrieval is semantic, not exact-name matching. The helper receives Lux's search header and result text unchanged inside normal bounded document continuations. It does not parse confidence or candidate header fields, invent absence from an unfamiliar header, or discard supersession evidence. Follow current replacements rather than presenting a historical fact as current. Company and people exact-name behavior remains separate and unchanged.
 
-The helper asks for at most twelve full-format snippets at the remote renderer's native width, not abbreviated voice rows. Source text is bounded
-to 24000 characters, with at most twelve bounded reference titles. Reads support up to six
-ids and linked rationale in one request, retaining versioned continuations for long text.
-`vault_meetings` finds meetings by participant/date; `read_vault_meeting` reads one;
-`list_vault` supplies true totals and offset pages for all/count questions. None can write.
+Discovery supplies every annotated read tool and its exact input schema, including by-id reads, complete listings, meetings, revisions and the context digest. Missing tools and unknown wire parameters are hard errors, not aliases or silently dropped fields. Sensitive rows remain included for Naya. Open follow-ups can be listed by the discovered follow-up and source-kind filters.
+
 Owner profile lore and style are appended privately; the public instruction ceiling is
 4600 characters. Search using the owner's terms, inspect snippets, read plausible hits,
 and try another wording before claiming absence.
 
-Saving authority is unchanged. `save_to_vault` reports saved only for a confirmed insert
-with an insight id; duplicates, failures and unknown outcomes are not reported as saved.
-A save receipt is not proof that a later ranked search will put the new entry first.
+A create receipt may report created, duplicate-of or refused and include candidates. A correction retains its insight id and revision history. Links and feedback have their own acknowledgements. Pending or uncertain work is not described as saved; the final outcome belongs in the content-free host log and local ledger. A save receipt does not promise a later ranked search will put that entry first.

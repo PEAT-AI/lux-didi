@@ -101,7 +101,7 @@ Synthetic executor-boundary coverage lives in `server/test/tasks-company.test.ts
 
 ## Owner vault helper
 
-The reviewed remote read catalogue is exactly `search_knowledge`, `get_insight`,
+The reviewed remote read catalogue is exactly `search_insights`, `get_insight`,
 `list_meetings`, `get_meeting` and `list_insights`. No maintenance, personnel mutation,
 link mutation or other remote tools are published. Discovery and approval still apply.
 The helper's typed meeting/list tools are `vault_meetings`, `read_vault_meeting` and

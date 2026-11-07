@@ -82,7 +82,7 @@ test('live_state keeps a closed transition shape for the orb timeline', () => {
   assert.equal(safeEvent({ ...event, at: -1 }), undefined, 'a negative timestamp is refused');
 });
 test('live_tool_turn admits a closed per-endpoint peak in-flight field', () => {
-  const base = { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'search_knowledge', ms: 12 }], toolResponseWhileGenerating: false };
+  const base = { event: 'live_tool_turn', sequence: 3, toolCallsThisTurn: 2, toolLatencyMs: [{ tool: 'search_insights', ms: 12 }], toolResponseWhileGenerating: false };
   const withPeak = { ...base, peakInFlight: [{ endpoint: 'lux', peak: 2 }] };
   assert.deepEqual(safeEvent(withPeak), withPeak);
   assert.equal(safeEvent(base)?.event, 'live_tool_turn', 'the field stays optional');
@@ -812,4 +812,23 @@ test('a dreaming_done line names a below-floor skip and carries no other outcome
   const skipped = safeEvent({ ...line, outcome: 'skipped_below_floor' });
   assert.equal(skipped?.['outcome'], 'skipped_below_floor');
   assert.equal(safeEvent({ ...line, outcome: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'the outcome is a closed word');
+});
+
+
+test('helper vault_write logs only the closed outcome and id prefix, never content', () => {
+  const event = { event: 'vault_write', tool: 'vault_save', outcome: 'created', insight_id_prefix: '42' };
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, content: 'synthetic private content' }), undefined);
+  assert.equal(safeEvent({ ...event, tool: 'purge_insight' }), undefined);
+});
+
+test('M21: a trusted rediscovery logs the endpoint id and digest prefixes, never content', () => {
+  const rediscovered = { event: 'mcp_trusted_rediscovered', endpointId: 'lux-knowledge',
+    previousDigest: 'a1b2c3d4e5f6', observedDigest: '00112233aabb' };
+  assert.deepEqual(safeEvent(rediscovered), rediscovered);
+  assert.equal(safeEvent({ ...rediscovered, digest: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'an extra key fails closed');
+  assert.equal(safeEvent({ ...rediscovered, endpointId: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...rediscovered, observedDigest: 'f'.repeat(64) }), undefined, 'a whole digest is not a prefix');
+  assert.equal(safeEvent({ ...rediscovered, previousDigest: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...rediscovered, observedDigest: 'A1B2C3D4E5F6' }), undefined, 'uppercase hex is refused');
 });

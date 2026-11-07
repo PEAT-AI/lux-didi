@@ -483,7 +483,7 @@ test('the compiled conversation budget selects a newest-first whole-summary pref
     assert.ok(block.summaryIds.length > 6 && block.summaryIds.length < 20);
     assert.deepEqual(block.summaryIds, candidates.filter(candidate => block.summaryIds.includes(candidate.id)).map(candidate => candidate.id));
     for (const candidate of candidates) assert.equal(block.text.includes(candidate.summary), block.summaryIds.includes(candidate.id));
-    const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_knowledge'], records: [],
+    const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: ['search_insights'], records: [],
       trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, memoryBlockInput: input });
     assert.equal(composed.earlierConversationsIncluded, true);
     assert.deepEqual(composed.summaryIds, block.summaryIds);

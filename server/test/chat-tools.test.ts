@@ -21,8 +21,8 @@ import { composeMcpRuntime } from '../host/mcp.js';
 import type { LiveAuthority, ConnectionPolicy } from '../tools/types.js';
 import type { ModelPort, ModelRequest, DataClass } from '../adapters/model/types.js';
 
-const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, snippet_chars: { type: 'integer', minimum: 100, maximum: 6000 } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
-const tools: { name: string; inputSchema: Record<string, unknown> }[] = [{ name: 'search_knowledge', inputSchema: schema }];
+const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, snippet_chars: { type: 'integer', minimum: 100, maximum: 6000 } }, required: ['query'], additionalProperties: false };
+const tools: { name: string; annotations?: Record<string, unknown>; inputSchema: Record<string, unknown> }[] = [{ name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: schema }];
 const ACCEPTED = 'ACCEPTED [Überblick 🌱](https://example.com/evidence) insight 42';
 const REJECTED = 'REJECTED [diagnostic](https://example.com/rejected) insight 99';
 const UNCLASSIFIED = '[unclassified](https://example.com/unclassified) insight 100';
@@ -44,8 +44,8 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   const model: ModelPort = { generate: async (request, control) => {
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
-    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { ids: [42], include_links: true, cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived', mode: null }, id: randomUUID() } }] } };
+    if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'get_insight' : 'search_insights')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'get_insight' : 'search_insights', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { insight_ids: [42], include_links: true } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived' }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);
@@ -58,7 +58,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     if (illegalFinal) {
       control.onEvent?.({ type: 'text', text: 'PROVISIONAL', provisional: true });
       return { ...result(request, 'complete', 'PROVISIONAL'), providerContent: { role: 'model', parts: [
-        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_knowledge', args: { query: 'one more', limit: 1 , mode: null }, id: randomUUID() } },
+        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_insights', args: { query: 'one more', limit: 1 }, id: randomUUID() } },
       ] } };
     }
     if (finalStatus !== 'complete') return result(request, finalStatus, '');
@@ -74,7 +74,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let executions = 0; const sourceRequests: Record<string, unknown>[] = [];
   // The real helper always publishes its identity probe, and a strict Google connector refuses to
   // publish without it, so the fixture publishes and answers gmail_get_profile as well.
-  let exposed = sourceKind === 'gmail' ? [{ name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }, { name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id', 'format'], additionalProperties: false } }] : structuredClone(tools);
+  let exposed: { name: string; annotations?: Record<string, unknown>; inputSchema: Record<string, unknown> }[] = sourceKind === 'gmail' ? [{ name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }, { name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id', 'format'], additionalProperties: false } }] : structuredClone(tools);
   let onDispatch: (() => void) | undefined;
   let reject = false;
   let errorFlag = true;
@@ -142,7 +142,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     setFinalHook: (hook: () => void) => { beforeFinal = hook; },
     leak: (text: string) => { payload = text; },
     logEvents,
-    approveY: async () => { exposed.push({ name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } }); const current = f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [endpoint.id])!); const prior = JSON.parse(String(current.policy_json)) as ConnectionPolicy; owner.applyConnectionIntent({ expectedPolicySha256: String(current.policy_sha256), policy: { ...prior, generation: prior.generation + 1, toolNames: exposed.map(tool => tool.name), schemaDigest: canonicalToolDigest(exposed) } }); await mcp.refresh(); },
+    approveY: async () => { exposed.push({ name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['insight_ids', 'include_links'], additionalProperties: false } }); const current = f.store.transaction(tx => tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?', [endpoint.id])!); const prior = JSON.parse(String(current.policy_json)) as ConnectionPolicy; owner.applyConnectionIntent({ expectedPolicySha256: String(current.policy_sha256), policy: { ...prior, generation: prior.generation + 1, toolNames: exposed.map(tool => tool.name), schemaDigest: canonicalToolDigest(exposed) } }); await mcp.refresh(); },
     privateOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'private', allowedClasses: ['private'] }, route: { ...p.route, allowedClasses: ['private'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     sensitiveOnly: async () => { const p = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT policy_json FROM tool_connections WHERE connection_id=?', [endpoint.id])!.policy_json)) as ConnectionPolicy); owner.applyConnection({ ...p, generation: p.generation + 1, sourcePolicy: { ...p.sourcePolicy, unknownClass: 'sensitive', allowedClasses: ['sensitive'] }, route: { ...p.route, allowedClasses: ['sensitive'] } }); assert.equal((await mcp.port.discover(endpoint.id)).state, 'discovered'); owner.projectConnection(endpoint.id); },
     admission: (sessionId: string) => f.store.transaction(tx => { const row = tx.get('SELECT * FROM chat_capability_acceptances WHERE session_id=?', [sessionId]); return row ? JSON.parse(String(row.capabilities_json)) as { name: string }[] : []; }) };
@@ -153,9 +153,9 @@ test('real chat declares task reads, journals execution, and discloses only gate
   t.diagnostic(JSON.stringify({ outcome: run.outcome, requests: f.requests.length, executions: f.executions() }));
   assert.equal(run.outcome, 'complete', 'task registry composition must reach the model, not compile_failed');
   const declarations = f.requests[0]?.declarations ?? [];
-  assert.ok(declarations.some(tool => tool.name === 'search_knowledge'));
-  assert.ok(declarations.some(tool => tool.name === 'read_knowledge'));
-  assert.equal(declarations.some(tool => tool.name === 'get_insight' || tool.name === 'read_received_body'), false);
+  assert.ok(declarations.some(tool => tool.name === 'search_insights'));
+  assert.equal(declarations.some(tool => tool.name === 'read_knowledge'), false, 'the retired helper read is gone; discovery is the only source');
+  assert.equal(declarations.some(tool => tool.name === 'read_received_body'), false);
   assert.equal(f.executions(), 1);
   const rows = f.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.runId]));
   assert.equal(rows.length, 1); assert.equal(rows[0]?.state, 'completed');
@@ -173,7 +173,7 @@ test('real chat declares task reads, journals execution, and discloses only gate
   assert.equal(proof.entitySha256, createHash('sha256').update(capturedEntity).digest('hex'));
   const grant = f.registry.currentGrant('fixture-endpoint')!;
   assert.deepEqual(proof.source, { endpointId: 'fixture-endpoint', url: 'https://fixture.invalid/mcp', schemaDigest: grant.schemaDigest,
-    toolName: 'search_knowledge', generation: grant.generation, account: 'fixture-account', resource: 'fixture-resource' });
+    toolName: 'search_insights', generation: grant.generation, account: 'fixture-account', resource: 'fixture-resource' });
   const expectedSources = [{ title: 'Überblick 🌱', url: 'https://example.com/evidence' }, { title: 'KB: 42' }];
   assert.deepEqual(run.toolEvidence?.flatMap(value => value.sources), expectedSources, 'completed run retains exact gated source metadata');
   assert.deepEqual(f.chat.get(run.runId, f.context)?.toolEvidence?.flatMap(value => value.sources), expectedSources, 'Chat.get projects the same exact source metadata');
@@ -221,7 +221,7 @@ test('tool results are redacted before the model, storage and evidence', async t
   const receipt = f.logEvents.filter(event => event['event'] === 'tool_redaction');
   assert.equal(receipt.length, 1, 'one receipt per redacted tool result');
   assert.deepEqual(Object.keys(receipt[0] as object).sort(), ['count', 'event', 'tool']);
-  assert.equal(receipt[0]?.['tool'], 'search_knowledge');
+  assert.equal(receipt[0]?.['tool'], 'search_insights');
   assert.ok(Number(receipt[0]?.['count']) >= SECRETS.length);
   assert.equal(JSON.stringify(f.logEvents).includes('alpha-bravo-charlie'), false, 'a receipt never carries a value');
 });
@@ -272,7 +272,7 @@ test('route class filter excludes private-only envelopes from ordinary classes',
 test('private-permitted route admits the private-only envelope through the same class filter', async t => {
   const f = await fixture(t); await f.privateOnly();
   const session = f.session(); await f.turn(session);
-  assert.ok(f.admission(session).some(d => d.name === 'search_knowledge'));
+  assert.ok(f.admission(session).some(d => d.name === 'search_insights'));
 });
 
 
@@ -390,7 +390,7 @@ test('configured Chat consent preserves independent connector class denial', asy
   const run = await f.turn(f.session());
   assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 0);
   assert.equal(f.requests.length, 1);
-  assert.ok(!f.requests[0]!.declarations?.some(d => d.name === 'search_knowledge'));
+  assert.ok(!f.requests[0]!.declarations?.some(d => d.name === 'search_insights'));
 });
 
 
@@ -506,7 +506,7 @@ test('a slow connector is fenced: the answer lands, the aborted call is not retr
   assert.deepEqual(f.requests[1]!.declarations, [], 'the answer call declares no tools');
   const last = events.filter(event => event.type === 'snapshot').at(-1);
   assert.equal(last?.type === 'snapshot' && last.partial, true, 'the final answer event is marked partial');
-  assert.deepEqual(last?.type === 'snapshot' ? last.notReached : undefined, ['searched the knowledge base'],
+  assert.deepEqual(last?.type === 'snapshot' ? last.notReached : undefined, ['search insights'],
     'the fence names the call it cut');
   const receipt = seen.find(entry => entry.event === 'chat_timing');
   assert.equal(receipt?.outcome, 'fenced');
@@ -540,7 +540,7 @@ test('Lux sensitive integration: trusted whole-source policy selects sensitive d
     const f = await fixture(t, allowed ? ['ordinary', 'private', 'sensitive'] : ['ordinary', 'private']); if (exact) { await f.approveY(); f.exactGet(); } await f.sensitiveOnly();
     const run = await f.turn(f.session());
     if (!allowed) { assert.equal(f.executions(), 0); continue; }
-    assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); if (exact) assert.deepEqual(f.sourceRequests[0]!['ids'], [42]); else assert.equal(f.sourceRequests[0]!['include_sensitive'], true);
+    assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); if (exact) assert.deepEqual(f.sourceRequests[0]!['insight_ids'], [42]); else assert.equal(f.sourceRequests[0]!['include_sensitive'], true);
     const row = f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE run_id=?', [run.runId]))!; assert.deepEqual(JSON.parse(String(row.result_json)).dataClasses, ['sensitive']);
   }
 });
@@ -607,14 +607,17 @@ test('the task facade is stable across newly approved source tools and owner rev
   const first = await f.turn(session);
   assert.equal(first.outcome, 'complete');
   const names = f.requests[0]?.declarations?.map(tool => tool.name) ?? [];
-  assert.ok(names.includes('search_knowledge') && names.includes('read_knowledge'));
+  assert.ok(names.includes('search_insights'));
+  assert.equal(names.includes('get_insight'), false, 'an unapproved read is not declared');
   await f.approveY(); f.noCalls();
   const next = await f.turn(session);
   assert.equal(next.outcome, 'denied', 'an accepted conversation cannot silently widen its source policy');
+  assert.deepEqual(f.requests.at(-1)?.declarations?.map(tool => tool.name), names, 'the refused turn still declares the accepted set');
   const fresh = await f.turn(f.session());
   assert.equal(fresh.outcome, 'complete', 'fresh owner consent captures the approved source policy');
-  assert.deepEqual(f.requests.at(-1)?.declarations?.map(tool => tool.name), names);
-  assert.equal(names.includes('get_insight'), false, 'connector tool names never become chat tools');
+  // Reads come from discovery, so the newly approved read is declared by the next accepted run and nothing else moves.
+  assert.deepEqual(f.requests.at(-1)?.declarations?.map(tool => tool.name), [...names, 'get_insight']);
+  assert.equal(f.requests.at(-1)?.declarations?.some(tool => tool.name === 'create_insight'), false, 'a discovered write never becomes a chat tool');
 });
 
 test('chat reads canonical mail through task id/cursor arguments, not a legacy body consumer', async t => {

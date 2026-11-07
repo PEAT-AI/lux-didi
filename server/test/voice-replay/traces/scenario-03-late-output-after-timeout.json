@@ -63,7 +63,7 @@
           "item": {
             "type": "function_call",
             "call_id": "call_1",
-            "name": "search_knowledge",
+            "name": "search_insights",
             "arguments": "{\"query\": \"synthetic query\", \"limit\": 2}"
           }
         }

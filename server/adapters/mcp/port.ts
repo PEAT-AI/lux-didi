@@ -71,7 +71,7 @@ export interface ReadGrant {
   endpointId: string;
   schemaDigest: string;
   toolNames: readonly string[];
-  effect: 'read';
+  effect: 'read' | 'read-write';
   account: string;
   resource: string;
   generation: number;

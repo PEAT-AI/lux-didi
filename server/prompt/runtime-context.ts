@@ -1,3 +1,4 @@
+import { LUX_TOOLS } from '../connectors/lux-names.js';
 /**
  * Host-generated Live runtime context. Built from the Mac's clock and timezone when a Live session
  * is created (and on each rebuild), never from the model. It carries no private content beyond the
@@ -161,7 +162,7 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
     else if (name.startsWith('gmail_')) add('mail');
     else if (name.startsWith('calendar_')) add('calendar');
     else if (name.startsWith('mattermost_')) add('team chat');
-    else if (name === 'search_knowledge' || name === 'get_insight') add('his private notes');
+    else if (name === LUX_TOOLS.search || name === LUX_TOOLS.get) add('his private notes');
     else if (name === 'remember_note') add('memory');
     else if (name.startsWith('trello_')) add('Trello board');
     else { const mongooseGroup = mongooseToolGroup(name); if (mongooseGroup !== undefined) add(mongooseGroup); }

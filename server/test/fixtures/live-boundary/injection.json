@@ -38,15 +38,15 @@
       "allowed": true
     },
     {
-      "id": "inject-search_knowledge-false",
+      "id": "inject-search_insights-false",
       "case": "injected",
-      "source": "search_knowledge",
+      "source": "search_insights",
       "allowed": false
     },
     {
-      "id": "inject-search_knowledge-true",
+      "id": "inject-search_insights-true",
       "case": "injected",
-      "source": "search_knowledge",
+      "source": "search_insights",
       "allowed": true
     },
     {

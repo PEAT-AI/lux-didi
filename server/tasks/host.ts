@@ -1,3 +1,5 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
+import { LUX_TOOLS, LUX_WRITE_TOOLS, luxWriteAdmitted } from '../connectors/lux-names.js';
 import { ServiceError } from '../contracts/errors.js';
 import { readerFailure } from './results.js';
 import type { ComposeDispatch, ComposeOutcome } from '../tools/types.js';
@@ -62,7 +64,10 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
     const authority = new Authority({ checkEffect, journal: options.store.taskEffectJournal(),
       log: code => options.log?.({ event: 'task_effect_check', code }) });
     const existing = options.executors?.(sessionId) ?? {};
-    const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer,
+    const runtime = new TaskRuntime({ store: options.store, nativeSessionId: sessionId, delivery, authority, infer: (request, signal) => {
+      const turn = options.vault ? options.store.transaction(tx => tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 1", [sessionId])) : undefined;
+      return infer(turn ? { ...request, input: `${request.input}\nPersisted owner turn ID: ${String(turn.journal_id)}` } : request, signal);
+    },
       timeZone: sessionClockZone(options.store, sessionId) ?? options.timeZone, ...(options.now ? { now: options.now } : {}), configuredTools: configuredCompanyTools(bindings(), readPublishedCatalogues(join(options.store.directory, 'state.sqlite'))), ...(options.log ? { log: options.log } : {}),
       execute: async (name, args, signal, exposed, identity) => {
         if (signal.aborted) return failed('This revision was cancelled. Use the current task.');
@@ -88,11 +93,31 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
             return { status: 'ok', text: 'Saved to local notes.', references: [{ id: entry.id }], next_cursor: null, coverage: 'One note committed.', repair: null };
           });
         }
-        if (name === 'save_to_vault') {
-          if (!options.vault || !identity) return failed('The vault write port or task identity is unavailable. Nothing was saved.');
-          const receipt = await options.vault.saveTask({ sessionId, identity, content: String(args.text), title: String(args.title), outsideTextSeen: exposed ?? false });
-          if (receipt.saved) return documentResult(JSON.stringify(receipt), 'vault-receipt');
-          return { ...failed(receipt.guidance ?? 'The vault did not confirm this save.'), receipt: { operation_id: identity.operation_id, state: receipt.code === 'outcome_unknown' ? 'unknown' : 'failed' } };
+        if (name === 'vault_save' || name === 'vault_update') {
+          if (!options.vault) return failed('The vault write port is unavailable. Nothing was saved.');
+          const validator = new AjvJsonSchemaValidator();
+          const matches = bindings().filter(binding => binding.connector === 'lux-knowledge').flatMap(binding =>
+            (binding.reader.discovery?.() ?? []).filter(tool => binding.policy.toolNames.includes(tool.name)
+              && (LUX_WRITE_TOOLS as readonly string[]).includes(tool.name) && luxWriteAdmitted(tool)
+              && (name === 'vault_save' ? tool.name === LUX_TOOLS.create : tool.name !== LUX_TOOLS.create)
+              && validator.getValidator(tool.inputSchema)(args.payload).valid).map(tool => ({ binding, tool })));
+          if (matches.length !== 1) return failed('The payload must match exactly one currently granted discovered write schema. Nothing was written.');
+          const selected = matches[0]!;
+          const authorized = () => bindings().some(binding => binding.connector === 'lux-knowledge'
+            && binding.policy.connectionId === selected.binding.policy.connectionId && binding.policy.generation === selected.binding.policy.generation
+            && binding.policy.toolNames.includes(selected.tool.name) && binding.reader.discovery?.().some(tool => tool.name === selected.tool.name && luxWriteAdmitted(tool)));
+          const write = options.vault.writeTask({ sessionId, tool: name, operation: selected.tool.name,
+            inputSchema: selected.tool.inputSchema, maxPayloadBytes: selected.binding.policy.bounds.maxEntityBytes, authorized, args, externalContextPresent: exposed ?? false })
+            .then(receipt => documentResult(JSON.stringify(receipt), 'vault-receipt'));
+          // Cancellation stops waiting, not a write that may already have reached lux.
+          let onAbort: (() => void) | undefined;
+          const pending = new Promise<ReturnType<typeof documentResult>>(resolve => {
+            onAbort = () => resolve(documentResult(JSON.stringify({ disposition: 'pending' }), 'vault-receipt'));
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+          });
+          try { return await Promise.race([write, pending]); }
+          finally { if (onAbort) signal.removeEventListener('abort', onAbort); }
         }
         if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.searchMemory(tx, String(args.query), 20, { classes: options.dataClasses ?? ['ordinary'] }))), 'local-memory');
         if (name === 'read_memory') {

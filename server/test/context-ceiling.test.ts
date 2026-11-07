@@ -75,7 +75,7 @@ function worstCaseInput() {
   const records = memoryRecords(64);
   return {
     text: `${NAYA_LIVE_BASE}\n\n${oversize(CONTEXT_BUDGET.sections.fixed.ceiling, 1)}`,
-    tools: ['search_knowledge'],
+    tools: ['search_insights'],
     records,
     trustedChars: 60_000,
     now: NOW,

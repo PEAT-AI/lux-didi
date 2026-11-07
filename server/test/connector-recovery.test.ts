@@ -528,7 +528,7 @@ test('C-CONNECT8: a refused grant (invalid_grant) stays latched with no retry, a
   assert.equal(lifecycle.filter(event => event.event === 'connector_retry').length, 0);
 });
 
-const KNOWLEDGE_TOOLS = [{ name: 'search_knowledge', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }];
+const KNOWLEDGE_TOOLS = [{ name: 'search_insights', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }];
 
 test('C-CONNECT8: lux-knowledge refusing connections at start connects once it listens, without a restart', async t => {
   // Take a free port, then hand it back: the first discovery is a real connection refused.

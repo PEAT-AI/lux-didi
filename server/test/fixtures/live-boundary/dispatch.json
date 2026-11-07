@@ -27,8 +27,8 @@
     "words": "Read the synthetic source."
   },
   {
-    "id": "search_knowledge-valid",
-    "tool": "search_knowledge",
+    "id": "search_insights-valid",
+    "tool": "search_insights",
     "args": {
       "query": "synthetic"
     },

@@ -137,12 +137,11 @@ const TOOL_LABELS: readonly [RegExp, string][] = [
   [/^gmail_/, 'Gmail'],
   [/^(gcal_|calendar_)/, 'Calendar'],
   [/^mattermost_/, 'Mattermost'],
-  [/^(search_knowledge|get_insight|knowledge_|lux_)/, 'Knowledge'],
   [/^mongoose/, 'Mongoose'],
 ];
 export function toolLabel(name: string): string {
   for (const [pattern, label] of TOOL_LABELS) if (pattern.test(name)) return label;
-  return '';
+  return 'Tool';
 }
 
 /** One compact 'Sources' line of named links separated by a middle dot, never bullets or boxes. */

@@ -7,6 +7,7 @@ import { createRegistry, type TaskTool } from '../tasks/tools.js';
 import { FakeAuthority } from '../tasks/authority.js';
 import { documentResult } from '../tasks/results.js';
 import { TaskController, FakeDelivery, type Revision } from '../tasks/controller.js';
+import { projectTaskPayload } from '../tasks/connectors.js';
 
 test('worker concurrently dedupes identical reads and repairs unknown calls', async () => {
   let executed = 0; let inferred = 0;
@@ -351,4 +352,23 @@ test('#901: the final composition draws from the same revision deadline and neve
   assert.equal(answer.status, 'incomplete');
   assert.equal(answer.failure?.stage, 'final');
   assert.equal(answer.failure?.reason_code, 'deadline');
+});
+
+test('#902: a completed calendar read with no events list is an honest empty, not an invalid result', () => {
+  const window = { start: '2026-11-05T00:00:00+01:00', end: '2026-11-06T00:00:00+01:00' };
+  const envelope = (data: unknown) => ({ content: [{ type: 'text', text: JSON.stringify({ data, coverage: { complete: true } }) }] });
+  // The shapes a completed calendar read comes back in when the window holds nothing: the helper either
+  // omits the events key or answers with the calendar list it walked, and neither is a malformed result.
+  for (const data of [{}, { events: null }, { calendars: [{ id: 'primary', primary: true }] }]) {
+    const result = projectTaskPayload('calendar_events', envelope(data), window);
+    assert.equal(result.status, 'empty', 'an empty window is empty, not a failure');
+    assert.equal(result.reason_code, undefined, 'an honest empty must not borrow the invalid_result code');
+    assert.equal(result.failure_category, undefined);
+    assert.match(result.text, /No calendar events between 2026-11-05T00:00:00\+01:00 and 2026-11-06T00:00:00\+01:00/u);
+    assert.match(result.coverage, /returned no events for 2026-11-05/u);
+  }
+  // The guard this narrowed around still stands: a mail page with no recognized list is a real failure.
+  const mail = projectTaskPayload('search_mail', envelope({ nothing: true }), {});
+  assert.equal(mail.status, 'failed');
+  assert.equal(mail.reason_code, 'invalid_result');
 });

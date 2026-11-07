@@ -138,6 +138,14 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
     return { ...result, status: 'partial', coverage: `${result.coverage} ${note}`, repair: `${note} Open the message in the mail app for the rest.` };
   }
   const list = Array.isArray(data) ? data : [root.items, root.results, root.hits, root.messages, root.files, root.events, root.posts].find(Array.isArray) ?? (name === 'search_chat' ? posts(root) : undefined);
+  // #902: the calendar shaper already reads an absent `events` as an empty page (live-shape shapeGcalList),
+  // so this owner must not call the same completed read an invalid result; it failed in milliseconds.
+  if (!Array.isArray(list) && name === 'calendar_events' && root['events'] == null) {
+    const window = [text(args.start), text(args.end)].filter(Boolean).join(' to ');
+    return { status: 'empty', text: `No calendar events ${window ? `between ${window}` : 'in the window that was asked for'}.`,
+      references: [], next_cursor: null, repair: null,
+      coverage: `The calendar source completed the read and returned no events${window ? ` for ${window}` : ''}.` };
+  }
   if (!Array.isArray(list)) return failed('The connector returned no recognized result list. Try another configured source; do not infer absence.', 'upstream_error', 'invalid_result');
   const items: RankedItem[] = list.flatMap(raw => {
     const item = record(raw), itemId = String((name === 'search_company' ? item.ref ?? item.id : item.id ?? item.ref) ?? item.file_id ?? '');

@@ -540,7 +540,7 @@ test('Lux sensitive integration: trusted whole-source policy selects sensitive d
     const f = await fixture(t, allowed ? ['ordinary', 'private', 'sensitive'] : ['ordinary', 'private']); if (exact) { await f.approveY(); f.exactGet(); } await f.sensitiveOnly();
     const run = await f.turn(f.session());
     if (!allowed) { assert.equal(f.executions(), 0); continue; }
-    assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); if (exact) assert.deepEqual(f.sourceRequests[0]!['ids'], [42]); else assert.equal(f.sourceRequests[0]!['include_sensitive'], true);
+    assert.equal(run.outcome, 'complete'); assert.equal(f.executions(), 1); if (exact) assert.deepEqual(f.sourceRequests[0]!['insight_ids'], [42]); else assert.equal(f.sourceRequests[0]!['include_sensitive'], true);
     const row = f.store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE run_id=?', [run.runId]))!; assert.deepEqual(JSON.parse(String(row.result_json)).dataClasses, ['sensitive']);
   }
 });

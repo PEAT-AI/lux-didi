@@ -121,7 +121,7 @@ async function harness(t: TestContext, builder: 'live' | 'chat-shaped', failure?
     const host: HostContext & Pick<RunAcceptance, 'connectionIds'> = { ...acceptance, grants: endpoints.map(e => ({ tool: e.tool, effect: 'read', accountId: e.id, resourceId: e.id })) };
     return { acceptance, host };
   };
-  const read = async (runtime: Awaited<ReturnType<typeof start>>, host: HostContext & Pick<RunAcceptance, 'connectionIds'>, ids: readonly string[]) => {
+  const read = async (runtime: Awaited<ReturnType<typeof start>>, host: HostContext & Pick<RunAcceptance, 'connectionIds'>, insight_ids: readonly string[]) => {
     const selected = ids.map(id => endpoints.find(e => e.id === id)!); const seen: ModelRequest[] = [];
     const model: ModelPort = { generate: async request => { seen.push(structuredClone(request)); if (seen.length !== 1) return result(); const answer = result(); answer.providerContent.parts = selected.map(e => ({ functionCall: { name: e.task, args: e.args, id: `call-${e.id}` } })); return answer; } };
     const task = canonicalTaskFixture(store, runtime.owner, host.runId, 'Read the synthetic sources', host.connectionIds);

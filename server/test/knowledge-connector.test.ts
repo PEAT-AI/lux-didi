@@ -168,7 +168,7 @@ test('3r voice search: the bounded-body fields reach the wire exactly, and no ot
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    const result = complete(await reader.call('search_insights', { query: 'synthetic query', limit: 6, detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 }));
+    const result = complete(await reader.call('search_insights', { query: 'synthetic query', limit: 6, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 }));
     assert.equal(result.tool, 'search_insights');
     assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'synthetic query', limit: 6, include_sensitive: true, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 } }]);
     // A snippet search keeps the old wire shape: the 3r fields travel only when asked for.
@@ -185,8 +185,8 @@ test('K4: a project hint reaches the wire as project_boost, and an unknown searc
     const result = complete(await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, projectHint: 'Wriggler' }));
     assert.equal(result.tool, 'search_insights');
     assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: true, project_boost: 'Wriggler' } }]);
-    await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, project: 'Wriggler' });
-    assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: true, project: 'Wriggler' } });
+    await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, project_boost: 'Wriggler' });
+    assert.deepEqual(f.calls[1], { name: 'search_insights', arguments: { query: 'wriggler pipeline', limit: 6, include_sensitive: true, project_boost: 'Wriggler' } });
     const refused = await reader.call('search_insights', { query: 'wriggler pipeline', limit: 6, sort: 'score' } as Record<string, unknown>);
     assert.equal('state' in refused ? refused.state : 'completed', 'refused');
     assert.equal((refused as { reason?: string }).reason, 'invalid-search-input');
@@ -200,11 +200,11 @@ test('3r fields outside the server range are refused before dispatch', async () 
     const { reader } = await readerFor(adapter, registry);
     const outs = await Promise.all([
       reader.call('search_insights', { query: 'x', limit: 1, detail: 'full' as never }),
-      reader.call('search_insights', { query: 'x', limit: 1, maxChars: 199 }),
-      reader.call('search_insights', { query: 'x', limit: 1, maxChars: 6_001 }),
-      reader.call('search_insights', { query: 'x', limit: 1, maxChars: 1_200.5 }),
-      reader.call('search_insights', { query: 'x', limit: 1, deadlineMs: 499 }),
-      reader.call('search_insights', { query: 'x', limit: 1, deadlineMs: 30_001 }),
+      reader.call('search_insights', { query: 'x', limit: 1, max_chars: 199 }),
+      reader.call('search_insights', { query: 'x', limit: 1, max_chars: 6_001 }),
+      reader.call('search_insights', { query: 'x', limit: 1, max_chars: 1_200.5 }),
+      reader.call('search_insights', { query: 'x', limit: 1, deadline_ms: 499 }),
+      reader.call('search_insights', { query: 'x', limit: 1, deadline_ms: 30_001 }),
     ]);
     assert.deepEqual(outs.map(out => out.state === 'refused' ? out.reason : out.state), [
       'invalid-detail', 'max-chars-out-of-range', 'max-chars-out-of-range', 'max-chars-out-of-range', 'deadline-ms-out-of-range', 'deadline-ms-out-of-range',
@@ -219,7 +219,7 @@ test('3r: an older server that rejects a field fails loudly with its own message
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    const result = await reader.call('search_insights', { query: 'synthetic query', limit: 6, detail: 'bodies', maxChars: 1_200, deadlineMs: 8_000 });
+    const result = await reader.call('search_insights', { query: 'synthetic query', limit: 6, detail: 'bodies', max_chars: 1_200, deadline_ms: 8_000 });
     assert.equal(result.state, 'tool-error');
     assert.equal(JSON.stringify(result.decodedResult).includes('deadline_ms'), true, 'the server message naming the field is kept, never replaced');
     assert.equal(f.calls.length, 1, 'a rejected field is never retried in the old shape');
@@ -332,7 +332,7 @@ test('strict exact-key validation rejects malformed and extra fields before any 
       reader.call('search_insights', { query: 'x'.repeat(201), limit: 1 }),
       reader.call('search_insights', { query: 'x', limit: 1, include_sensitive: true } as never),
       reader.call('search_insights', { query: 'x', limit: 1, projectHint: '' } as never),
-      reader.call('search_insights', { query: 'x', limit: 1, project: 'two words' } as never),
+      reader.call('search_insights', { query: 'x', limit: 1, project_boost: 'two words' } as never),
       reader.call('get_insight', null as never),
       reader.call('get_insight', {} as never),
       reader.call('get_insight', { insight_ids: [] }),
@@ -341,7 +341,7 @@ test('strict exact-key validation rejects malformed and extra fields before any 
       reader.call('get_insight', { insight_ids: [1, 1] }),
       reader.call('get_insight', { insight_ids: [1.2] }),
       reader.call('get_insight', { insight_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9] }),
-      reader.call('get_insight', { insight_ids: [1], project: 'p' } as never),
+      reader.call('get_insight', { insight_ids: [1], project_boost: 'p' } as never),
     ]);
     for (const result of rejected) assert.equal(result.state, 'refused');
     assert.equal(f.calls.length, 0);
@@ -846,7 +846,7 @@ test('MED-1022: the voice bound and the meeting day reach the wire, and a bad va
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    complete(await reader.call('search_insights', { query: 'ocp prep call', limit: 6, detail: 'voice', maxChars: 3_000, snippetChars: 300, meetingDateFrom: '2026-10-21', meetingDateTo: '2026-10-21' }));
+    complete(await reader.call('search_insights', { query: 'ocp prep call', limit: 6, detail: 'voice', max_chars: 3_000, snippetChars: 300, meetingDateFrom: '2026-10-21', meetingDateTo: '2026-10-21' }));
     assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: {
       query: 'ocp prep call', limit: 6, include_sensitive: true, detail: 'voice', max_chars: 3_000, snippet_chars: 300,
       meeting_meeting_date_from: '2026-10-21', meeting_meeting_date_to: '2026-10-21',

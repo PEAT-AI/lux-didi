@@ -1,0 +1,4 @@
+[
+  {"path": "server/node_modules", "source": "install", "install": "cd server && npm ci"},
+  {"path": "web/node_modules", "source": "install", "install": "cd web && npm ci"}
+]

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib-toolchain.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+toolchain_blocked || exit $?
 # Gate: stdout is the supervised protocol pipe. The only stdout writer in supervised mode is
 # writeProtocolFrame in server/host/index.ts, and it uses process.stdout.write. A console.log in
 # server/ non-test source can reach the native supervisor's stdout after the ready frame, which

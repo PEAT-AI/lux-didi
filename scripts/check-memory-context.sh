@@ -8,32 +8,11 @@
 # never runs a broad unrelated ring.
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib-toolchain.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-
-# The lane worktree carries no installed deps. Materialize ignored node_modules
-# DIRECTORY trees that symlink each entry of an accepted sibling's installed deps
-# read-only. `node_modules/` is already gitignored by server/.gitignore and
-# web/.gitignore, so this pollutes no tracked file, adds no shared exclude rule,
-# and touches no other worktree.
-if [[ ! -x "$root/server/node_modules/.bin/tsc" ]]; then
-  for cand in "$root/../lux-didi-connected" "$root/../lux-didi-service"; do
-    if [[ -x "$cand/server/node_modules/.bin/tsc" && -d "$cand/web/node_modules" ]]; then
-      for pkg in server web; do
-        mkdir -p "$root/$pkg/node_modules"
-        for entry in "$cand/$pkg/node_modules"/* "$cand/$pkg/node_modules"/.[!.]*; do
-          [[ -e "$entry" ]] || continue
-          ln -sfn "$entry" "$root/$pkg/node_modules/$(basename "$entry")"
-        done
-      done
-      break
-    fi
-  done
-fi
-if [[ ! -x "$root/server/node_modules/.bin/tsc" ]]; then
-  echo 'check-memory-context BLOCKED: installed SERVICE TypeScript required' >&2; exit 2
-fi
+toolchain_blocked || exit $?
 
 git diff --check
 bash scripts/run-local.sh --build-only

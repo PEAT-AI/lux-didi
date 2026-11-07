@@ -24,3 +24,9 @@ export const LUX_PARAMS = {
   sourceInsightId: 'source_insight_id', targetInsightId: 'target_insight_id', verdict: 'verdict',
   provenanceSource: 'provenance_source', note: 'note',
 } as const;
+
+/** Historical migration 12 only. Its executed SQL bytes must not change. */
+export const LUX_LEGACY_CREATE = 'save_insight';
+
+/** Retired wire spellings are lint inputs, never compatibility routes. */
+export const LUX_RETIRED_TOOLS = ['search_knowledge', 'list_revisions', 'sync_context', 'pipeline_status', 'link_insight', 'review_links', 'review_contradictions', 'delete_insight', 'restore_insight', 'promote_insight', 'restore_revision'] as const;

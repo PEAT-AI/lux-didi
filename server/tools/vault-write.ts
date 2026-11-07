@@ -49,7 +49,7 @@ export interface VaultSaveArgs { readonly content: string; readonly title: strin
 /** One MCP write attempt. The client owns the wire; nothing above it retries. */
 export interface VaultWriteResult {
   disposition: string;
-  insight_id?: number;
+  [P.insightId]?: number;
   candidates?: unknown[];
   reason?: string;
   [key: string]: unknown;
@@ -116,7 +116,7 @@ export const validInsightId = (value: unknown): value is string => typeof value 
 
 function receiptFromRow(row: SQLRow): VaultReceipt {
   const state = String(row['state']) as VaultState;
-  const insightId = row['insight_id'] === null || row['insight_id'] === undefined ? undefined : String(row['insight_id']);
+  const insightId = row[P.insightId] === null || row[P.insightId] === undefined ? undefined : String(row[P.insightId]);
   if (state === 'confirmed' && validInsightId(insightId)) return { saved: true, insightId };
   if (state === 'failed') return refusal(row['code'] === 'vault_unavailable' ? 'vault_unavailable' : 'write_failed');
   return refusal('outcome_unknown');
@@ -185,7 +185,7 @@ export class VaultWriter {
   }): Promise<VaultWriteResult> {
     const emit = (receipt: VaultWriteResult): VaultWriteResult => {
       this.#log({ event: 'vault_write', tool: (LUX_WRITE_TOOLS as readonly string[]).includes(input.operation) ? input.operation : input.tool,
-        outcome: receipt.disposition, insight_id_prefix: Number.isSafeInteger(receipt.insight_id) ? String(receipt.insight_id).slice(0, 8) : '' });
+        outcome: receipt.disposition, insight_id_prefix: Number.isSafeInteger(receipt[P.insightId]) ? String(receipt[P.insightId]).slice(0, 8) : '' });
       return receipt;
     };
     const refuse = (reason: string): VaultWriteResult => ({ disposition: 'refused', reason });
@@ -236,8 +236,8 @@ export class VaultWriter {
     catch { receipt = refuse('outcome_unknown'); }
     const successful = ['created', 'duplicate_of', 'updated', 'linked', 'recorded'].includes(receipt.disposition);
     const uncertain = receipt.reason === 'outcome_unknown';
-    const insightId = receipt.insight_id ?? payload[P.insightId] ?? payload[P.sourceInsightId];
-    this.#store.transaction(tx => tx.run("UPDATE vault_writes SET state=?,insight_id=?,code=?,latency_ms=?,settled_at=? WHERE op_id=? AND state='dispatched'", [
+    const insightId = receipt[P.insightId] ?? payload[P.insightId] ?? payload[P.sourceInsightId];
+    this.#store.transaction(tx => tx.run(`UPDATE vault_writes SET state=?,${P.insightId}=?,code=?,latency_ms=?,settled_at=? WHERE op_id=? AND state='dispatched'`, [
       successful ? 'confirmed' : uncertain ? 'uncertain' : 'failed', Number.isSafeInteger(insightId) ? String(insightId) : null,
       successful ? null : uncertain ? 'outcome_unknown' : 'write_failed', Math.max(0, this.#now() - started), this.#now(), claim.opId,
     ]));
@@ -262,7 +262,7 @@ export class VaultWriter {
 
   async dispatch(claim: { opId: string; content: string; title: string }): Promise<VaultReceipt> {
     const sourceRow = this.#store.transaction(tx => tx.get('SELECT live_session_id,utterance_id,created_at FROM vault_writes WHERE op_id=?', [claim.opId]));
-    const source = sourceRow ? { source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: String(sourceRow.live_session_id), turn_start_id: String(sourceRow.utterance_id), turn_end_id: String(sourceRow.utterance_id), spoken_at: new Date(Number(sourceRow.created_at)).toISOString() }, idempotency_key: claim.opId } : undefined;
+    const source = sourceRow ? { [P.sourceKind]: 'voice_call', [P.sourceRef]: { app: 'lux-didi', session_id: String(sourceRow.live_session_id), turn_start_id: String(sourceRow.utterance_id), turn_end_id: String(sourceRow.utterance_id), spoken_at: new Date(Number(sourceRow.created_at)).toISOString() }, [P.idempotencyKey]: claim.opId } : undefined;
 
     const started = this.#now();
     let result: VaultTransportResult;
@@ -290,7 +290,7 @@ export class VaultWriter {
     const state: VaultState = result.outcome === 'inserted' ? 'confirmed' : result.outcome === 'failed' || result.outcome === 'unavailable' ? 'failed' : result.outcome === 'duplicate' ? 'failed' : 'uncertain';
     const insightId = result.outcome === 'inserted' ? result.insightId : undefined;
     const code = result.outcome === 'inserted' ? undefined : result.outcome === 'unavailable' ? 'vault_unavailable' : result.outcome === 'failed' || result.outcome === 'duplicate' ? 'write_failed' : 'outcome_unknown';
-    this.#store.transaction(tx => tx.run('UPDATE vault_writes SET state=?,insight_id=?,code=?,latency_ms=?,settled_at=? WHERE op_id=? AND state=?',
+    this.#store.transaction(tx => tx.run(`UPDATE vault_writes SET state=?,${P.insightId}=?,code=?,latency_ms=?,settled_at=? WHERE op_id=? AND state=?`,
       [state, insightId ?? null, code ?? null, latencyMs, this.#now(), opId, 'dispatched']));
     const receipt = state === 'confirmed' && insightId ? { saved: true, insightId } : refusal(code === 'vault_unavailable' ? 'vault_unavailable' : code === 'write_failed' ? 'write_failed' : 'outcome_unknown');
     this.#attempt(receipt, latencyMs);

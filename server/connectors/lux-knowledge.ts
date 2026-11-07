@@ -59,3 +59,17 @@ export function createLuxKnowledgeReader({ port, registry, config }: LuxKnowledg
     },
   };
 }
+
+/** MCP envelope decoding only: the complete search header remains opaque text to the host. */
+export function renderLuxText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const root = value as Record<string, unknown>;
+    if (Array.isArray(root.content)) {
+      const text = root.content.filter((part): part is { type: 'text'; text: string } => Boolean(part && typeof part === 'object' && (part as { type?: unknown }).type === 'text' && typeof (part as { text?: unknown }).text === 'string')).map(part => part.text);
+      if (text.length) return text.join('\n');
+    }
+    if (root.structuredContent !== undefined) return JSON.stringify(root.structuredContent);
+  }
+  return JSON.stringify(value);
+}

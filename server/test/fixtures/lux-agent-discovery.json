@@ -1,0 +1,714 @@
+{
+  "tools": [
+    {
+      "name": "search_insights",
+      "description": "Search synthetic knowledge",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "project_filter": {
+            "type": "string"
+          },
+          "project_boost": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "fast",
+              "full"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "deadline_ms": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "snippet_chars": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "meeting_date_from": {
+            "type": "string"
+          },
+          "meeting_date_to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_insight",
+      "description": "Read known synthetic insight ids",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "insight_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minItems": 1
+          },
+          "include_links": {
+            "type": "boolean"
+          },
+          "raw": {
+            "type": "boolean"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "insight_ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_insights",
+      "description": "List synthetic insights",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "include_sensitive": {
+            "type": "boolean"
+          },
+          "project_filter": {
+            "type": "string"
+          },
+          "insight_status": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "voice_call",
+              "agent_session",
+              "meeting",
+              "manual"
+            ]
+          },
+          "follow_up_state": {
+            "type": "string",
+            "enum": [
+              "none",
+              "open",
+              "closed"
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_meetings",
+      "description": "List synthetic meetings",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "participant": {
+            "type": "string"
+          },
+          "meeting_date_from": {
+            "type": "string"
+          },
+          "meeting_date_to": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_meeting",
+      "description": "Read a synthetic meeting",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "meeting_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "include_sensitive": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "meeting_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_context_digest",
+      "description": "Read a synthetic context digest",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_filter": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_insight_revisions",
+      "description": "List synthetic revisions",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "insight_id": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "insight_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_pipeline_status",
+      "description": "Read synthetic pipeline status",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "lint_knowledge",
+      "description": "Read synthetic knowledge health",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_filter": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_insight",
+      "description": "Create a durable insight with idempotency and candidate receipts",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "insight_title": {
+            "type": "string"
+          },
+          "insight_type": {
+            "type": "string",
+            "enum": [
+              "TECHNICAL_DECISION",
+              "BUG_GOTCHA",
+              "PATTERN",
+              "MEETING",
+              "USER_PREFERENCE",
+              "PROJECT_CONSTRAINT",
+              "UNCATEGORIZED"
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "voice_call",
+              "agent_session",
+              "meeting",
+              "manual"
+            ]
+          },
+          "source_ref": {
+            "type": "object",
+            "properties": {
+              "app": {
+                "type": "string"
+              },
+              "session_id": {
+                "type": "string"
+              },
+              "turn_start_id": {
+                "type": "string"
+              },
+              "turn_end_id": {
+                "type": "string"
+              },
+              "spoken_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "session_id"
+            ],
+            "additionalProperties": false
+          },
+          "quote": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "follow_up_state": {
+            "type": "string",
+            "enum": [
+              "none",
+              "open",
+              "closed"
+            ]
+          }
+        },
+        "required": [
+          "content",
+          "insight_title",
+          "insight_type"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_insight",
+      "description": "Update an insight and retain its revision",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "insight_title": {
+            "type": "string"
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "voice_call",
+              "agent_session",
+              "meeting",
+              "manual"
+            ]
+          },
+          "source_ref": {
+            "type": "object",
+            "properties": {
+              "app": {
+                "type": "string"
+              },
+              "session_id": {
+                "type": "string"
+              },
+              "turn_start_id": {
+                "type": "string"
+              },
+              "turn_end_id": {
+                "type": "string"
+              },
+              "spoken_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "session_id"
+            ],
+            "additionalProperties": false
+          },
+          "follow_up_state": {
+            "type": "string",
+            "enum": [
+              "none",
+              "open",
+              "closed"
+            ]
+          },
+          "insight_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "revision_reason": {
+            "type": "string"
+          },
+          "expected_updated_at": {
+            "type": "string"
+          },
+          "expected_revision_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "prepend": {
+            "type": "string"
+          },
+          "append": {
+            "type": "string"
+          },
+          "allow_shrink": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "insight_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_insight_link",
+      "description": "Create a link to another insight",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source_insight_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "target_insight_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "relation_type": {
+            "type": "string"
+          },
+          "provenance_source": {
+            "type": "string",
+            "enum": [
+              "MANUAL",
+              "TRANSCRIPT",
+              "MEETING",
+              "LINT",
+              "MIGRATION",
+              "ADJUDICATOR"
+            ]
+          },
+          "link_status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_insight_id",
+          "target_insight_id",
+          "relation_type",
+          "provenance_source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "record_search_feedback",
+      "description": "Record search feedback",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "insight_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "useful",
+              "wrong",
+              "stale",
+              "irrelevant"
+            ]
+          },
+          "note": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "query",
+          "insight_id",
+          "verdict"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "archive_insight",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "unarchive_insight",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "purge_insight",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "revert_insight",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "remove_insight_expiry",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "checkpoint",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_link_proposals",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_contradiction_cases",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "resolve_contradiction_case",
+      "description": "Owner-only operation",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

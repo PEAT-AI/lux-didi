@@ -147,7 +147,8 @@ export interface LuxKnowledgeOptions {
   config: LuxKnowledgeConfig;
 }
 
-const ELIGIBLE: ReadonlySet<string> = new Set<string>(LUX_KNOWLEDGE_TOOLS);
+/** The lookup tools whose arguments this module shapes; admission is `luxToolAdmitted`, not a set. */
+const PINNED_LOOKUP_TOOLS: ReadonlySet<string> = new Set<string>(LUX_LOOKUP_TOOLS);
 
 /** Distinguishes the adapter's non-completed outcomes from a completed protocol result. */
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
@@ -219,8 +220,6 @@ interface Settings extends Budgets {
   endpointId: string; account: string; resource: string; generation: number;
 }
 
-/** The pinned lookup tools: their arguments are shaped here, never taken from the caller. */
-const PINNED_LOOKUPS: ReadonlySet<string> = new Set(['list_meetings', 'get_meeting', 'list_insights']);
 
 function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: LuxKnowledgeSearchInput } | { ok: false; reason: string } {
   const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs', 'project', 'projectHint', 'snippetChars', 'meetingDateFrom', 'meetingDateTo']);
@@ -343,7 +342,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       const denied = preflight(registry, settings, tool);
       if (denied) return { state: 'refused', reason: denied };
       // Ruling M21-R1: a widened read tool takes exactly its own declared arguments.
-      if (!PINNED_LOOKUPS.has(tool)) return dispatch(tool, { ...args }, signal);
+      if (!PINNED_LOOKUP_TOOLS.has(tool)) return dispatch(tool, { ...args }, signal);
       return dispatch(tool, { limit: Math.min(20, settings.maxSearchLimit), ...args, ...(tool === 'list_meetings' ? {} : { include_sensitive: settings.includeSensitive }) }, signal);
     },
     async search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {
@@ -396,7 +395,7 @@ export function validateKnowledgeLookup(tool: string, args: Record<string, unkno
     : tool === 'get_meeting' ? ['meeting_id', 'limit', 'offset']
     : tool === 'list_insights' ? ['project', 'status', 'count_only', 'limit', 'offset', 'participant', 'meeting_date_from', 'meeting_date_to'] : [];
   // Ruling M21-R1: a widened read tool keeps the bounds, not the pinned key list.
-  if (!keys.length && !ELIGIBLE.has(tool)) return boundedReadArguments(args);
+  if (!keys.length) return boundedReadArguments(args);
   if (!keys.length || Object.keys(args).some(key => !keys.includes(key))) return false;
   if (tool === 'get_meeting' && (typeof args.meeting_id !== 'string' || !args.meeting_id.trim())) return false;
   for (const [key, value] of Object.entries(args)) {

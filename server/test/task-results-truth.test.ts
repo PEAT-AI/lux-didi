@@ -44,10 +44,11 @@ test('two opens and one failed search read as mixed, never as a total failure or
     ] };
   } });
   assert.equal(result.status, 'complete');
-  assert.match(result.text, /^Actions: read_mail succeeded \(2\); search_knowledge failed \(not_found\)\./);
   assert.match(result.text, /Both pages are open/);
   assert.doesNotMatch(result.text, /nothing worked|all failed/i);
   const commentary = resultCommentary(result);
+  assert.match(commentary.content, /^Actions: read_mail succeeded \(2\); search_knowledge failed \(not_found\)\./);
+  assert.match(commentary.content, /Both pages are open/);
   assert.equal(commentary.kind, 'partial', 'mixed work is partial, never a total failure and never a plain result');
   assert.equal(commentary.what_failed, 'search_knowledge');
 });
@@ -66,8 +67,8 @@ test('a provider outage is retried once and the answer keeps its verified action
     } });
     assert.equal(calls, 3, 'one provider call, one bounded retry');
     assert.equal(result.status, 'complete');
-    assert.match(result.text, /^Actions: read_mail succeeded\./);
     assert.match(result.text, /synthetic page is open/);
+    assert.match(resultCommentary(result).content, /^Actions: read_mail succeeded\./);
     const retry = events.find(event => event.event === 'task_inference_retry');
     assert.equal(retry?.reason_code, 'provider_unavailable');
   } finally { detach(); }
@@ -104,7 +105,8 @@ test('a call that ends while its task is open settles the persisted task to a te
     runtime.close();
     const answer = await result;
     assert.equal(answer.status, 'cancelled');
-    assert.match(answer.text, /^Actions: .*still running/);
+    assert.match(resultCommentary(answer).content, /^Actions: read_mail still running; search_knowledge still running\./,
+      'a call that never answered is named as running, never as done and never as failed');
     assert.equal(row()?.status, 'cancelled', 'the row of a task whose call ended is terminal, never running');
     assert.match(String(store.transaction(tx => tx.get('SELECT failure FROM tasks'))?.failure), /cancelled/);
   } finally { store.close(); rmSync(directory, { recursive: true }); }

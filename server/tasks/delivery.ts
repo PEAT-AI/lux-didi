@@ -1,4 +1,5 @@
 import type { Delivery, RevisionIdentity, Said } from './controller.js';
+import { outcomeLine, type ActionOutcome } from './results.js';
 import type { WorkerResult } from './worker.js';
 /** Acceptance confirms timeline receipt, not wording or audibility. */
 export type DeliveryState = 'sent' | 'accepted' | 'retry' | 'undelivered';
@@ -9,6 +10,8 @@ export interface Commentary {
   kind: CommentaryKind; exact: string[]; content: string; cause: string; what_failed: string; next_step: string;
 }
 export type CommentaryAnswer = WorkerResult & {
+  /** One row per dispatched action, from receipts: the voice reads what succeeded, failed or is still running. */
+  actions?: ActionOutcome[];
   exact?: string[];
   failure?: { stage: string; reason_code: string; detail: string };
 };
@@ -49,7 +52,8 @@ export function resultCommentary(answer: CommentaryAnswer): Commentary {
   return {
     kind: answer.failure ? (mixed ? 'partial' : 'failure') : noAction ? 'no_action' : mixed || answer.status === 'incomplete' ? 'partial' : 'result',
     exact: noAction ? [] : answer.exact ?? extractExact(answer.text),
-    content: noAction ? '' : answer.text,
+    // The host line goes first: the voice hears what the receipts say before the helper's own account.
+    content: noAction ? '' : [outcomeLine(answer.actions ?? []), answer.text].filter(Boolean).join('\n'),
     cause: noAction ? '' : failure?.reason_code ?? answer.failures?.[0]?.reason_code ?? failed?.reason_code ?? '',
     what_failed: noAction ? '' : failure ? facts?.what_failed ?? "the helper's model request" : answer.failures?.[0]?.tool ?? '',
     next_step: noAction ? '' : failed?.repair || facts?.next_step || '',

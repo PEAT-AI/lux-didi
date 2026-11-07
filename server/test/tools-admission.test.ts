@@ -146,6 +146,8 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   probe.close(); assert.equal(completed.status, 'completed');
   h.revealAll(); await initial.refresh();
   const expanded = initial;
+  const rediscovered = initial.owner.taskBindings(pair).flatMap(binding => binding.reader.discovery?.() ?? []);
+  assert.ok(rediscovered.some(tool => tool.name === 'search_insights'), 'same-schema refresh must retain the current lux read grant');
   const beforePair = new Map(h.counts);
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
@@ -239,7 +241,7 @@ test('Live knowledge SSE response completes with one result and no unclassified 
   assert.equal(rows.length, 1); assert.equal(rows[0]!.state, 'completed');
   const saved = JSON.parse(String(rows[0]!.result_json));
   assert.equal(saved.response.status, 'ok', 'semantic vault candidates are successful retrievals');
-  assert.match(saved.response.text, /Synthetic result/); assert.equal(saved.response.references[0].title, 'Synthetic result', 'search evidence remains distinct from a full read');
+  assert.match(saved.response.text, /Synthetic result/); assert.equal(saved.response.references[0].id, 'search_insights', 'the opaque search response is attributed to the discovered tool, not parsed into a body read');
   const responses = observed.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(responses.length, 1); assert.equal(responses[0]!['text'], saved.response.text);
   assert(!JSON.stringify(responses).includes('synthetic-private-unclassified'));

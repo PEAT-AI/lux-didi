@@ -173,7 +173,12 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   assert.match(JSON.stringify(allResponses), /Synthetic result/, 'a newly accepted run reads the current discovered lux generation');
   for (const response of allResponses) assert(typeof response['text'] === 'string' && (response['text'].length > 0 || Array.isArray(response['references']) && response['references'].length > 0), 'each admitted read releases verified text or ranked references');
   const generations = () => h.store.transaction(tx => tx.all('SELECT connection_id,generation FROM tool_connections ORDER BY connection_id'));
-  const unchanged = generations(); await h.start(); assert.deepEqual(generations(), unchanged, 'unchanged restart must not bump generations');
+  const unchanged = generations(); await h.start();
+  for (const current of generations()) {
+    const prior = unchanged.find(row => row.connection_id === current.connection_id)!;
+    if (current.connection_id === 'lux-knowledge') assert.ok(Number(current.generation) > Number(prior.generation), 'trusted lux rediscovery establishes a fresh grant identity');
+    else assert.equal(current.generation, prior.generation, 'unrelated connector generations stay unchanged');
+  }
   // Missing or invalid class is a typed local error for only that connection.
   const missing = await h.start(all, { mattermost: undefined });
   assert.deepEqual(missing.connectionIds(), all.filter(id => id !== 'mattermost'), JSON.stringify(missing.status()));

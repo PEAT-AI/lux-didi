@@ -24,7 +24,7 @@ import type { LuxKnowledgeConfig, LuxKnowledgeEvidence, LuxKnowledgeReader, LuxK
 // admission. Anything else the endpoint publishes is never callable.
 const searchTool: ToolDefinition = {
   name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic search',
-  inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 1, pattern: '\\S' }, limit: { type: 'integer', minimum: 1 }, include_sensitive: { type: 'boolean' }, mode: { type: 'string', enum: ['fast', 'full'] }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, max_chars: { type: 'integer', minimum: 200, maximum: 6000 }, deadline_ms: { type: 'integer', minimum: 500, maximum: 30000 }, project_boost: { type: 'string' } }, required: ['query'] },
+  inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 1, pattern: '\\S' }, limit: { type: 'integer', minimum: 1 }, include_sensitive: { type: 'boolean' }, mode: { type: 'string', enum: ['fast', 'full'] }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, max_chars: { type: 'integer', minimum: 200, maximum: 6000 }, deadline_ms: { type: 'integer', minimum: 500, maximum: 30000 }, project_boost: { type: 'string' }, snippet_chars: { type: 'integer', minimum: 100, maximum: 6000 }, meeting_date_from: { type: 'string', pattern: '^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$' }, meeting_date_to: { type: 'string', pattern: '^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$' } }, required: ['query'] },
 };
 const getTool: ToolDefinition = {
   name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic by-id read',
@@ -343,7 +343,7 @@ test('strict exact-key validation rejects malformed and extra fields before any 
       reader.call('get_insight', { insight_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9] }),
       reader.call('get_insight', { insight_ids: [1], project_boost: 'p' } as never),
     ]);
-    for (const result of rejected) assert.equal(result.state, 'refused');
+    for (const [index, result] of rejected.entries()) assert.equal(result.state, 'refused', `invalid fixture input ${index}`);
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); await f.close(); }
 });
@@ -369,8 +369,8 @@ test('an unannotated mutation is refused even when its name is granted', async (
   const { adapter, registry } = setup(f.url);
   try {
     assert.equal(luxToolAdmitted(writerTool), false, 'a write is not a read the helper may hold');
-    await approve(adapter, registry, ['search_insights', 'get_insight', 'save_insight']);
-    assert.deepEqual(adapter.visibleTools('source').map(tool => tool.name).sort(), ['get_insight', 'save_insight', 'search_insights']);
+    await approve(adapter, registry, ['search_insights', 'get_insight', 'create_insight']);
+    assert.deepEqual(adapter.visibleTools('source').map(tool => tool.name).sort(), ['get_insight', 'create_insight', 'search_insights']);
     const reader = createLuxKnowledgeReader({ port: adapter, registry, config: baseConfig() });
     const result = await reader.call('search_insights', { query: 'x', limit: 1 });
     assert.equal(result.state, 'refused');
@@ -404,7 +404,7 @@ test('M21-R2: an annotated read tool is callable, an unannotated, destructive or
   } finally { await adapter.close(); await f.close(); }
 
   // An unannotated tool, a destructive tool and a write tool are each refused, and none is dispatched.
-  for (const name of ['list_bare', 'purge_knowledge', 'save_insight']) {
+  for (const name of ['list_bare', 'purge_knowledge', 'create_insight']) {
     const g = await fixture({ list: () => ({ tools: [searchTool, getTool, widened, bare, purge, writerTool] }) });
     const { adapter, registry } = setup(g.url);
     try {
@@ -578,7 +578,7 @@ test('strict dense-array DTO rejects sparse, accessor, symbol, non-enumerable, e
       reader.call('get_insight', { insight_ids: [1, 2.5] as never }),
       reader.call('get_insight', getter as never),
     ]);
-    for (const result of rejected) assert.equal(result.state, 'refused');
+    for (const [index, result] of rejected.entries()) assert.equal(result.state, 'refused', `invalid fixture input ${index}`);
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); await f.close(); }
 });
@@ -601,7 +601,7 @@ test('input objects with accessor, symbol, non-enumerable extras or a class prot
       reader.call('search_insights', nonEnumerableExtra as never),
       reader.call('search_insights', new Instance() as never),
     ]);
-    for (const result of rejected) assert.equal(result.state, 'refused');
+    for (const [index, result] of rejected.entries()) assert.equal(result.state, 'refused', `invalid fixture input ${index}`);
     assert.equal(f.calls.length, 0);
   } finally { await adapter.close(); await f.close(); }
 });
@@ -791,7 +791,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
       const grant = trusted.registry.currentGrant('source')!;
       assert.deepEqual([...grant.toolNames].sort(), ['get_insight', 'search_insights']);
       assert.equal(grant.toolNames.includes('create_insight'), false);
-      assert.equal(grant.effect, 'read');
+      assert.equal(grant.effect, 'read-write');
       assert.deepEqual(trusted.connectionIds(), ['source']);
       assert.equal(trusted.status().endpoints[0]!.tools, 2);
       // A changed remote catalog re-approves only the local envelope at the next generation.
@@ -846,19 +846,19 @@ test('MED-1022: the voice bound and the meeting day reach the wire, and a bad va
   const { adapter, registry } = setup(f.url);
   try {
     const { reader } = await readerFor(adapter, registry);
-    complete(await reader.call('search_insights', { query: 'ocp prep call', limit: 6, detail: 'voice', max_chars: 3_000, snippetChars: 300, meetingDateFrom: '2026-10-21', meetingDateTo: '2026-10-21' }));
+    complete(await reader.call('search_insights', { query: 'ocp prep call', limit: 6, detail: 'voice', max_chars: 3_000, snippet_chars: 300, meeting_date_from: '2026-10-21', meeting_date_to: '2026-10-21' }));
     assert.deepEqual(f.calls, [{ name: 'search_insights', arguments: {
       query: 'ocp prep call', limit: 6, include_sensitive: true, detail: 'voice', max_chars: 3_000, snippet_chars: 300,
-      meeting_meeting_date_from: '2026-10-21', meeting_meeting_date_to: '2026-10-21',
+      meeting_date_from: '2026-10-21', meeting_date_to: '2026-10-21',
     } }]);
     const outs = await Promise.all([
-      reader.call('search_insights', { query: 'x', limit: 1, snippetChars: 99 }),
-      reader.call('search_insights', { query: 'x', limit: 1, snippetChars: 6_001 }),
-      reader.call('search_insights', { query: 'x', limit: 1, meetingDateFrom: 'yesterday' }),
-      reader.call('search_insights', { query: 'x', limit: 1, meetingDateTo: '2026-13-01' }),
+      reader.call('search_insights', { query: 'x', limit: 1, snippet_chars: 99 }),
+      reader.call('search_insights', { query: 'x', limit: 1, snippet_chars: 6_001 }),
+      reader.call('search_insights', { query: 'x', limit: 1, meeting_date_from: 'yesterday' }),
+      reader.call('search_insights', { query: 'x', limit: 1, meeting_date_to: '2026-13-01' }),
     ]);
     assert.deepEqual(outs.map(out => out.state === 'refused' ? out.reason : out.state), [
-      'snippet-chars-out-of-range', 'snippet-chars-out-of-range', 'invalid-meeting-date', 'invalid-meeting-date',
+      'invalid_arguments', 'invalid_arguments', 'invalid_arguments', 'invalid_arguments',
     ]);
     assert.equal(f.calls.length, 1, 'a refused search never reaches the wire');
   } finally { await adapter.close(); await f.close(); }

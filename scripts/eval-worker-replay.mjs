@@ -1,9 +1,10 @@
+import { LUX_TOOLS as L, LUX_PARAMS as P } from '../server/connectors/lux-names.ts';
 import { readFileSync } from 'node:fs';
 
 // Use the shipped public worker instruction, not a second replay-only prompt.
 const instructionSource = readFileSync(new URL('../server/tasks/instructions.ts', import.meta.url), 'utf8');
 export const WORKER_INSTRUCTIONS = JSON.parse(instructionSource.match(/export const WORKER_INSTRUCTIONS = ("[^\n]*");/)[1]);
-if (WORKER_INSTRUCTIONS.length !== 8701) throw new Error('Worker instruction length changed: expected 8701 characters');
+if (WORKER_INSTRUCTIONS.length !== 8708) throw new Error('Worker instruction length changed: expected 8708 characters');
 
 // Synthetic Gmail fixtures and semantics from probe/worker-replay-110.
 // Offline only. A canned replay does not establish real model behaviour.
@@ -387,19 +388,19 @@ export const VAULT_FAST_ROWS = Object.freeze([
 // The rule in the tool calls a real call would produce: fast at a small limit first, full only when
 // fast was empty or ambiguous, then the body read the fact comes from.
 export function vaultFastPlan(row) {
-  const calls = [{ name: 'search_insights', args: { query: row.owner_words, limit: 4, mode: 'fast' } }];
-  if (row.expect_full) calls.push({ name: 'search_insights', args: { query: row.owner_words, limit: 8 } });
-  if (row.record_id !== null) calls.push({ name: 'get_insight', args: { ids: [row.record_id] } });
+  const calls = [{ name: L.search, args: { query: row.owner_words, limit: 4, mode: 'fast' } }];
+  if (row.expect_full) calls.push({ name: L.search, args: { query: row.owner_words, limit: 8 } });
+  if (row.record_id !== null) calls.push({ name: L.get, args: { [P.insightIds]: [row.record_id] } });
   return calls;
 }
 
 export function scoreVaultFast(row, result = {}) {
   const calls = result.calls ?? [];
   const spoken = result.spoken ?? '';
-  const searches = calls.filter(call => call.name === 'search_insights' && call.args);
+  const searches = calls.filter(call => call.name === L.search && call.args);
   const fast = searches.findIndex(call => call.args.mode === 'fast');
   const full = searches.findIndex(call => call.args.mode !== 'fast');
-  const read = row.record_id === null ? undefined : calls.find(call => call.name === 'get_insight' && (call.args?.ids ?? []).includes(row.record_id));
+  const read = row.record_id === null ? undefined : calls.find(call => call.name === L.get && (call.args?.ids ?? []).includes(row.record_id));
   return {
     fast_first: fast !== -1 && searches[fast].args.limit <= 5,
     full_when_needed: row.expect_full ? full > fast : true,

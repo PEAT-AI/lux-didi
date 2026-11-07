@@ -332,18 +332,19 @@ test('C-REBUILD B: a held note is not dropped by the late window on its way back
 // #924/#802: about thirty percent of continuations go silent, and today recovery waits for the 8 s dead-air rung
 // or the 23 s rebuild. A silent continuation is reported by the adapter at its window and earns exactly one quiet
 // continuation input, once per turn, with the gap the owner sat through recorded. It is never a rebuild.
-test('#924/#802: a silent continuation is nudged once at the threshold and never twice in a turn', async t => {
+test('#924/#802: a silent continuation is nudged once, well before the rung, and never twice in a turn', async t => {
   const live = await openCall(t);
   await live.emit(ownerFinal('What did we decide about the bridge?'));
   await live.emit(toolCall('silent-1'));
-  await live.advance(1_500);
+  await live.advance(250);
   await live.emit(silentContinuation());
+  const spent = await drive(live, () => rungReceipts(live).length > 0, 3_000);
   assert.equal(rungReceipts(live).length, 1, 'one quiet nudge for one stuck continuation');
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the nudge is one continuation input, never a rebuild');
+  assert.ok(spent < AUDIBLE_DEBT_RUNG_MS, 'the nudge lands well before the 8 s dead-air rung');
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the nudge is one continuation input');
   assert.match(live.fake.texts.at(-1) ?? '', /lookup has finished/);
-  assert.ok(Number(rungReceipts(live)[0]?.elapsedMs) >= 1_500, 'the record carries the gap the owner sat through');
   await live.emit(silentContinuation());
-  await live.advance(1_000);
+  await drive(live, () => false, 1_000);
   assert.equal(rungReceipts(live).length, 1, 'a second report in the same turn never nudges again');
   assert.equal(live.fake.sessionsOpened, 1, 'a stuck response is never a rebuild');
 });
@@ -353,9 +354,11 @@ test('#924/#802: a silent continuation is nudged once at the threshold and never
 test('#820: sixty seconds of owner silence with nothing owed never rebuilds the session', async t => {
   const live = await openCall(t);
   await live.emit(ownerFinal('Thanks, that is all for now.'));
+  await live.emit(portEvent({ type: 'turnComplete' }));
   await live.advance(60_000);
   assert.equal(live.receipts.filter(record => record.event === 'live_rebuild').length, 0, 'silence is not a mute');
   assert.equal(live.fake.sessionsOpened, 1, 'the session the owner is holding is never replaced for silence');
+  assert.ok(removedRebuilds(live).length >= 1, 'the rebuild the watchdog wanted is dropped by the owner-turn rule');
   assert.ok(live.fake.texts.length <= live.sentTexts + 1, 'and nothing is injected behind the silence');
 });
 

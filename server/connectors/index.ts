@@ -4,7 +4,7 @@ import type { SourceDispatchEvidence, CompletedResult, McpPort, ResultScope, Sto
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
 import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
-import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
+import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS, LUX_LOOKUP_TOOLS, LUX_TOOLS, luxToolAdmitted } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { GOOGLE_FAMILIES, GOOGLE_HELPER_FAMILY, createGoogleReader, GOOGLE_TOOLS, GOOGLE_WRITE_TOOLS, type GcalCreateEventInput, type GcalDeleteEventInput, type GmailDraftInput } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
@@ -68,6 +68,12 @@ export interface ConnectorToolDeclaration {
 export interface ConnectorDescriptor {
   id: string;
   envelope: readonly string[];
+  /**
+   * Rulings M21-R2 and M21-R3: the one admission decision for a discovered tool of this connector.
+   * When present, this hook, not `envelope`, decides which published names are callable, so a
+   * release that adds a read tool needs no host change.
+   */
+  admits?(tool: { name: string; annotations?: unknown }): boolean;
   /** W1030: the write calls this connector may reach for the host's compose port, never for the model. */
   writeEnvelope?: readonly string[];
   /**
@@ -178,22 +184,23 @@ export function normalizeGetInsightArgs(args: unknown, maxGetIds: number): { arg
 const luxKnowledgeDescriptor: ConnectorDescriptor = {
   id: 'lux-knowledge',
   envelope: LUX_KNOWLEDGE_TOOLS,
+  admits: luxToolAdmitted,
   declarations(policy) {
     const bounds = policy.bounds;
     return [
-      ...(['list_meetings', 'get_meeting', 'list_insights'] as const).map(name => ({
-        name, description: name === 'list_meetings' ? 'Find meetings by participant and calendar dates.' : name === 'get_meeting' ? 'Read a known meeting and its entries.' : 'List vault entries with a true total; use for all or counts.',
+      ...LUX_LOOKUP_TOOLS.map(name => ({
+        name, description: name === LUX_TOOLS.meetings ? 'Find meetings by participant and calendar dates.' : name === LUX_TOOLS.meeting ? 'Read a known meeting and its entries.' : 'List vault entries with a true total; use for all or counts.',
         effect: 'read' as const, guidance: 'Use literal identifiers, calendar dates and bounded pages. Never use ranked search for complete sets.',
         parameters: { type: 'object', additionalProperties: false, properties: {
-          ...(name === 'list_meetings' ? { participant: { type: 'string' }, date_from: { type: 'string' }, date_to: { type: 'string' }, order: { type: 'string', enum: ['newest', 'oldest'] } }
-          : name === 'get_meeting' ? { meeting_id: { type: 'string' }, offset: { type: 'integer', minimum: 0 } }
+          ...(name === LUX_TOOLS.meetings ? { participant: { type: 'string' }, date_from: { type: 'string' }, date_to: { type: 'string' }, order: { type: 'string', enum: ['newest', 'oldest'] } }
+          : name === LUX_TOOLS.meeting ? { meeting_id: { type: 'string' }, offset: { type: 'integer', minimum: 0 } }
           : { project: { type: 'string' }, status: { type: 'string', enum: ['active', 'archived', 'all'] }, count_only: { type: 'boolean' }, offset: { type: 'integer', minimum: 0 }, participant: { type: 'string' }, meeting_date_from: { type: 'string' }, meeting_date_to: { type: 'string' } }),
           limit: { type: 'integer', minimum: 1, maximum: Math.min(50, bounds.maxSearchLimit) },
-        }, required: name === 'get_meeting' ? ['meeting_id'] : [] },
+        }, required: name === LUX_TOOLS.meeting ? ['meeting_id'] : [] },
         validate(args: unknown) { return isRecord(args) && validateKnowledgeLookup(name, args, bounds.maxSearchLimit); },
       })),
       {
-        name: 'search_knowledge',
+        name: LUX_TOOLS.search,
         description: 'Search the owner knowledge base. Pass 2 to 5 core terms, not a sentence; returns matching entry ids with short excerpts. Fetch an entry by id with get_insight for the full body. Returns the top 3 entries with 400-character bodies; call get_insight only to read one entry in full.',
         effect: 'read',
         parameters: {
@@ -229,7 +236,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
         },
       },
       {
-        name: 'get_insight',
+        name: LUX_TOOLS.get,
         description: 'Read full knowledge-base entries by id. Pass one to three entry ids from a knowledge search; requested ids are unverified input. Returns each whole entry.',
         effect: 'read',
         guidance: 'Needs ids as a list of entry ids from the knowledge search results, like {"ids": [89820, 89933]}.',
@@ -258,8 +265,8 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
       async call(tool, args, signal) {
         // Ruling M21-R1: any other read the endpoint publishes is a lookup with its own arguments;
         // only the two pinned reads take the connector's own validated shapes.
-        if (tool !== 'search_knowledge' && tool !== 'get_insight') return await reader.lookup(tool, args, signal);
-        if (tool !== 'search_knowledge') return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
+        if (tool !== LUX_TOOLS.search && tool !== LUX_TOOLS.get) return await reader.lookup(tool, args, signal);
+        if (tool !== LUX_TOOLS.search) return await reader.get(args as { ids: number[]; include_links?: boolean }, signal);
         // The declaration speaks the wire names; the reader takes the connector's own field names.
         const search = args as {
           query: string; limit: number; detail?: 'snippets' | 'bodies' | 'voice'; max_chars?: number; deadline_ms?: number;

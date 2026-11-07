@@ -3,11 +3,14 @@ import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, Stor
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 
 /**
- * The read tools this module declares for the model, in fixed order. Ruling M21-R2 moved admission
- * to the endpoint's own `readOnlyHint`, so this list no longer decides what is callable.
+ * The wire names this module speaks, in fixed order: the only place a lux tool name is written
+ * (ruling M21-R3). Admission is decided by `luxToolAdmitted` below, never by this list.
  */
-export const LUX_KNOWLEDGE_TOOLS = ['search_knowledge', 'get_insight', 'list_meetings', 'get_meeting', 'list_insights'] as const;
-export type LuxKnowledgeTool = (typeof LUX_KNOWLEDGE_TOOLS)[number];
+export const LUX_TOOLS = { search: 'search_knowledge', get: 'get_insight', meetings: 'list_meetings', meeting: 'get_meeting', insights: 'list_insights' } as const;
+export const LUX_KNOWLEDGE_TOOLS = [LUX_TOOLS.search, LUX_TOOLS.get, LUX_TOOLS.meetings, LUX_TOOLS.meeting, LUX_TOOLS.insights] as const;
+/** The bounded lookup tools, whose arguments this module shapes itself. */
+export const LUX_LOOKUP_TOOLS = [LUX_TOOLS.meetings, LUX_TOOLS.meeting, LUX_TOOLS.insights] as const;
+export type LuxKnowledgeTool = (typeof LUX_TOOLS)[keyof typeof LUX_TOOLS];
 
 /**
  * M21: the lux-knowledge endpoint is the owner's own first-party local service, so a release that
@@ -18,14 +21,16 @@ export function isTrustedRediscovery(connector: string): boolean {
 }
 
 /**
- * Ruling M21-R2: the callable set is exactly the tools the endpoint's own annotation declares read,
- * so LK5's `readOnlyHint: true` is the whole admission. An unannotated, destructive or write tool is
- * never callable, and the old explicit-list admission is gone (no backward compatibility).
+ * Rulings M21-R2 and M21-R3: the one admission policy hook for a discovered lux tool, and the only
+ * place the decision is made. LK5's own `readOnlyHint: true` is the whole admission; everything else
+ * is refused by default, so the next release's new read tool needs no host change. M23 plugs its
+ * write policy in here rather than anywhere else: no other module refuses a lux tool by name.
  */
-export function luxReadTool(tool: { name: string; annotations?: unknown }): boolean {
+export function luxToolAdmitted(tool: { name: string; annotations?: unknown }): boolean {
   const annotations = tool.annotations;
   if (annotations === null || typeof annotations !== 'object' || Array.isArray(annotations)) return false;
   const record = annotations as Record<string, unknown>;
+  // LK5 marks purge destructive; a destructive tool is not a read even beside readOnlyHint true.
   if (record['destructiveHint'] === true) return false;
   return record['readOnlyHint'] === true;
 }
@@ -278,7 +283,7 @@ function preflight(registry: McpRegistry, settings: Settings, tool: string): str
   if (grant.account !== settings.account || grant.resource !== settings.resource) return 'grant-scope-mismatch';
   const visible = registry.visibleTools(settings.endpointId);
   // Ruling M21-R1: a granted name the endpoint publishes as a write is a refused grant.
-  if (visible.some(definition => !luxReadTool(definition))) return 'ineligible-tool-granted';
+  if (visible.some(definition => !luxToolAdmitted(definition))) return 'ineligible-tool-granted';
   if (!visible.some(definition => definition.name === tool)) return 'required-definition-absent';
   return undefined;
 }

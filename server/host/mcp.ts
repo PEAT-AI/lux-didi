@@ -9,7 +9,7 @@ import type { ApprovalRefusalReason } from './events.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS, type McpTransportState } from '../adapters/mcp/adapter.js';
-import { isTrustedRediscovery, luxReadTool } from '../connectors/lux-knowledge.js';
+import { isTrustedRediscovery, luxToolAdmitted } from '../connectors/lux-knowledge.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongoosePublishedTool, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -128,7 +128,7 @@ export interface McpRuntimeComposition {
 }
 /** The local read candidate list per connector; the Mongoose classifier narrows it at discovery. */
 /** Connectors that classify one discovered tool themselves, instead of trusting a static name list. */
-const readClassifiers: Readonly<Record<string, (tool: ToolDefinition) => boolean>> = { mongoose: mongooseReadOnly, 'lux-knowledge': luxReadTool };
+const readClassifiers: Readonly<Record<string, (tool: ToolDefinition) => boolean>> = { mongoose: mongooseReadOnly, 'lux-knowledge': luxToolAdmitted };
 /**
  * A registry that also admits exactly one bounded identity probe per endpoint before any read
  * grant exists: the connector, its tool and its generation, never a model-facing tool. The

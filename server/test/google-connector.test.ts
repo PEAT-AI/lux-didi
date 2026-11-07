@@ -1243,11 +1243,13 @@ test('two selected calendars out of three are read with declared helper argument
 });
 
 // W1030: the two write families the helper publishes at 0.2.0 (GW-R4), recorded beside the read families.
+// 10.21/RSVP-R1: calendar_respond_event is the one lockstep entry, declared by PEAT-AI/lux-cli#305 ahead of
+// the release, so the calendar_write list carries it here and nowhere else.
 test('W1030: the recorded tools/list carries both write families with their read-only identity probe', () => {
   const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
   const names = (family: string) => recording.families[family].tools.map((tool: { name: string }) => tool.name) as string[];
   assert.deepEqual(names('gmail_draft'), ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft']);
-  assert.deepEqual(names('calendar_write'), ['google_identity', 'calendar_create_event', 'calendar_delete_event']);
+  assert.deepEqual(names('calendar_write'), ['google_identity', 'calendar_create_event', 'calendar_delete_event', 'calendar_respond_event']);
   for (const family of ['gmail_draft', 'calendar_write']) {
     assert.ok(names(family).includes('google_identity'), `${family} publishes the identity probe`);
     for (const name of names(family)) assert.ok(GOOGLE_WRITE_TOOLS.includes(name as never), `${name} is in the closed write envelope`);

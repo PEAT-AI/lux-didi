@@ -416,6 +416,39 @@
             ],
             "additionalProperties": false
           }
+        },
+        {
+          "name": "calendar_respond_event",
+          "contract": "lockstep: PEAT-AI/lux-cli#305 adds this tool to the google-mcp calendar_write family; not yet in a released helper, so this entry is the declared contract rather than a recording",
+          "description": "Set the owner's own response status on one event he was invited to; the full attendee list is returned with only the caller's row changed.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "response_status": {
+                "type": "string",
+                "enum": [
+                  "accepted",
+                  "declined",
+                  "tentative"
+                ]
+              },
+              "note": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 8000
+              }
+            },
+            "required": [
+              "event_id",
+              "response_status"
+            ],
+            "additionalProperties": false
+          }
         }
       ]
     }

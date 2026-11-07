@@ -1620,7 +1620,9 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
       await host.close();
       t.mock.timers.reset();
     }
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  // The host's log stream can flush once more just after close, so removing the directory used to race it
+  // (ENOTEMPTY on logs/). Retrying the removal is teardown hygiene, not a relaxed assertion.
+  } finally { await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 });
 
 // C-CONNWAIT: synthetic endpoints only; the host clock never waits in real time.

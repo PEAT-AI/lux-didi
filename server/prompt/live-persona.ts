@@ -266,15 +266,29 @@ export function ownerProfileSections(owner: OwnerProfileSnapshot): readonly Owne
  */
 export function peopleRosterWithin(room: number): string | undefined { return peopleSectionWithin(room); }
 
-/** M20-R1: the last-resort clip. Whole trailing paragraphs come off until at least `chars` are gone, never
- *  mid-paragraph, and one paragraph always stays so an authored section is shortened, never emptied.
- *  `undefined` means the text is already one paragraph and cannot be cut at a boundary. */
+/** M20-R1/M20-R3: the last-resort clip. Whole trailing units come off at the widest boundary that still has one
+ *  to give, so authored prose always yields: paragraphs, then sentences, then words. One unit always stays, so a
+ *  section is shortened and never emptied, and `undefined` means nothing is left to cut at that boundary. */
+function clipTrailingUnits(text: string, boundary: RegExp, keepPunctuation: number, chars: number): string | undefined {
+  const cuts = [...text.matchAll(boundary)].flatMap(match => match.index === undefined ? [] : [match.index + keepPunctuation]);
+  for (let index = cuts.length - 1; index >= 0; index -= 1) {
+    const at = cuts[index]!;
+    if (at > 0 && text.length - at >= chars) return text.slice(0, at).trimEnd();
+  }
+  return undefined;
+}
+
+/** Paragraphs first, then sentences, then words: the ladder the ruling names, one call each. */
 function clipTrailingParagraphs(text: string, chars: number): string | undefined {
-  const paragraphs = text.split(/\n\s*\n/u);
-  if (paragraphs.length < 2) return undefined;
-  let cut = 0;
-  while (paragraphs.length > 1 && cut < chars) cut += (paragraphs.pop() as string).length + 2;
-  return paragraphs.join('\n\n');
+  return clipTrailingUnits(text, /\n\s*\n/gu, 0, chars);
+}
+
+function clipTrailingSentences(text: string, chars: number): string | undefined {
+  return clipTrailingUnits(text, /[.!?]["')\]]?\s+/gu, 1, chars);
+}
+
+function clipTrailingWords(text: string, chars: number): string | undefined {
+  return clipTrailingUnits(text, /\s+/gu, 0, chars);
 }
 
 /**
@@ -718,8 +732,9 @@ export function composeLiveSessionInstruction(input: {
     const current = style;
     if (current === undefined) break;
     const overrun = rendered.text.length - Math.floor(CONTEXT_BUDGET.hard * ESTIMATED_CHARS_PER_TOKEN);
-    const cut = clipTrailingParagraphs(current, Math.max(1, overrun));
-    if (cut === undefined) break;
+    const need = Math.max(1, overrun);
+    const cut = clipTrailingParagraphs(current, need) ?? clipTrailingSentences(current, need) ?? clipTrailingWords(current, need);
+    if (cut === undefined || cut === current) break;
     styleClippedChars += current.length - cut.length;
     style = cut;
     rendered = render();

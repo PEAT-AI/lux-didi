@@ -6,7 +6,7 @@ import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import {
   LIVE_MUTE_PICKUP, LIVE_RECOVERY_PICKUP, NAYA_LIVE_BASE, composeLiveSessionInstruction,
 } from '../prompt/live-persona.js';
-import { APPEND_TOKEN_LIMIT, SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT, SEED_TOKEN_PROXY_LIMIT, alarmSessionInstructions, condenseSeed, fitSeedTurns } from '../live/index.js';
+import { APPEND_TOKEN_LIMIT, SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT, SEED_TOKEN_PROXY_LIMIT, alarmAppendText, alarmSessionInstructions, condenseSeed, fitSeedTurns } from '../live/index.js';
 
 /**
  * The provider's documented live-session ceilings, quoted from its own guides and never from our estimates:
@@ -134,14 +134,33 @@ test('M20-R1: the clip never touches the pinned lore or the memory block, nor th
     `identity keeps its floor: ${estimatedTokens(identityOf(clipped))} estimated tokens`);
 });
 
+test('M20-R3: a one-paragraph prose owner style over hard admission is cut at a sentence, not refused', () => {
+  const records = memoryRecords(12);
+  const prose = Array.from({ length: 900 }, (_, index) => `Sentence ${index} of the owner's own prose about how she should sound.`).join(' ');
+  const composed = composeLiveSessionInstruction({
+    text: NAYA_LIVE_BASE, tools: [], records, trustedChars: 60_000, now: NOW, timeZone: 'UTC',
+    memoryBlockInput: startContext({ entries: records }),
+    ownerProfile: { schemaVersion: 1, kind: 'profile', ownerId: 'p1-synthetic', profileVersion: 'p1', displayName: 'Synthetic Owner',
+      style: { text: prose, dataClass: 'private' }, lore: { text: 'Synthetic lore paragraph.', dataClass: 'sensitive' } },
+  });
+  assert.ok(estimatedTokens(composed.text) <= CONTEXT_BUDGET.hard, `composed instruction is ${estimatedTokens(composed.text)} estimated tokens`);
+  assert.ok(composed.text.length <= PROVIDER_INSTRUCTION_CHARS, `composed instruction is ${composed.text.length} characters`);
+  assert.deepEqual(composed.clipped.map(item => item.id), ['owner-style'], 'the style is the thing that yields here');
+  assert.ok(composed.text.includes('Sentence 0 of the owner'), 'the style is cut from its tail, never emptied');
+  // The cut lands on a sentence boundary, so no sentence is half written.
+  const style = composed.text.slice(composed.text.indexOf('Sentence 0'), composed.text.indexOf('Sentence 0') + 400);
+  assert.match(style, /Sentence \d+ of the owner's own prose about how she should sound\./u);
+});
+
 test('M20-R1: a start whose fixed text alone exceeds hard admission is still refused', () => {
-  // One unbroken owner-style paragraph has no boundary to cut at, so this is the one refusal the ruling keeps.
+  // The persona text is not a yieldable part: the ladder can only shorten the owner style and the pickup note,
+  // so a base that alone exceeds hard is the one refusal the ruling keeps, refused with its typed error.
   const record = [{ id: 'note', text: 'Synthetic fact', capturedAt: NOW }];
   assert.throws(() => composeLiveSessionInstruction({
-    text: NAYA_LIVE_BASE, tools: [], records: record, trustedChars: 60_000, now: NOW, timeZone: 'UTC',
+    text: `${NAYA_LIVE_BASE}\n\n${'F'.repeat(chars(CONTEXT_BUDGET.hard) + 5_000)}`, tools: [], records: record,
+    trustedChars: 60_000, now: NOW, timeZone: 'UTC',
     memoryBlockInput: startContext({ entries: record }),
-    ownerProfile: { schemaVersion: 1, kind: 'profile', ownerId: 'p1-synthetic', profileVersion: 'p1', displayName: 'Synthetic Owner',
-      style: { text: 'S'.repeat(chars(CONTEXT_BUDGET.hard) + 5_000), dataClass: 'private' }, lore: { text: 'Synthetic lore', dataClass: 'sensitive' } },
+    ownerProfile: owner(2_000, 3),
   }), { code: 'instruction_too_large' });
 });
 
@@ -188,10 +207,18 @@ test('the pinned lore and the memory floors hold while the yieldable sections ov
 });
 
 test('every mid-call append payload stays inside the provider 500-token append budget', () => {
+  // M20-R3: the bound is asserted on the string the adapter writes, host note prefix and suffix included.
+  const short = { ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'call the bank' };
+  assert.equal(alarmAppendText(short),
+    `[host note, not the owner] ${alarmSessionInstructions(short)} Announce this now in the current call.`,
+    'the wire string is the host note wrapper around the inner note plus its suffix');
+  assert.ok(estimatedTokens(alarmAppendText(short)) <= APPEND_TOKEN_LIMIT, 'a short reminder is inside the budget');
   const payloads: readonly [string, string][] = [
-    ['a long alarm reminder', alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R'.repeat(1_200) })],
-    ['a long series rule', alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'Synthetic standup', series: 'S'.repeat(600) })],
-    ['the longest alarm note', alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R '.repeat(900), series: 'S '.repeat(400), alarmId: 'alarm-synthetic' })],
+    ['a long alarm reminder', alarmAppendText({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R'.repeat(1_200) })],
+    ['a long series rule', alarmAppendText({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'Synthetic standup', series: 'S'.repeat(600) })],
+    ['the longest alarm note', alarmAppendText({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R '.repeat(900), series: 'S '.repeat(400), alarmId: 'alarm-synthetic' })],
+    // A reminder that clips gradually, so the wire string lands near the limit and the prefix and suffix count.
+    ['a wordy reminder near the limit', alarmAppendText({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'call the bank '.repeat(140) })],
     ['the recovery pickup', LIVE_RECOVERY_PICKUP],
     ['the mute pickup', LIVE_MUTE_PICKUP],
   ];
@@ -200,7 +227,7 @@ test('every mid-call append payload stays inside the provider 500-token append b
       `${what} is ${estimatedTokens(payload)} estimated tokens, over the provider's ${APPEND_TOKEN_LIMIT}`);
   }
   // The clip is at a word boundary and keeps the fixed instruction text whole.
-  const clipped = alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R '.repeat(900) });
+  const clipped = alarmAppendText({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R '.repeat(900) });
   assert.ok(!/\s{2,}R?$|R{2,}/u.test(clipped.replace(/^[\s\S]*words, as the first thing you say: "/u, '')), 'the reminder is cut between words');
   assert.ok(clipped.includes('[alarm mode]') && clipped.includes('Briefly invite a spoken answer.'), 'the fixed note is never cut');
 });

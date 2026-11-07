@@ -372,6 +372,8 @@ export const OPENER_CONTEXT_CHARS = 450;
 /** M20-R1: the provider takes 500 tokens per mid-call append, and this note is the one the host appends. */
 export const APPEND_TOKEN_LIMIT = 500;
 const APPEND_CHAR_LIMIT = Math.floor(APPEND_TOKEN_LIMIT * ESTIMATED_CHARS_PER_TOKEN);
+/** M20-R3: the alarm append is bounded on the string the adapter writes, host note prefix and suffix included. */
+const ALARM_APPEND_SUFFIX = ' Announce this now in the current call.';
 
 /** Cut a free-text field at a word boundary, never mid-word, and to nothing when there is no room left. */
 function clipToChars(text: string, room: number): string {
@@ -392,25 +394,30 @@ export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
     `${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}` +
     `${overviewing ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
   };
+  const wire = (reminder: string | undefined, series: string | undefined): string => hostNote(build(reminder, series) + ALARM_APPEND_SUFFIX);
   const full = build(input.label?.trim(), input.series?.trim());
-  if (estimatedTokens(full) <= APPEND_TOKEN_LIMIT) return full;
+  if (estimatedTokens(wire(input.label?.trim(), input.series?.trim())) <= APPEND_TOKEN_LIMIT) return full;
   // The reminder and the series rule are the only free text here, so they are shed in that order, at a word
   // boundary, until the append fits the provider budget; the fixed instruction text is never cut.
   let reminder = input.label?.trim();
   let series = input.series?.trim();
-  let text = full;
-  for (let pass = 0; pass < 6 && estimatedTokens(text) > APPEND_TOKEN_LIMIT; pass += 1) {
-    const over = text.length - APPEND_CHAR_LIMIT;
-    if (reminder !== undefined && reminder.length > 0) reminder = clipToChars(reminder, reminder.length - over - 2);
-    else if (series !== undefined && series.length > 0) series = clipToChars(series, series.length - over - 2);
+  // The wire string is what the provider counts, so the clip is charged against it: the reminder appears twice in
+  // the note, so shedding half the excess from it closes the whole excess, and the series rule appears once.
+  for (let pass = 0; pass < 8; pass += 1) {
+    const excess = wire(reminder, series).length - APPEND_CHAR_LIMIT;
+    if (excess <= 0) break;
+    if (reminder !== undefined && reminder.length > 0) reminder = clipToChars(reminder, reminder.length - Math.ceil(excess / 2) - 1);
+    else if (series !== undefined && series.length > 0) series = clipToChars(series, series.length - excess - 1);
     else break;
-    text = build(reminder !== undefined && reminder.length > 0 ? reminder : undefined, series !== undefined && series.length > 0 ? series : undefined);
   }
-  return text;
+  return build(reminder !== undefined && reminder.length > 0 ? reminder : undefined, series !== undefined && series.length > 0 ? series : undefined);
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
 export const hostNote = (text: string): string => `[host note, not the owner] ${text}`;
+
+/** M20-R3: the exact alarm append written to the socket, so the 500-token bound is asserted on the wire string. */
+export const alarmAppendText = (input: SeriesAlarmSetup): string => hostNote(alarmSessionInstructions(input) + ALARM_APPEND_SUFFIX);
 
 /** The most of a recorded option's topic the note names, so a long fragment stays one clause. */
 
@@ -1494,7 +1501,7 @@ export class LiveSessionOwner {
     alarms.get(setup.alarmId)?.timer?.cancel();
     alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
-    handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
+    handle.session.sendText({ text: alarmAppendText(setup) });
     hostLogEvent({ event: 'alarm_announced', alarmId: setup.alarmId, mode: 'in_call' });
     this.#armAlarm(handle);
     this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');

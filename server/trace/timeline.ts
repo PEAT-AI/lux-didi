@@ -55,6 +55,9 @@ export interface TimelineReport {
   /** C-RESEARCH-CONTRACT T-04: calls the admission refused. Not a failure: they reached no source. */
   blockedCalls: number;
   announcedClaimsWithoutCall?: number;
+  /** #930: turns a host note opened. The provider echoes host text back as an input transcription, but a
+   *  note is never his words, so the audit leaves these turns out of the owner-turn population. */
+  hostNoteTurns?: readonly string[];
   coverage?: { metadata: string; content: string; native: string; failureCountLowerBound: number | null; lastReason: string | null; unassociatedTranscriptRows: number | null };
   contentAccess?: DiagnosticContentAccess;
   transcript?: { journalId: number; role: UtteranceRole; text: string; final: boolean; finalOrigin: string | null; providerStartMs: number | null; providerEndMs: number | null }[];
@@ -218,10 +221,19 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
       AND (${ANNOUNCED_LOOKUPS.map(phrase => `lower(${claimText}) LIKE '%${phrase.replaceAll("'", "''")}%'`).join('\n        OR ')})
       AND NOT EXISTS(SELECT 1 FROM trace_call c WHERE c.turn_id=u.turn_id AND c.intent_at>=u.at)`, [liveSessionId])?.['count'] ?? 0);
 
+  // #930: a host note reaches the model as user text, so the provider echoes it back as an input transcription
+  // and the host opens a turn for it. It is never his words, and live/index.ts marks every host instruction with
+  // the host-note prefix (docs/checks.md), so the audit leaves those turns out of the owner-turn population. The
+  // predicate answers in SQL and returns turn ids only: the audit still exports no transcript text.
+  const hostNoteTurns = read.all(`SELECT DISTINCT u.turn_id AS turn_id
+    FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id
+    WHERE t.live_session_id=? AND u.role='owner' AND u.text LIKE '[host note, not the owner]%'`, [liveSessionId])
+    .map(row => String(row['turn_id']));
+
   const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
   return {
     tools: readToolDiagnostics(read,liveSessionId,{content: options.content === true,...(options.contentAuthority ? {authority: options.contentAuthority} : {})}),
-    announcedClaimsWithoutCall, liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
+    announcedClaimsWithoutCall, hostNoteTurns, liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
     capturedAt: options.capturedAt ?? Date.now(),
     callFailures,
     blockedCalls,
@@ -1007,7 +1019,10 @@ export function buildCallAudit(report: TimelineReport, scan: LogScan, refusalsCo
   // unattributed calls carry no turn id by definition, so their table row prints turn -.
   const calls = [...report.turns.flatMap(track => track.calls.map(call => auditCallRow(call, lines))),
     ...report.unattributedCalls.map(call => auditCallRow(call, lines))];
-  const rows = report.turns.filter(track => track.turn.origin === 'owner').map(track => auditTurnRow(track, lines));
+  // #930: a host note opens a turn and earns an owner_final of its own, but the note is runtime guidance, not
+  // his words, so it is not an owner turn. Counting it charged the call with a latency he never spent.
+  const hostNotes = new Set(report.hostNoteTurns ?? []);
+  const rows = report.turns.filter(track => track.turn.origin === 'owner' && !hostNotes.has(track.turn.turnId)).map(track => auditTurnRow(track, lines));
   // C-DIAG109: one spoken sentence split by the turn splitter yields several finals and one answer, so a
   // silent final is read against the final that follows it. The store's turns arrive in the call's own order.
   const turns = rows.map((row, index) => ({ ...row, noAudioClass: noAudioClassOf(rows, index) }));

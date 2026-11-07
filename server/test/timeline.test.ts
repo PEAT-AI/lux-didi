@@ -420,6 +420,27 @@ function auditA(store: Store): CallAudit {
   return buildCallAudit(buildTimeline(readOf(store), SESSION), scanOf(logsA()));
 }
 
+// #930: a host note reaches the model as user text, so the provider echoes it back as an input transcription
+// and the host opens a turn for it. The note is runtime guidance, never his words, so the audit counts only the
+// turns he spoke in and the note's own owner_final stops charging the call with a latency he never spent.
+test('#930: a turn a host note opened is not an owner turn in the audit', () => {
+  withStore(store => {
+    storeA(store);
+    turn(store, SESSION, 't3', 3, T0 + 30_000);
+    store.transaction(tx => tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text) VALUES(?,?,?,1,?)',
+      ['t3', 'owner', T0 + 30_100, '[host note, not the owner] Speak the alarm now.']));
+    const scan = scanOf([...logsA(),
+      line(T0 + 30_100, 'owner_final', { liveSessionId: SESSION, turnId: 't3', ownerFinalAt: T0 + 30_100 }),
+      line(T0 + 33_000, 'live_first_audio', { liveSessionId: SESSION, turnId: 't3', msSinceReady: 900, msSinceOpen: 900, finalToProviderFirstAudioMs: 2_900, missingReason: null })]);
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.deepEqual(report.hostNoteTurns, ['t3'], 'the note turn is named, and only it');
+    assert.equal(report.turns.length, 3, 'the note still has its own turn in the timeline');
+    const audit = buildCallAudit(report, scan);
+    assert.deepEqual(audit.turns.map(row => row.turnId), ['t1', 't2'], 'his turns only');
+    assert.equal(audit.aggregates.firstSound.ownerTurns, audit.turns.length);
+  });
+});
+
 // CA-R4 (CALLS-1030b G9): a blocked call is a refusal the audit counts, with its own code.
 test('CA-R4: a blocked call is counted in the refusals by code', () => {
   withStore(store => {

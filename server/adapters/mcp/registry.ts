@@ -49,7 +49,12 @@ interface Entry {
   lastGeneration: number;
   revision: number;
 }
-/** Entirely local authority. Remote annotations are never consulted. */
+/**
+ * Entirely local authority. Remote annotations are never consulted here; the one exception sits in
+ * the connector that owns it: a trusted first-party endpoint's tools carry `readOnlyHint`, and its
+ * module's admission hook (connectors/lux-knowledge.ts) is what reads it, before this registry is
+ * asked for a grant.
+ */
 export class McpRegistry {
   private readonly entries = new Map<string, Entry>();
   register(config: EndpointConfig): void {

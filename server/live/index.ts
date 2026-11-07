@@ -1450,7 +1450,7 @@ export class LiveSessionOwner {
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
-  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; lastAudibleAt: number; lastPromptAt: number; announcedAt: number; timer?: { cancel(): void } }>>();
+  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; lastAudibleAt: number; lastPromptAt: number; announcedAt: number; openingSent?: boolean; announced?: boolean; mode?: 'in_call' | 'new_session'; timer?: { cancel(): void } }>>();
 
   /** A due alarm belongs to the call that actually announces it, never to unrelated owner speech. */
   announceAlarm(setup: import('./types.js').AlarmSessionSetup): LiveSessionSnapshot | undefined {
@@ -1460,11 +1460,35 @@ export class LiveSessionOwner {
     alarms.get(setup.alarmId)?.timer?.cancel();
     alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
-    handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
-    hostLogEvent({ event: 'alarm_announced', alarmId: setup.alarmId, mode: 'in_call' });
+    alarms.get(setup.alarmId)!.mode = 'in_call';
+    hostLogEvent({ event: 'alarm_prompt_installed', alarmId: setup.alarmId, mode: 'in_call' });
+    this.#sendAlarmOpening(handle);
     this.#armAlarm(handle);
     this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
     return this.get(handle.liveSessionId);
+  }
+
+  #sendHostSpeech(handle: ActiveSession, text: string, point: string): number {
+    const items = text.length <= 450 ? [text] : commentaryItems({
+      kind: 'result', exact: [], cause: point, what_failed: '', next_step: '', content: `${point} ${text}`,
+    });
+    let sent = 0;
+    for (const item of items) {
+      if (handle.session.sendSessionCommentary?.({ text: item }) === undefined) break;
+      sent += 1;
+    }
+    return sent;
+  }
+
+  #sendAlarmOpening(handle: ActiveSession): void {
+    if (!handle.ready) return;
+    for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) {
+      if (alarm.openingSent) continue;
+      const mode = alarm.mode ?? 'new_session';
+      hostLogEvent({ event: 'alarm_ready', alarmId: alarm.setup.alarmId, mode });
+      const sent = this.#sendHostSpeech(handle, hostNote(alarmSessionInstructions(alarm.setup) + ' Announce this now in the current call.'), 'The alarm is due now. Announce it now.');
+      if (sent) alarm.openingSent = true;
+    }
   }
 
   #ringingAlarms(handle: ActiveSession) {
@@ -1829,8 +1853,7 @@ export class LiveSessionOwner {
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
     if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() }]]));
-    // #107: the alarm block is in this new session's accepted prompt, so the announcement is made.
-    if (input.alarm?.alarmId) hostLogEvent({ event: 'alarm_announced', alarmId: input.alarm.alarmId, mode: 'new_session' });
+    if (input.alarm?.alarmId) hostLogEvent({ event: 'alarm_prompt_installed', alarmId: input.alarm.alarmId, mode: 'new_session' });
     // The clock this session carries, and where its zone came from, logged once for this session.
     hostLogEvent({ event: 'live_session_clock', liveSessionId: snapshot.liveSessionId, observedAt: clock.observedAt,
       timeZone: clock.timeZone, clockSource: clock.source });
@@ -2346,7 +2369,7 @@ export class LiveSessionOwner {
       if (this.#settled(handle) || handle.muted || !handle.heldAnswer) return;
       const ownerSpoke = handle.inputAt !== undefined && handle.inputAt >= since;
       if (ownerSpoke) { this.#mutedOfferSkipped(handle, 'owner_spoke'); return; }
-      try { handle.session.sendText({ text: MUTED_OFFER_TEXT }); handle.heldAnswer = false; }
+      try { if (!handle.session.sendSessionCommentary?.({ text: MUTED_OFFER_TEXT })) throw new Error('send_failed'); handle.heldAnswer = false; }
       catch { this.#mutedOfferSkipped(handle, 'send_failed'); }
     }, MUTED_OFFER_SILENCE_MS);
     handle.mutedOfferTimer.unref?.();
@@ -2512,7 +2535,7 @@ export class LiveSessionOwner {
     if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
       this.#continuationReRequested.add(handle);
       try {
-        const ask = handle.session.sendText;
+        const ask = handle.session.sendSessionCommentary;
         if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
       } catch { /* a closed transport settles on its own */ }
       this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
@@ -3857,6 +3880,7 @@ export class LiveSessionOwner {
         }
         if (event.type === 'ready') {
           handle.ready = true; handle.lastHealthyAt = this.#now(); handle.readyAt = this.#now();
+          this.#sendAlarmOpening(handle);
           // #451: the provider ack is the number every handshake report is measured against.
           hostLogEvent({ event: 'live_provider_ready', liveSessionId: handle.liveSessionId, generation,
             msSinceOpen: handle.openedAt === undefined ? 0 : Math.max(0, this.#now() - handle.openedAt), closeCode: null });
@@ -3955,6 +3979,12 @@ export class LiveSessionOwner {
           }
           // L7: a response that began under the mute is never played late; its frames are dropped until the turn ends.
           if (handle.dropResponse) { if (event.audible !== false) handle.awaitingAnswer = false; continue; }
+          if (event.audible !== false) for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) {
+            if (!alarm.openingSent || alarm.announced) continue;
+            alarm.announced = true;
+            alarm.announcedAt = this.#now();
+            hostLogEvent({ event: 'alarm_announced', alarmId: alarm.setup.alarmId, mode: alarm.mode ?? 'new_session' });
+          }
           // Only audible speech is SPEAKING (release 3p): the provider streams output frames non-stop, so a frame
           // is model output only when the adapter measured it above the audible threshold.
           if (event.audible === false) {

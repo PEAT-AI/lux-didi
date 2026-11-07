@@ -343,3 +343,68 @@ export function scoreDepth(scenario, result) {
     spoken_length: spoken.length,
   };
 }
+
+// FR5: the vault search's two modes, priced offline. A row is the decision order the shipped
+// instruction asks for; a fake connector charges fast 150 ms and full 1528 ms (the connector's
+// measured p50), so a row scores the order and the simulated wait, never a real clock.
+export const VAULT_FAST_MS = 150;
+export const VAULT_FULL_MS = 1_528;
+/** What the shipped worker text must say for a fast-first row to mean anything. */
+export const VAULT_FAST_RULE = Object.freeze({
+  fast_first: /fast vault search at a small limit/iu,
+  body_before_fact: /read it[^.]*body/isu,
+  title_never_fact: /title is never a fact/iu,
+  fall_back_full: /empty or ambiguous[^.]*search full/isu,
+});
+export function instructionCarriesFastFirst(instructions = WORKER_INSTRUCTIONS) {
+  return Object.values(VAULT_FAST_RULE).every(pattern => pattern.test(instructions));
+}
+
+// Synthetic rows: (a) a named topic fast finds, (b) fast returns unrelated keyword hits, (c) fast empty.
+export const VAULT_FAST_ROWS = Object.freeze([
+  { id: 'vault-fast-named-topic', owner_words: 'what does my orchard plan say about watering', record_id: 89820, expect_full: false,
+    fact: 'drip line runs at 04:40', answer: 'The orchard plan has the drip line runs at 04:40 for forty minutes.',
+    unrelated: ['Orchard Road bus lane', 'buses stop at 23:00'] },
+  { id: 'vault-fast-unrelated-hits', owner_words: 'when does the survey boat leave the harbour', record_id: 89441, expect_full: true,
+    fact: 'leaves the harbour at 07:15', answer: 'The survey boat leaves the harbour at 07:15 on Wednesday.',
+    unrelated: ['Orchard Road bus lane', 'buses stop at 23:00'] },
+  { id: 'vault-fast-empty', owner_words: 'what did I write about the pump service', record_id: 89777, expect_full: true,
+    fact: 'pump service is booked for the first Friday', answer: 'The pump service is booked for the first Friday in June.',
+    unrelated: ['Orchard Road bus lane', 'buses stop at 23:00'] },
+]);
+
+// The rule in the tool calls a real call would produce: fast at a small limit first, full only when
+// fast was empty or ambiguous, then the body read the fact comes from.
+export function vaultFastPlan(row) {
+  const calls = [{ name: 'search_knowledge', args: { query: row.owner_words, limit: 4, mode: 'fast' } }];
+  if (row.expect_full) calls.push({ name: 'search_knowledge', args: { query: row.owner_words, limit: 8 } });
+  calls.push({ name: 'get_insight', args: { ids: [row.record_id] } });
+  return calls;
+}
+
+export function scoreVaultFast(row, result = {}) {
+  const calls = result.calls ?? [];
+  const spoken = result.spoken ?? '';
+  const searches = calls.filter(call => call.name === 'search_knowledge' && call.args);
+  const fast = searches.findIndex(call => call.args.mode === 'fast');
+  const full = searches.findIndex(call => call.args.mode !== 'fast');
+  const read = calls.find(call => call.name === 'get_insight' && (call.args?.ids ?? []).includes(row.record_id));
+  return {
+    fast_first: fast !== -1 && searches[fast].args.limit <= 5,
+    full_when_needed: row.expect_full ? full > fast : true,
+    body_read: read !== undefined,
+    fact_supported: read !== undefined && spoken.includes(row.fact),
+    unrelated_absent: row.unrelated.every(text => !spoken.includes(text)),
+    instruction_rule: instructionCarriesFastFirst(result.instructions),
+  };
+}
+
+/** Simulated milliseconds from the finished utterance to the first body-supported finding. */
+export function vaultFirstFindingMs(row, route) {
+  if (route === 'full-only') return VAULT_FULL_MS;
+  return row.expect_full ? VAULT_FAST_MS + VAULT_FULL_MS : VAULT_FAST_MS;
+}
+export function vaultPairedMs(rows = VAULT_FAST_ROWS) {
+  const total = route => rows.reduce((sum, row) => sum + vaultFirstFindingMs(row, route), 0);
+  return { fast_first: total('fast-first'), full_only: total('full-only') };
+}

@@ -1,3 +1,4 @@
+import { hostLogEvent } from './host-events.js';
 import type { Identity } from '../tasks/authority.js';
 import { freezeNote } from './lux-note.js';
 import { randomUUID } from 'node:crypto';

@@ -1470,30 +1470,30 @@ export class LiveSessionOwner {
 
   /**
    * The one place that picks a host note's transport, by adapter capability rather than by provider name. An
-   * adapter with a commentary channel acknowledges it; one without (Gemini has none) receives the same note
-   * as a host text turn, the path it does accept. A closed transport sends nothing and reports it.
+   * adapter that acknowledges a commentary append takes the note as a bounded null-delegation envelope; one
+   * that answers nothing (Gemini has none) takes the same note as the plain host text turn it does accept,
+   * where the text turn's own 4000 character bound applies. A refusal sends nothing and reports it.
    */
-  #sendHostNote(handle: ActiveSession, text: string): boolean {
-    try {
-      if (handle.session.sendSessionCommentary?.({ text }) !== undefined) return true;
-      if (!handle.ready) return false;
-      handle.session.sendText({ text });
-    } catch { return false; }
-    return true;
-  }
-
   #sendHostSpeech(handle: ActiveSession, text: string, point: string): number {
-    // The commentary envelope is the OpenAI channel's format. An adapter with no such channel takes the plain
-    // note, and its text turn is bounded at 4000 characters, so a long note travels as plain slices.
-    const items = handle.session.sendSessionCommentary !== undefined && text.length > 450 ? commentaryItems({
-      kind: 'result', exact: [], cause: point, what_failed: '', next_step: '', content: `${point} ${text}`,
-    }) : text.match(/[\s\S]{1,4000}/g) ?? [text];
-    let sent = 0;
-    for (const item of items) {
-      if (!this.#sendHostNote(handle, item)) break;
-      sent += 1;
+    const channel = handle.session.sendSessionCommentary;
+    if (channel !== undefined) {
+      const items = text.length <= 450 ? [text] : commentaryItems({
+        kind: 'result', exact: [], cause: point, what_failed: '', next_step: '', content: `${point} ${text}`,
+      });
+      try {
+        let sent = 0;
+        for (const item of items) {
+          if (channel.call(handle.session, { text: item }) === undefined) break;
+          sent += 1;
+        }
+        if (sent) return sent;
+      } catch { return 0; }
     }
-    return sent;
+    if (!handle.ready) return 0;
+    try {
+      for (const slice of text.match(/[\s\S]{1,4000}/g) ?? [text]) handle.session.sendText({ text: slice });
+    } catch { return 0; }
+    return 1;
   }
 
   #sendAlarmOpening(handle: ActiveSession): void {
@@ -2385,7 +2385,7 @@ export class LiveSessionOwner {
       if (this.#settled(handle) || handle.muted || !handle.heldAnswer) return;
       const ownerSpoke = handle.inputAt !== undefined && handle.inputAt >= since;
       if (ownerSpoke) { this.#mutedOfferSkipped(handle, 'owner_spoke'); return; }
-      if (!this.#sendHostNote(handle, MUTED_OFFER_TEXT)) { this.#mutedOfferSkipped(handle, 'send_failed'); return; }
+      if (!this.#sendHostSpeech(handle, MUTED_OFFER_TEXT, 'The answer is held while the owner is muted.')) { this.#mutedOfferSkipped(handle, 'send_failed'); return; }
       handle.heldAnswer = false;
     }, MUTED_OFFER_SILENCE_MS);
     handle.mutedOfferTimer.unref?.();
@@ -2550,7 +2550,7 @@ export class LiveSessionOwner {
     // inside the rung, instead of being waited out to a dead-air rebuild.
     if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
       this.#continuationReRequested.add(handle);
-      this.#sendHostNote(handle, hostNote(CONTINUATION_RE_REQUEST_NOTE));
+      this.#sendHostSpeech(handle, hostNote(CONTINUATION_RE_REQUEST_NOTE), 'The tool batch settled with no spoken continuation.');
       this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
       return;
     }

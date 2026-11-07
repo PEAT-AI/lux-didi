@@ -11,20 +11,20 @@ import { safeEvent } from '../host/log.js';
 // adapter wire tests below; they do not simulate a whole alarm call.
 const source = readFileSync(new URL('../../live/index.ts', import.meta.url), 'utf8');
 for (const [name, start, end] of [
-  ['alarm opening', '  #sendHostSpeech(', '  #ringingAlarms('],
+  ['alarm opening', '  #sendAlarmOpening(', '  #ringingAlarms('],
   ['mute offer', 'handle.mutedOfferTimer = this.#schedule(', 'handle.mutedOfferTimer.unref'],
   ['continuation', "if (postToolNoOutput && step === 'rung'", 'this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS'],
 ] as const) {
   test(`${name} carries the host note through the transport helper`, () => {
     const offset = source.indexOf(start);
     const block = source.slice(offset, source.indexOf(end, offset + start.length));
-    assert.match(block, /#sendHostNote\(/);
+    assert.match(block, /#sendHostSpeech\(/);
     assert.doesNotMatch(block, /sendSessionCommentary|sendText/);
   });
 }
 
-test('the alarm opening block that owns the send is the helper call, not a typed turn', () => {
-  const helper = source.slice(source.indexOf('  #sendHostNote('), source.indexOf('  #sendHostSpeech('));
+test('one helper owns the transport choice, and only it touches the adapter', () => {
+  const helper = source.slice(source.indexOf('  #sendHostSpeech('), source.indexOf('  #sendAlarmOpening('));
   assert.match(helper, /sendSessionCommentary/);
   assert.match(helper, /handle\.session\.sendText/);
 });

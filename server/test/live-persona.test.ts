@@ -751,7 +751,7 @@ test('R7: a full-length digest keeps the composed instruction inside its limits'
 
 /** Q10, Q4, Q5, Q2: one unconditional rule each, stated once, in the instruction the speaking model reads. */
 const W5_RULES = [
-  'Open fresh calls on one current specific',
+  'Open fresh calls on a current specific',
   'You talk; the work happens behind you.',
   'MUST be handed off in the same turn',
 ];
@@ -835,7 +835,7 @@ const HONESTY_RULES = [
   'If a result reports a failure, a gap or a partial answer, say that as given, and give what is there rather than only that it is incomplete.',
   'Something done in an earlier call is history, and asking whether it worked is a new hand-off.',
   'Never promise to watch something or call back later;',
-  'His floor includes thinking, pauses, hesitations and unfinished sentences.',
+  'His floor includes thinking, pauses, hesitations and unfinished sentences:',
 ];
 /** Text that would contradict a rule above, so the assertion is about the rendered persona and not one string. */
 const HONESTY_CONTRADICTIONS = [

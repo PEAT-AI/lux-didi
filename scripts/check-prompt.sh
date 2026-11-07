@@ -200,7 +200,7 @@ node --input-type=module - "$out/dist" <<'NODE'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
-assert.ok(persona.NAYA_LIVE_BASE.includes('helper-returned history permits word-for-word lookback'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('The helper returns past conversations verbatim'));
 assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only returned words, never invented past quotes.'));
 assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE

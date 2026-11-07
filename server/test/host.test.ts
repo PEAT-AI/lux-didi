@@ -1545,6 +1545,9 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
       modelId: 'models/live-start10-test', voice: 'ExplicitVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary', 'private'],
       preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'balanced' },
     }), { mode: 0o600 });
+    // Captured before the mock so the drain below can give real I/O a real slice; every timing assertion in
+    // this test stays on the virtual clock.
+    const realSetTimeout = setTimeout;
     t.mock.timers.enable({ apis: ['setTimeout'] });
     let entered!: () => void;
     const generating = new Promise<void>(resolve => { entered = resolve; });
@@ -1567,6 +1570,11 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
     // leave the started listener open for the rest of the run and the process would never exit. This
     // teardown closes whatever started, whether or not the body reached its own close.
     t.after(async () => {
+      // A boot still waiting on the mocked clock would never resolve once the clock is restored, and the host
+      // it returns would stay attached to the process-wide log hub with its log file in this test's directory:
+      // one red assertion then printed thirteen unrelated reds in the rest of the file. Draining the timers
+      // past every boot wait (the 25 s connector ceiling, the 8 s summary) lets startHost settle so it closes.
+      try { t.mock.timers.tick(30_000); } catch { /* no mocked timer left: the body already settled it */ }
       // The mocked clock is restored first: a close that waits on a timer would otherwise wait forever.
       try { t.mock.timers.reset(); } catch { /* already restored */ }
       const started = await Promise.race([starting.catch(() => undefined), new Promise<undefined>(resolve => {
@@ -1582,20 +1590,31 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
     // settle, so a boot that needs more than that fails here by name instead of timing the test out.
     let requested = false;
     void generating.then(() => { requested = true; });
+    // ONE clock, two budgets. The virtual budget is the product's own: the boot waits on a race that settles
+    // at the whole settle budget, so the start pass reaches the model exactly when the clock has covered it.
+    // Each step therefore gives real I/O a real 5 ms slice (a counted setImmediate drain starves on a loaded
+    // machine, which is #896) and spends 100 ms of virtual time. The assertion below stays virtual.
     while (!requested && elapsed < SUMMARY_START_SETTLE_BUDGET_MS) {
-      for (let turn = 0; turn < 20 && !requested; turn += 1) await new Promise<void>(resolve => setImmediate(resolve));
+      await new Promise<void>(resolve => realSetTimeout(resolve, 5));
       if (requested) break;
       const step = Math.min(100, SUMMARY_START_SETTLE_BUDGET_MS - elapsed);
       elapsed += step;
       t.mock.timers.tick(step);
     }
-    assert.ok(requested, `the start pass reached the summary request inside ${SUMMARY_START_SETTLE_BUDGET_MS} virtual ms`);
     // The settle budget elapses in full, exactly as the single tick it replaces did, so the eight-second
-    // summary timer still lands 6 s after it.
+    // summary timer still lands 6 s after it. It runs before the drain and the assertion, because the budget
+    // running out is what releases the boot: the deadline resolves the race, and only then does the start
+    // pass open the provider.
     if (elapsed < SUMMARY_START_SETTLE_BUDGET_MS) {
       t.mock.timers.tick(SUMMARY_START_SETTLE_BUDGET_MS - elapsed);
       elapsed = SUMMARY_START_SETTLE_BUDGET_MS;
     }
+    // Real time only, for the real I/O the released boot now does; it ends as soon as the model is reached,
+    // and the bound exists so a boot that never gets there fails by name instead of timing the test out.
+    for (const until = Date.now() + 15_000; !requested && Date.now() < until;) {
+      await new Promise<void>(resolve => realSetTimeout(resolve, 5));
+    }
+    assert.ok(requested, `the start pass reached the summary request inside ${SUMMARY_START_SETTLE_BUDGET_MS} virtual ms`);
     const host = await starting;
     let audio: WebSocket | undefined;
     try {

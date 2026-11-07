@@ -14,11 +14,10 @@ import { domainMigrations } from '../domain/schema.js';
 import { createLiveSessionOwner, validateLiveProfile, type LiveContext } from '../live/index.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { fakeLux } from './fixtures/fake-lux-vault.js';
-import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
 import { Store } from '../runtime/store.js';
-import { VaultWriter, authorizeComposedWrite, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
+import { VaultWriter, authorizeComposedWrite, vaultContentKey, type VaultReceipt, type VaultWriteResult } from '../tools/vault-write.js';
 
 const NOW = 1_700_000_000_000;
 const SESSION = 'live-vault-write';
@@ -30,7 +29,7 @@ interface Harness { store: Store; writer: VaultWriter; events: Record<string, un
 function harness(t: TestContext, url: string): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'vault-write-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const store = new Store(dir, [...liveMigrations]);
+  const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
   t.after(() => store.close());
   const events: Record<string, unknown>[] = [];
   const writer = new VaultWriter({ store, backoff: async () => {}, transport: createLuxWriteTransport({ url }), now: () => NOW, log: event => { events.push(event); } });
@@ -38,12 +37,20 @@ function harness(t: TestContext, url: string): Harness {
 }
 
 const SPOKEN_AT = new Date(NOW).toISOString();
+const OWNER_TURN_ID = 'task:vault-task:save';
+const PROVENANCE = `\n\nProvenance: lux-didi; speaker=owner; confidence=1; session=${SESSION}; requested_turn_id=${OWNER_TURN_ID}.`;
+/** The discovered create schema is the payload contract; the helper never assembles the wire itself. */
+const CREATE_SCHEMA = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' } } };
 /** The write carries its provenance and an idempotency key; the key is the op id, minted per op. */
-const saveArgs = (key: unknown) => ({ content: NOTE, insight_title: NOTE, insight_type: 'UNCATEGORIZED', project: 'didi-voice',
-  source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: SESSION, turn_start_id: 'task:vault-task:save', turn_end_id: 'task:vault-task:save', spoken_at: SPOKEN_AT }, idempotency_key: key });
+const saveArgs = (key: unknown) => ({ content: `${NOTE}${PROVENANCE}`, insight_title: NOTE, insight_type: 'UNCATEGORIZED', project: 'didi-voice',
+  source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: SESSION, turn_start_id: OWNER_TURN_ID, turn_end_id: OWNER_TURN_ID, spoken_at: SPOKEN_AT }, idempotency_key: key });
 
-async function save(h: Harness, content: string): Promise<VaultReceipt> {
-  return h.writer.saveTask({ sessionId: SESSION, identity: { task_id: 'vault-task', task_revision: 1, operation_id: 'save', connection_generation: 1 }, content, title: content, outsideTextSeen: false });
+/** One owner turn, persisted where the host reads it, then one write that names it. */
+async function save(h: Harness, content: string, turnId = OWNER_TURN_ID): Promise<VaultWriteResult> {
+  h.store.transaction(tx => tx.run('INSERT OR IGNORE INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)',
+    [turnId, SESSION, 1, 1, 'owner', content, NOW]));
+  return h.writer.writeTask({ sessionId: SESSION, tool: 'vault_save', operation: 'create_insight', inputSchema: CREATE_SCHEMA,
+    maxPayloadBytes: 100_000, authorized: () => true, args: { requested_turn_id: turnId, payload: { content, insight_title: content } } });
 }
 
 test('an authorized task saves its exact words once under the vault project', async t => {
@@ -150,7 +157,9 @@ test('a duplicate refusal is never reported as saved', async t => {
 
 test('the write surface is one tool and no other remote name exists', async () => {
   assert.equal(LUX_TOOLS.create, 'create_insight');
-  for (const tool of LUX_KNOWLEDGE_TOOLS) assert.ok(!/^(save|delete|purge|update|link)_insight$/.test(tool));
+  // The fixed read allowlist is gone: discovery publishes the reads, so the retired spellings are the only guard.
+  const { LUX_WRITE_TOOLS, LUX_RETIRED_TOOLS } = await import('../connectors/lux-names.js');
+  for (const retired of LUX_RETIRED_TOOLS) assert.ok(!(LUX_WRITE_TOOLS as readonly string[]).includes(retired), `${retired} is retired, never a write the helper holds`);
   const client = await import('../adapters/lux-write/client.js');
   assert.deepEqual(Object.keys(client).sort(), ['createLuxWriteTransport', 'luxWriteEndpoint'],
     'the write client exposes one transport factory, and no per-tool door');
@@ -322,13 +331,16 @@ test('unavailable retries once with backoff and then confirms without a duplicat
   const writer = new VaultWriter({ store: h.store, now: () => NOW, log: () => {},
     backoff: async ms => { delays.push(ms); },
     transport: { save: async () => ++calls === 1 ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'retry-7' } } });
-  const input = { sessionId: SESSION, identity: { task_id: 'retry-task', task_revision: 1, operation_id: 'save', connection_generation: 1 }, content: NOTE, title: NOTE, outsideTextSeen: false };
-  const result = await writer.saveTask(input);
+  const input = { sessionId: SESSION, tool: 'vault_save' as const, operation: 'create_insight', inputSchema: CREATE_SCHEMA,
+    maxPayloadBytes: 100_000, authorized: () => true, args: { requested_turn_id: OWNER_TURN_ID, payload: { content: NOTE, insight_title: NOTE } } };
+  h.store.transaction(tx => tx.run('INSERT OR IGNORE INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)',
+    [OWNER_TURN_ID, SESSION, 1, 1, 'owner', NOTE, NOW]));
+  const result = await writer.writeTask(input);
   assert.equal(result.saved, true);
   assert.match(String(result.guidance), /retried.*lux/i);
   assert.deepEqual(delays, [250]);
   assert.equal(calls, 2);
-  assert.deepEqual(await writer.saveTask(input), { saved: true, insightId: 'retry-7' }); assert.equal(calls, 2, 'replay does not send a third request');
+  assert.deepEqual(await writer.writeTask(input), { saved: true, insightId: 'retry-7' }); assert.equal(calls, 2, 'replay does not send a third request');
 });
 
 test('startup retries a legacy unavailable row only once across restarts', async t => {

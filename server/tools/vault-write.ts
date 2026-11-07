@@ -1,7 +1,5 @@
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import { LUX_TOOLS, LUX_PARAMS as P, LUX_WRITE_TOOLS } from '../connectors/lux-names.js';
-import type { Identity } from '../tasks/authority.js';
-import { freezeNote } from './lux-note.js';
 import { randomUUID } from 'node:crypto';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
@@ -244,18 +242,6 @@ export class VaultWriter {
     return emit(receipt);
   }
 
-  /** Task admission is owned by Authority; this boundary only validates and atomically claims its exact payload. */
-  async saveTask(input: { sessionId: string; identity: Identity; content: string; title: string; outsideTextSeen: boolean }): Promise<VaultReceipt> {
-    const frozen = freezeNote({ title: input.title, body: input.content, externalContextPresent: input.outsideTextSeen });
-    if (frozen.state !== 'frozen') return { saved: false, code: 'write_failed', guidance: 'The note payload was invalid. Nothing was written.' };
-    const claim = this.#store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: input.sessionId,
-      stageId: `task:${input.identity.task_id}:${input.identity.operation_id}`, content: input.content.trim(), title: input.title.trim(),
-      externalContextPresent: input.outsideTextSeen, payloadSha: frozen.payloadSha, now: this.#now() }));
-    if (claim.state === 'dispatch') return this.dispatch(claim);
-    this.#attempt(claim.receipt, 0); return claim.receipt;
-  }
-
-  /** One line per save attempt: the closed outcome and code, never the note. */
   #attempt(receipt: VaultReceipt, latencyMs: number): void {
     this.#log(vaultAttemptEvent(receipt, latencyMs));
   }

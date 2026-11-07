@@ -25,12 +25,10 @@ import type { ConnectionPolicy } from '../tools/types.js';
 const searchTool: ToolDefinition = {
   name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic search',
   inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query'] },
-  annotations: { readOnlyHint: true },
 };
 const getTool: ToolDefinition = {
   name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, description: 'Synthetic by-id read',
   inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids'] },
-  annotations: { readOnlyHint: true },
 };
 const writerTool: ToolDefinition = { name: 'save_insight', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } };
 

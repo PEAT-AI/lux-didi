@@ -10,7 +10,7 @@ import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveO
 import { hostTaskFactory } from '../tasks/host.js';
 import { resolveTaskModels } from '../config/tasks.js';
 import type { Infer } from '../tasks/worker.js';
-import type { ExistingExecutors } from '../tasks/connectors.js';
+import type { BoundConnector, ExistingExecutors } from '../tasks/connectors.js';
 import { VaultWriter } from '../tools/vault-write.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { fixtureUntil } from './live-voice-fixture.js';
@@ -18,6 +18,7 @@ import { fixtureUntil } from './live-voice-fixture.js';
 /** Real host, Store, task worker and authority, with only model and external transport controlled. */
 export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
   clock?: boolean; approved?: boolean; outcome?: 'inserted' | 'unknown'; executors?: ExistingExecutors;
+  bindings?: readonly BoundConnector[];
 } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
   const dir = mkdtempSync(join(tmpdir(), 'synthetic-live-task-'));
@@ -33,7 +34,7 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
       route: { enabled: true, provider: 'openai', modelId: 'gpt-live-1', dataClasses: ['ordinary'] },
       prompt: { text: 'Synthetic persona', dataClass: 'ordinary' } }),
     createTaskRuntime: hostTaskFactory({ store, vault, credentials: { resolve: async () => undefined }, models: resolveTaskModels(undefined),
-      bindings: () => [], timeZone: 'UTC', infer,
+      bindings: () => options.bindings ?? (options.executors?.['search_insights'] ? [discoveredSearchBinding()] : []), timeZone: 'UTC', infer,
       executors: () => options.executors ?? {}, effectCheck: async () => options.approved ?? true }),
   });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -65,4 +66,21 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
       return commentaryResults(voice.taskAnswers.filter(item => commentaryPart(item.text).id === id))[0]!;
     },
   };
+}
+
+/** The discovered search the host declares whenever the fixture supplies its executor. */
+export const discoveredSearch = { name: 'search_insights', description: 'Search the synthetic knowledge source.',
+  annotations: { readOnlyHint: true, destructiveHint: false },
+  inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer' } } } };
+export function discoveredSearchBinding(): BoundConnector {
+  return { connector: 'lux-knowledge', policy: { toolNames: [discoveredSearch.name], endpoint: { account: 'synthetic-account', resource: 'lux-knowledge:vault' } },
+    reader: { discovery: () => [discoveredSearch], call: async () => ({ state: 'completed', decodedResult: { text: 'synthetic insight' } }) } } as unknown as BoundConnector;
+}
+/** The discovered lux write the host projects as vault_save: annotations admit it, the schema is its payload. */
+export const discoveredCreate = { name: 'create_insight', description: 'Create an insight the owner asked for.',
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' }, project: { type: 'string' } } } };
+export function luxVaultBinding(decodedResult: unknown = { insight_id: 7, disposition: 'created' }): BoundConnector {
+  return { connector: 'lux-knowledge', policy: { toolNames: [discoveredCreate.name], endpoint: { account: 'synthetic-account', resource: 'lux-knowledge:vault' } },
+    reader: { discovery: () => [discoveredCreate], call: async () => ({ state: 'completed', decodedResult }) } } as unknown as BoundConnector;
 }

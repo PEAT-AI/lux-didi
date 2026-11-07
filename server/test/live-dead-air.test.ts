@@ -52,7 +52,7 @@ class DeadlineClock {
 
 const portEvent = (event: unknown) => event as never;
 const ownerFinal = (text: string) => portEvent({ type: 'inputTranscription', text, finished: true, finalOrigin: 'app_voice' });
-const toolCall = (id: string) => portEvent({ type: 'toolCall', calls: [{ id, name: 'search_insights', args: { query: 'bridge', limit: 1 , mode: null } }] });
+const toolCall = (id: string) => portEvent({ type: 'toolCall', calls: [{ id, name: 'search_insights', args: { query: 'bridge', limit: 1  } }] });
 const audible = () => portEvent({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
 
 /** The dead-air rungs this call has recorded, in order. */

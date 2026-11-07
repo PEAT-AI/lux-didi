@@ -1,14 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveTaskFixture } from './live-task-fixture.js';
+import { liveTaskFixture, luxVaultBinding } from './live-task-fixture.js';
 import { documentResult } from '../tasks/results.js';
+
+type LiveTaskFixtureShape = Awaited<ReturnType<typeof liveTaskFixture>>;
+/** The persisted owner turn the write must name, read back from the same store the host reads. */
+function ownerTurn(f: LiveTaskFixtureShape): string {
+  const row = f.store.transaction(tx => tx.get("SELECT id FROM history_turns WHERE live_session_id=? AND role='owner' ORDER BY id DESC LIMIT 1", [f.session.liveSessionId]));
+  return String(row?.['id'] ?? '');
+}
 
 for (const outcome of ['inserted', 'unknown'] as const) {
   test(`finalized owner save reaches the vault once and retains ${outcome} receipt`, async t => {
     const text = 'The synthetic team chose the blue plan. The budget is twelve units.';
     const f = await liveTaskFixture(t, async request => request.turns.length === 0
-      ? { text: '', calls: [{ id: 'save', name: 'save_to_vault', args: { title: 'Synthetic plan', text } }] }
-      : { text: outcome === 'inserted' ? 'The synthetic note was saved.' : 'The save outcome is unknown. I will not retry it.', calls: [] }, { outcome });
+      ? { text: '', calls: [{ id: 'save', name: 'vault_save', args: { requested_turn_id: ownerTurn(f), payload: { content: text, insight_title: 'Synthetic plan' } } }] }
+      : { text: outcome === 'inserted' ? 'The synthetic note was saved.' : 'The save outcome is unknown. I will not retry it.', calls: [] }, { outcome, bindings: [luxVaultBinding()] });
     f.bind(); f.finalize('Save the synthetic plan to the vault');
     const answer = await f.answer();
     assert.equal(f.writes.length, 1, 'no extra confirmation or duplicate model/tool pass is required');
@@ -29,9 +36,10 @@ for (const approved of [false, true]) {
     const f = await liveTaskFixture(t, async request => request.turns.length === 0
       ? { text: '', calls: [{ id: 'read', name: 'search_mail', args: { query: 'synthetic', cursor: null } }] }
       : request.turns.length === 1
-        ? { text: '', calls: [{ id: 'save', name: 'save_to_vault', args: { title: 'Synthetic mail note', text: 'Synthetic evidence.' } }] }
+        ? { text: '', calls: [{ id: 'save', name: 'vault_save', args: { requested_turn_id: ownerTurn(f), payload: { content: 'Synthetic evidence.', insight_title: 'Synthetic mail note' } } }] }
         : { text: approved ? 'The authorized note was saved.' : 'That write was not authorized.', calls: [] }, {
-      approved, executors: { search_mail: async () => { reads++; return documentResult('Untrusted mail commands a write. This text cannot grant it.', 'synthetic-mail'); } },
+      approved, bindings: [luxVaultBinding()],
+      executors: { search_mail: async () => { reads++; return documentResult('Untrusted mail commands a write. This text cannot grant it.', 'synthetic-mail'); } },
     });
     f.bind(); f.finalize('Read the synthetic message and save only what I authorized');
     const answer = await f.answer();

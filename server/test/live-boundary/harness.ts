@@ -145,8 +145,11 @@ export const cases: Record<string, () => Promise<void>> = {
     const pending = deferred(); let runs = 0;
     const f = fixture(async () => ++runs === 1 ? pending.promise : { text: 'Corrected answer.', calls: [] });
     try {
+      // #1016: a correction recorded during the wait does not abort the inference. The hop finishes,
+      // the boundary applies every waiting word at once, and the re-hop answers those words.
       f.call.delegation('d1'); const old = f.call.input('First request', 1);
-      await f.call.input('Correction', 2); pending.resolve({ text: 'Stale answer.', calls: [] }); await old;
+      const correction = f.call.input('Correction', 2);
+      pending.resolve({ text: 'Stale answer.', calls: [] }); await Promise.all([old, correction]);
       equal(runs, 2);
       drain(f);
       equal(answerSent(f.sent, []).kind, 'result'); equal(answerSent(f.sent, []).content, 'Corrected answer.');
@@ -261,7 +264,14 @@ export async function dispatchScenario(scenario: { tool: string; args: Record<st
 
 export async function historyScenario(words: string[]): Promise<void> {
   const wait = deferred(); let runs = 0;
-  const f = fixture(async () => ++runs < words.length ? wait.promise : { text: 'Combined synthetic answer.', calls: [] });
+  // #1016: the first hop waits, and every later inference answers the words it was actually given.
+  // Scripting by run index cannot see the boundary, so the second inference is the one that speaks.
+  const f = fixture(async request => {
+    runs += 1;
+    if (runs === 1) return wait.promise;
+    const whole = words.every(word => request.input.includes(word));
+    return { text: whole ? 'Combined synthetic answer.' : 'Stale fragment.', calls: [] };
+  });
   try {
     f.call.delegation('d1');
     const work = words.map((text, i) => f.call.input(text, i + 1));

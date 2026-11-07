@@ -31,6 +31,15 @@ export interface BudgetSelection {
   readonly omitted: readonly { readonly id: string; readonly reason: 'budget' }[];
 }
 
+/**
+ * The same acceptance test `selectWholeItems` applies, charged against an already selected part:
+ * chapter + separator + item, plus the leading separator it measures. Keeping it as arithmetic is
+ * what makes the memory-block accumulation linear in candidates.
+ */
+export function wholeItemFits(prefixChars: number, itemText: string, budget: number): boolean {
+  return Math.ceil((prefixChars + 4 + itemText.length) / ESTIMATED_CHARS_PER_TOKEN) <= budget;
+}
+
 /** Caller supplies ranked whole items. Headings and separators consume the same budget as content. */
 export function selectWholeItems(heading: string, items: readonly BudgetItem[], budget: number): BudgetSelection {
   const selected: BudgetItem[] = [];

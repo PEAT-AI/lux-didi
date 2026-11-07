@@ -1,3 +1,4 @@
+import { LUX_TOOLS } from '../connectors/lux-names.js';
 import { hostLogEvent } from './host-events.js';
 import type { Identity } from '../tasks/authority.js';
 import { freezeNote } from './lux-note.js';
@@ -191,18 +192,18 @@ export class VaultWriter {
     let receipt: VaultWriteResult;
     try {
       if (input.tool === 'vault_save') {
-        receipt = await this.#transport.write('create_insight', { ...source, content: String(args.content) + provenance,
+        receipt = await this.#transport.write(LUX_TOOLS.create, { ...source, content: String(args.content) + provenance,
           insight_title: args.title, insight_type: args.category, project: args.project ?? null,
           quote: String(turn.text).slice(0, 600), idempotency_key: `${input.sessionId}:${turnId}:${turnId}`,
           follow_up_state: args.follow_up_state ?? 'none' });
       } else if (args.content != null || args.follow_up_state != null) {
-        receipt = await this.#transport.write('update_insight', { ...source, insight_id: args.insight_id,
+        receipt = await this.#transport.write(LUX_TOOLS.update, { ...source, insight_id: args.insight_id,
           ...(args.content != null ? { content: String(args.content) + provenance } : {}),
           ...(args.follow_up_state != null ? { follow_up_state: args.follow_up_state } : {}), revision_reason: provenance.trim() });
       } else receipt = { disposition: 'updated', insight_id: Number(args.insight_id) };
       const id = receipt.insight_id;
       if (args.link_target != null && id && receipt.disposition !== 'refused' && receipt.disposition !== 'duplicate_of') {
-        const link = await this.#transport.write('create_insight_link', { source_insight_id: id, target_insight_id: args.link_target, relation_type: 'PART_OF', provenance_source: 'TRANSCRIPT' });
+        const link = await this.#transport.write(LUX_TOOLS.link, { source_insight_id: id, target_insight_id: args.link_target, relation_type: 'PART_OF', provenance_source: 'TRANSCRIPT' });
         receipt = { ...receipt, link };
       }
     } catch { receipt = refused('outcome_unknown'); }

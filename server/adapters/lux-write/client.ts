@@ -1,3 +1,4 @@
+import { LUX_TOOLS, LUX_WRITE_TOOLS } from '../../connectors/lux-names.js';
 import { hostLogEvent } from '../../tools/host-events.js';
 import { validInsightId, VAULT_REMOTE_TOOL, type VaultTransportPhase, type VaultSaveArgs, type VaultTransport, type VaultTransportResult, type VaultWriteResult } from '../../tools/vault-write.js';
 
@@ -96,7 +97,7 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
   };
 
   const write = async (tool: string, args: Record<string, unknown>): Promise<VaultWriteResult> => {
-    if (!allowed || !['create_insight', 'update_insight', 'create_insight_link', 'record_search_feedback'].includes(tool)) return { disposition: 'refused', reason: 'tool_not_allowed' };
+    if (!allowed || !(LUX_WRITE_TOOLS as readonly string[]).includes(tool)) return { disposition: 'refused', reason: 'tool_not_allowed' };
     if (!(await initialize())) return { disposition: 'refused', reason: 'transport_unavailable' };
     try {
       const call = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } });
@@ -106,7 +107,7 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
       const payload = result.structuredContent ?? parseMessage(result.content?.find(item => item.type === 'text')?.text ?? '');
       if (!payload || typeof payload !== 'object') return { disposition: 'refused', reason: 'invalid_receipt' };
       const receipt = payload as VaultWriteResult;
-      if (tool === 'create_insight' && !['created', 'duplicate_of', 'refused'].includes(receipt.disposition)) return { disposition: 'refused', reason: 'invalid_receipt' };
+      if (tool === LUX_TOOLS.create && !['created', 'duplicate_of', 'refused'].includes(receipt.disposition)) return { disposition: 'refused', reason: 'invalid_receipt' };
       return receipt;
     } catch { return { disposition: 'refused', reason: 'outcome_unknown' }; }
   };

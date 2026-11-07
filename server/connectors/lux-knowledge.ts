@@ -6,7 +6,8 @@ import type { McpRegistry } from '../adapters/mcp/registry.js';
  * The wire names this module speaks, in fixed order: the only place a lux tool name is written
  * (ruling M21-R3). Admission is decided by `luxToolAdmitted` below, never by this list.
  */
-export const LUX_TOOLS = { search: 'search_knowledge', get: 'get_insight', meetings: 'list_meetings', meeting: 'get_meeting', insights: 'list_insights' } as const;
+import { LUX_TOOLS, LUX_FORBIDDEN_TOOLS, luxWriteAdmitted } from './lux-names.js';
+export { LUX_TOOLS } from './lux-names.js';
 export const LUX_KNOWLEDGE_TOOLS = [LUX_TOOLS.search, LUX_TOOLS.get, LUX_TOOLS.meetings, LUX_TOOLS.meeting, LUX_TOOLS.insights] as const;
 /** The bounded lookup tools, whose arguments this module shapes itself. */
 export const LUX_LOOKUP_TOOLS = [LUX_TOOLS.meetings, LUX_TOOLS.meeting, LUX_TOOLS.insights] as const;
@@ -26,13 +27,14 @@ export function isTrustedRediscovery(connector: string): boolean {
  * is refused by default, so the next release's new read tool needs no host change. M23 plugs its
  * write policy in here rather than anywhere else: no other module refuses a lux tool by name.
  */
-export function luxToolAdmitted(tool: { name: string; annotations?: unknown }): boolean {
+export function luxToolAdmitted(tool: { name: string; description?: string; annotations?: unknown }): boolean {
+  if ((LUX_FORBIDDEN_TOOLS as readonly string[]).includes(tool.name)) return false;
   const annotations = tool.annotations;
   if (annotations === null || typeof annotations !== 'object' || Array.isArray(annotations)) return false;
   const record = annotations as Record<string, unknown>;
   // LK5 marks purge destructive; a destructive tool is not a read even beside readOnlyHint true.
   if (record['destructiveHint'] === true) return false;
-  return record['readOnlyHint'] === true;
+  return record['readOnlyHint'] === true || luxWriteAdmitted(tool);
 }
 
 export interface LuxKnowledgeConfig {

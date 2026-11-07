@@ -180,3 +180,41 @@ test('existing lux write transport refuses destructive tool names without dispat
   assert.equal(receipt.disposition, 'refused');
   assert.equal(dispatched, false);
 });
+
+test('helper writes require persisted owner consent, retain update ids and bound writes per call', async t => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Store } = await import('../runtime/store.js');
+  const { domainMigrations } = await import('../domain/schema.js');
+  const { liveMigrations } = await import('../live/schema.js');
+  const { VaultWriter } = await import('../tools/vault-write.js');
+  const directory = mkdtempSync(join(tmpdir(), 'm23-vault-'));
+  const store = new Store(directory, [...domainMigrations, ...liveMigrations]);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  store.transaction(tx => {
+    for (let id = 1; id <= 14; id++) tx.run('INSERT INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)',
+      [id, 'synthetic-call', id, id, id === 1 ? 'assistant' : 'owner', 'Please save this synthetic fact.', 1794009600000]);
+  });
+  const calls: { tool: string; args: Record<string, unknown> }[] = [];
+  const writer = new VaultWriter({ store, now: () => 1794009600000, log: () => {}, transport: {
+    save: async () => ({ outcome: 'failed' }),
+    write: async (tool, args) => { calls.push({ tool, args }); return { disposition: tool === 'create_insight' ? 'created' : 'updated', insight_id: Number(args.insight_id ?? 42) }; },
+  } });
+  const args = { title: 'Synthetic title', content: 'Synthetic fact', category: 'PATTERN', follow_up_state: 'open' };
+  const run = (turn: string, sessionId = 'synthetic-call') => writer.writeTask({ sessionId, tool: 'vault_save', args: { ...args, requested_turn_id: turn } });
+  assert.equal((await run('1')).disposition, 'refused');
+  assert.equal((await run('999')).disposition, 'refused');
+  assert.equal((await run('2', 'other-call')).disposition, 'refused');
+  assert.equal(calls.length, 0, 'non-owner, missing and cross-session turns never reach lux');
+  assert.equal((await run('2')).insight_id, 42);
+  assert.equal(calls[0]?.args.idempotency_key, 'synthetic-call:2:2');
+  assert.deepEqual(calls[0]?.args.source_ref, { app: 'didi-call', session_id: 'synthetic-call', turn_start_id: '2', turn_end_id: '2', spoken_at: new Date(1794009600000).toISOString() });
+  assert.match(String(calls[0]?.args.content), /speaker=owner; confidence=1/);
+  assert.equal((await run('2')).disposition, 'refused', 'one write per turn');
+  const updated = await writer.writeTask({ sessionId: 'synthetic-call', tool: 'vault_update', args: { requested_turn_id: '3', insight_id: 42, content: 'Corrected synthetic fact', follow_up_state: 'closed' } });
+  assert.equal(updated.insight_id, 42, 'correction keeps the stored id');
+  assert.equal(calls[1]?.args.follow_up_state, 'closed');
+  for (let id = 4; id <= 11; id++) assert.equal((await run(String(id))).disposition, 'created');
+  assert.equal((await run('12')).disposition, 'refused', 'ten writes per call');
+});

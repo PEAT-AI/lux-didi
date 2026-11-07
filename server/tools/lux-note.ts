@@ -58,7 +58,7 @@ export const luxNoteMigrations: readonly SchemaMigration[] = [{
        evidence_json TEXT NOT NULL,
        state TEXT NOT NULL CHECK (state IN ('staged','armed','settling','committed','cancelled','invalidated')),
        code TEXT,
-       insight_id TEXT,
+       ${P.insightId} TEXT,
        staged_at INTEGER NOT NULL,
        armed_at INTEGER,
        settle_at INTEGER,

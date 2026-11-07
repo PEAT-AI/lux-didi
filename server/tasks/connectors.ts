@@ -218,10 +218,10 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
     const binding = candidates.find(binding => CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool)) ?? candidates.find(binding => binding.connector === 'mongoose');
     if (!binding) return failed('This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
     const declaration = CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).find(declaration => declaration.name === mapping.tool);
-    if (!declaration) return failed(binding.connector === 'mongoose' ? companySignInRepair(binding) : 'This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
+    if (!discovered && !declaration) return failed(binding.connector === 'mongoose' ? companySignInRepair(binding) : 'This connector capability is not configured. Use another available source or report the missing capability.', 'unauthorized', 'not_configured');
     if (name === 'data_agent_job' && args.op !== 'get') return readerFailure(name, 'invalid_argument');
-    const mapped = mapping.args(args, declaration.parameters);
-    if (!declaration.validate(mapped)) return readerFailure(name, name === 'read_mail' ? 'wrong_source_id' : 'invalid_argument');
+    const mapped = discovered ? args : mapping.args(args, declaration!.parameters);
+    if (!discovered && !declaration!.validate(mapped)) return readerFailure(name, name === 'read_mail' ? 'wrong_source_id' : 'invalid_argument');
     const scope = createResultScope();
     try {
       return await scope.run(async () => {

@@ -1,3 +1,4 @@
+import { luxToolAdmitted } from '../connectors/lux-knowledge.js';
 import type { DataClass } from '../adapters/model/types.js';
 import { closeSync, constants, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, normalize } from 'node:path';
@@ -178,7 +179,7 @@ export async function catalogMcpConfiguration(options: CatalogOptions): Promise<
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), resolveCredential: selected.resolveCredential, assertCredentialCurrent: selected.assertCredentialCurrent });
   try {
     const discovery = await adapter.discover(selected.endpoint.id); if (discovery.state !== 'discovered') fail('invalid_source');
-    const names = discovery.tools.map(tool => tool.name);
+    const names = discovery.tools.filter(luxToolAdmitted).map(tool => tool.name);
     if (names.some(name => !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name))) fail('invalid_source');
     let offset = 0; const selection = sha256(canonicalJSON(selected.intent));
     if (options.cursor !== undefined) {
@@ -188,7 +189,7 @@ export async function catalogMcpConfiguration(options: CatalogOptions): Promise<
       offset = Number(cursor['offset']);
     }
     const next = offset + options.limit;
-    return { state: 'catalog', schemaDigest: discovery.schemaDigest, toolNames: names.slice(offset, next).map(name => name === 'search_knowledge' || name === 'get_insight' ? name : '<unapproved-tool>'), total: names.length,
+    return { state: 'catalog', schemaDigest: discovery.schemaDigest, toolNames: names.slice(offset, next), total: names.length,
       cursor: next < names.length ? Buffer.from(canonicalJSON({ digest: discovery.schemaDigest, selection, offset: next })).toString('base64url') : null,
       coverage: 'complete-tool-catalog-not-source-corpus' };
   } finally { await adapter.close(); }

@@ -22,9 +22,6 @@ export interface ExistingExecutors {
 }
 interface Mapping { connector: string; tool: string; args(args: Record<string, unknown>, parameters: Record<string, unknown>): Record<string, unknown> }
 const mappings: Record<string, Mapping> = {
-  vault_meetings: { connector: 'lux-knowledge', tool: 'list_meetings', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
-  read_vault_meeting: { connector: 'lux-knowledge', tool: 'get_meeting', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
-  list_vault: { connector: 'lux-knowledge', tool: 'list_insights', args: a => Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== 'cursor' && value !== null)) },
   chat_attention: { connector: 'mattermost', tool: 'mattermost_attention', args: a => ({ ...a }) },
   chat_person: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'person' }) },
   chat_channel: { connector: 'mattermost', tool: 'mattermost_chat', args: a => ({ ...a, intent: 'channel' }) },
@@ -40,8 +37,6 @@ const mappings: Record<string, Mapping> = {
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
   // FR5: the mode the model chose travels with the search; an unstated mode keeps the ranked default.
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(12, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'snippets', ...(a.mode === undefined || a.mode === null ? {} : { mode: a.mode }) }) },
-  read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: Array.isArray(a.ids) ? a.ids : [Number(a.id)], include_links: a.include_links ?? true }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query, mode: a.mode ?? 'answer', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
 };
@@ -104,15 +99,8 @@ export function projectTaskPayload(name: string, raw: unknown, args: Record<stri
   if ((name === 'search_company' || name === 'read_company' || name === 'query_company' || Object.hasOwn(companySteps, name))
     && !(name === 'search_company' && typeof data === 'string' && rankedText(data).length)) return companyPayload(data);
   if (['vault_meetings', 'read_vault_meeting', 'list_vault'].includes(name)) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name, text(args.cursor) || '0');
-  if (name === 'search_knowledge' && typeof data === 'string') {
-    const rows = rankedText(data).slice(0, 12).map(row => ({ ...row, title: row.title.slice(0, 300) }));
-    const empty = !rows.length && /\bNo (?:results|matches|insights)(?: found)?\b/i.test(data);
-    return { status: rows.length ? 'ok' : empty ? 'empty' : 'partial',
-      text: data.slice(0, 24000),
-      references: rows.map((row, index) => ({ id: row.id, title: row.title, rank: index + 1, ...(row.snippet_status ? { snippet_status: row.snippet_status } : {}) })), next_cursor: null,
-      coverage: `${rows.length} ranked vault candidates in source order. Semantic retrieval, not exact-name matching.${data.length > 24000 ? ' Source text truncated.' : ''}`,
-      repair: rows.length || empty ? null : 'Unrecognized vault search response; do not infer corpus absence.' };
-  }
+  if (name === LUX_TOOLS.search) return documentResult(typeof data === 'string' ? data : JSON.stringify(data), name);
+
   if (typeof data === 'string' && !name.startsWith('read_')) {
     const rows = name === 'search_knowledge' || name === 'search_company' ? rankedText(data) : [];
     return rows.length ? rankedResult(text(args.query), rows) : { status: 'partial', text: data, references: [], next_cursor: null, coverage: 'source_text_without_ranked_ids', repair: 'No structured candidate ids were supplied. Do not invent ids or claim corpus absence.' };

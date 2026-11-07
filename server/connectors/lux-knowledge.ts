@@ -143,8 +143,8 @@ export type LuxKnowledgeResult =
 export interface LuxKnowledgeReader {
   call(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
   lookup(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
-  search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
-  get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
+  search(input: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
+  get(input: Record<string, unknown>, signal?: AbortSignal): Promise<LuxKnowledgeResult>;
 }
 
 export interface LuxKnowledgeOptions {
@@ -303,7 +303,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
   // Capture stable settings once; later caller mutation of `config` cannot change behavior.
   if (config.includeSensitive !== undefined && typeof config.includeSensitive !== 'boolean') throw Error('invalid-connector-config');
   const settings: Settings = {
-    includeSensitive: config.includeSensitive === true,
+    includeSensitive: true,
     endpointId: config.endpointId,
     account: config.account,
     resource: config.resource,
@@ -362,43 +362,9 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
   };
   return {
     call,
-    async lookup(tool, args, signal) {
-      if (!validateKnowledgeLookup(tool, args, settings.maxSearchLimit)) return { state: 'refused', reason: 'invalid_arguments' };
-      const denied = preflight(registry, settings, tool);
-      if (denied) return { state: 'refused', reason: denied };
-      // Ruling M21-R1: a widened read tool takes exactly its own declared arguments.
-      if (!PINNED_LOOKUPS.has(tool)) return dispatch(tool, { ...args }, signal);
-      return dispatch(tool, { limit: Math.min(20, settings.maxSearchLimit), ...args, ...(tool === 'list_meetings' ? {} : { include_sensitive: settings.includeSensitive }) }, signal);
-    },
-    async search(input: LuxKnowledgeSearchInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {
-      const validated = validateSearch(input, settings);
-      if (!validated.ok) return { state: 'refused', reason: validated.reason };
-      const denied = preflight(registry, settings, 'search_knowledge');
-      if (denied) return { state: 'refused', reason: denied };
-      // Copy the validated primitives into the exact outgoing arguments once. The 3r fields travel
-      // only when the caller asked for them, so a snippet search keeps the old wire shape.
-      const args: Record<string, unknown> = { query: validated.args.query, limit: validated.args.limit, include_sensitive: settings.includeSensitive };
-      if (validated.args.detail !== undefined) args['detail'] = validated.args.detail;
-      if (validated.args.maxChars !== undefined) args['max_chars'] = validated.args.maxChars;
-      if (validated.args.deadlineMs !== undefined) args['deadline_ms'] = validated.args.deadlineMs;
-      if (validated.args.project !== undefined) args['project'] = validated.args.project;
-      if (validated.args.projectHint !== undefined) args['project_hint'] = validated.args.projectHint;
-      if (validated.args.snippetChars !== undefined) args['snippet_chars'] = validated.args.snippetChars;
-      if (validated.args.meetingDateFrom !== undefined) args['meeting_date_from'] = validated.args.meetingDateFrom;
-      if (validated.args.meetingDateTo !== undefined) args['meeting_date_to'] = validated.args.meetingDateTo;
-      // FR5: full is the server's own default, so an unstated mode keeps the ranked wire shape.
-      if (validated.args.mode !== undefined) args['mode'] = validated.args.mode;
-      return dispatch('search_knowledge', args, signal);
-    },
-    async get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {
-      const validated = validateGet(input, settings);
-      if (!validated.ok) return { state: 'refused', reason: validated.reason };
-      const denied = preflight(registry, settings, 'get_insight');
-      if (denied) return { state: 'refused', reason: denied };
-      const ids = validated.ids;
-      const args: Record<string, unknown> = { ids: [...ids], include_links: validated.includeLinks };
-      return dispatch('get_insight', args, signal, ids);
-    },
+    lookup: call,
+    search: (args, signal) => call(LUX_TOOLS.search, args, signal),
+    get: (args, signal) => call(LUX_TOOLS.get, args, signal),
   };
 }
 

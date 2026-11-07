@@ -190,10 +190,10 @@ export class VaultWriter {
     if (!this.#transport.write) return refused('vault write transport unavailable');
     used.add(turnId); this.#helperTurns.set(input.sessionId, used);
     const tool = input.tool === 'vault_save' ? LUX_TOOLS.create : Object.hasOwn(payload, 'source_insight_id') ? LUX_TOOLS.link : Object.hasOwn(payload, 'verdict') ? LUX_TOOLS.feedback : LUX_TOOLS.update;
-    const provenance = `\n\nProvenance: didi-call; speaker=owner; confidence=1; session=${input.sessionId}; requested_turn_id=${turnId}.`;
+    const provenance = `\n\nProvenance: lux-didi; speaker=owner; confidence=1; session=${input.sessionId}; requested_turn_id=${turnId}.`;
     if (tool === LUX_TOOLS.create || tool === LUX_TOOLS.update) {
       payload.source_kind = 'voice_call';
-      payload.source_ref = { app: 'didi-call', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString() };
+      payload.source_ref = { app: 'lux-didi', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString() };
       if (typeof payload.content === 'string') payload.content += provenance;
       if (tool === LUX_TOOLS.create) {
         payload.idempotency_key = `${input.sessionId}:${turnId}:${turnId}`;

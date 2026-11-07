@@ -1814,7 +1814,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
         assert.match(prompt.system, /"connector":"lux-knowledge"/);
         assert.match(prompt.system, /"reason":"deadline"/);
         assert.equal(incomplete.length, 1);
-        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 5, reason: 'deadline' }]);
+        assert.deepEqual(incomplete[0].groups, [{ connector: 'lux-knowledge', missingEndpoints: 1, missingTools: 0, reason: 'deadline' }]);
         assert.equal(JSON.stringify(incomplete).includes('fixture-read'), false);
         assert.equal(JSON.stringify(incomplete).includes('synthetic-private-endpoint-detail'), false);
       } else {

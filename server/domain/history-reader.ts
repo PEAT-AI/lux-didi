@@ -180,9 +180,11 @@ function corpus(tx: Transaction, scope: HistoryScope, query: string, from?: stri
   // F2: a summary or a turn of a marked canary or typed eval session is not history. The join is skipped when
   // this store carries no live sessions at all.
   const liveSessions = !!tx.get("SELECT 1 FROM sqlite_master WHERE name='live_sessions'");
+  // Newest first: the summaries used to be admitted in `ORDER BY id`, the random summary id, so an order
+  // that means nothing decided which five survived a tie. Recency is a real order; the rerank refines it.
   for (const row of tx.all(liveSessions
-    ? `SELECT cs.id FROM conversation_summaries cs JOIN live_sessions l ON l.live_session_id=cs.live_session_id WHERE cs.status='complete' AND cs.live_session_id<>? AND ${ownerMemorySessionSql('l')} ORDER BY cs.id`
-    : "SELECT id FROM conversation_summaries WHERE status='complete' AND live_session_id<>? ORDER BY id", [scope.currentSessionId ?? ''])) admit(summaryValue(tx, String(row.id), eligibility));
+    ? `SELECT cs.id FROM conversation_summaries cs JOIN live_sessions l ON l.live_session_id=cs.live_session_id WHERE cs.status='complete' AND cs.live_session_id<>? AND ${ownerMemorySessionSql('l')} ORDER BY cs.ended_at DESC, cs.id`
+    : "SELECT id FROM conversation_summaries WHERE status='complete' AND live_session_id<>? ORDER BY ended_at DESC, id", [scope.currentSessionId ?? ''])) admit(summaryValue(tx, String(row.id), eligibility));
   const terms = recallTerms(query);
   const expression = terms.map(term => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
   const current = scope.currentSessionId ?? '';

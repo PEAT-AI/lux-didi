@@ -14,7 +14,7 @@ export const GOOGLE_READ_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 
 /** The read envelope an approved read grant may name; the write families are never part of it. */
 export const GOOGLE_TOOLS = GOOGLE_READ_TOOLS;
 /** W1030: the write calls, each on its own family, endpoint and token (C-GWRITE). */
-export const GOOGLE_WRITE_TOOLS = ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft', 'calendar_create_event', 'calendar_delete_event'] as const;
+export const GOOGLE_WRITE_TOOLS = ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft', 'calendar_create_event', 'calendar_delete_event', 'calendar_respond_event'] as const;
 export type GoogleTool = (typeof GOOGLE_READ_TOOLS)[number] | (typeof GOOGLE_WRITE_TOOLS)[number];
 
 /** Each family is one stdio endpoint; its catalog is a closed subset of the envelope. */
@@ -29,7 +29,7 @@ export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[
   // GW-R4: each write family carries the read-only google_identity probe, so a consent check can never
   // write. Didi's compose label is the helper's gmail_draft family.
   compose: ['google_identity', 'gmail_create_draft', 'gmail_create_reply_draft'],
-  calendar_write: ['google_identity', 'calendar_create_event', 'calendar_delete_event'],
+  calendar_write: ['google_identity', 'calendar_create_event', 'calendar_delete_event', 'calendar_respond_event'],
 };
 export type GoogleFamily = 'gmail' | 'calendar' | 'drive' | 'compose' | 'calendar_write';
 /** Didi's family labels against the helper's own names (GW-R4: compose is gmail_draft in the helper). */
@@ -92,6 +92,15 @@ export interface GmailDraftInput { to: readonly string[]; cc?: readonly string[]
 export interface GcalCreateEventInput { summary: string; start: string; end: string; timeZone: string; description?: string; location?: string; clientRequestId: string }
 /** W1030 calendar_delete_event: only an event the helper created, so the id must be one it returned. */
 export interface GcalDeleteEventInput { eventId: string }
+/**
+ * 10.21 calendar_respond_event: his own answer to one invitation. The helper owns the attendee test, so an
+ * event he was not invited to comes back refused rather than answered, and no update is sent to anyone.
+ */
+export interface GcalRespondEventInput { eventId: string; response: 'accepted' | 'declined' | 'tentative'; note?: string }
+/** Google's own three response words, and nothing else, reach the helper. */
+const RESPONSE_STATUS: readonly string[] = ['accepted', 'declined', 'tentative'];
+/** The helper's note bound; longer text is refused before egress, never truncated. */
+export const RESPONSE_NOTE_CHARS = 500;
 /** The Drive search page bounds (C-DRIVE): 1 to 10, five when the caller names none. */
 export const DRIVE_LIMIT = { default: 5, max: 10 } as const;
 export interface GcalListInput {
@@ -139,6 +148,7 @@ export interface GoogleReader {
   gmailCreateDraft(input: GmailDraftInput, signal?: AbortSignal): Promise<GoogleResult>;
   calendarCreateEvent(input: GcalCreateEventInput, signal?: AbortSignal): Promise<GoogleResult>;
   calendarDeleteEvent(input: GcalDeleteEventInput, signal?: AbortSignal): Promise<GoogleResult>;
+  calendarRespondEvent(input: GcalRespondEventInput, signal?: AbortSignal): Promise<GoogleResult>;
 }
 
 export interface GoogleOptions { port: McpPort; registry: McpRegistry; config: GoogleConfig }
@@ -454,6 +464,18 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       if (denied) return { state: 'refused', reason: denied };
       if (input.eventId.length < 1 || input.eventId.length > 1024) return { state: 'refused', reason: 'invalid-event-id' };
       return dispatch('calendar_delete_event', { event_id: input.eventId }, signal);
+    },
+    async calendarRespondEvent(input: GcalRespondEventInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('calendar_respond_event');
+      if (denied) return { state: 'refused', reason: denied };
+      if (input.eventId.length < 1 || input.eventId.length > 1024) return { state: 'refused', reason: 'invalid-event-id' };
+      if (!RESPONSE_STATUS.includes(input.response)) return { state: 'refused', reason: 'invalid-response-status' };
+      const note = (input.note ?? '').trim();
+      if (note.length > RESPONSE_NOTE_CHARS) return { state: 'refused', reason: 'invalid-note' };
+      // No attendees, no sendUpdates: the helper answers as the owner and tells nobody (10.21).
+      return dispatch('calendar_respond_event', {
+        event_id: input.eventId, response_status: input.response, ...(note.length > 0 ? { note } : {}),
+      }, signal);
     },
     async gmailProfile(signal?: AbortSignal): Promise<GoogleResult> {
       const denied = gate('gmail_get_profile');

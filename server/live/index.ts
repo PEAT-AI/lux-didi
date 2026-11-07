@@ -2600,8 +2600,8 @@ export class LiveSessionOwner {
       this.#sendHostSpeech(handle, hostNote(CONTINUATION_RE_REQUEST_NOTE), 'The tool batch settled with no spoken continuation.');
       // The nudge buys the provider the rest of the ordinary rung, never less: a faster recovery of a stuck
       // response must not move the rebuild rung earlier than the 8 s the owner already waits (#820).
-      const owed = AUDIBLE_DEBT_RUNG_MS - (this.#now() - handle.debtSince);
-      this.#scheduleDebt(handle, Math.max(DEAD_AIR_CONTINUATION_MS, owed), 'rung');
+      const owed = Math.max(0, AUDIBLE_DEBT_RUNG_MS - (this.#now() - handle.debtSince) - DEAD_AIR_CONTINUATION_MS);
+      this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS + owed, 'rung');
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');

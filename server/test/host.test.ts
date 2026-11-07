@@ -1752,18 +1752,18 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
             if (loaded.status !== 'configured') throw Error('synthetic live fixture must configure');
             const specs = [
               { id: 'fixture-search', at: 0, name: 'search_insights', properties: { query: { type: 'string' } } },
-              { id: 'fixture-read', at: recoveredAt!, name: 'get_insight', properties: { ids: { type: 'array', items: { type: 'integer' } } } },
+              { id: 'fixture-read', at: recoveredAt!, name: 'get_insight', properties: { insight_ids: { type: 'array', items: { type: 'integer' } } } },
             ];
             const connected = new Set<string>();
             const synchronize = () => {
               for (const spec of specs) {
                 if (now < spec.at || connected.has(spec.id)) continue;
                 const endpoint = { id: spec.id, url: 'https://synthetic.invalid/mcp', account: 'synthetic', resource: spec.id };
-                const schemas = [{ name: spec.name, description: `Synthetic schema ${spec.id}`, inputSchema: { type: 'object', properties: spec.properties } }];
+                const schemas = [{ name: spec.name, description: `Synthetic schema ${spec.id}`, annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: spec.properties } }];
                 runtime.registry.register(endpoint);
                 runtime.registry.enable(spec.id); runtime.registry.allowEgress(spec.id);
                 runtime.registry.observed(spec.id, schemas, runtime.registry.revision(spec.id));
-                runtime.owner.applyConnection({ schemaVersion: 1, ownerId: options.ownerId, connectionId: spec.id,
+                runtime.owner.applyConnection({ schemaVersion: 1, bindingMode: 'connection', ownerId: options.ownerId, connectionId: spec.id,
                   generation: 1, enabled: true, connector: 'lux-knowledge', endpoint: { ...endpoint, credentialRef: null },
                   toolNames: [spec.name], schemaDigest: canonicalToolDigest(schemas),
                   sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
@@ -1795,15 +1795,14 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
       const task = canonicalTaskFixture(host.store, host.tools.owner, session.liveSessionId, 'Read the synthetic knowledge source', recoveredAt === Infinity ? ['fixture-search'] : ['fixture-search', 'fixture-read']);
       try {
         assert.ok(task.tools.some(tool => tool.name === 'search_insights'));
-        const read = task.tools.find(tool => tool.name === 'read_knowledge');
-        assert.ok(read, 'the canonical registry is stable while connector publication gates execution');
+        const read = task.tools.find(tool => tool.name === 'get_insight');
+        assert.equal(Boolean(read), recoveredAt !== Infinity, 'only currently discovered native reads are exposed');
         if (recoveredAt === Infinity) {
-          const unavailable = await task.runtime.runTool('read_knowledge', { ids: [1], include_links: true, cursor: null }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
+          const unavailable = await task.runtime.runTool('get_insight', { insight_ids: [1] }, { ...task.revision.identity, operation_id: 'synthetic-unrecovered-read' }, new AbortController().signal);
           assert.equal(unavailable.status, 'failed', 'an unpublished native read must not become a usable task capability');
         }
-        // The provider's strict mode refuses uniqueItems, so the ids keep their bounds only and the
-        // distinct-id rule is a validate rule on the same agent (server/test/task-tools-provider-shape.test.ts).
-        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).ids, { type: 'array', minItems: 1, maxItems: 6, items: { type: 'integer', minimum: 1 } });
+        // Discovery owns the parameter shape; the helper must not synthesize a second batch schema.
+        if (read) assert.deepEqual((read.parameters.properties as Record<string, unknown>).insight_ids, { type: 'array', items: { type: 'integer' } });
       } finally { task.close(); }
       const prompt = JSON.parse(String(row['accepted_prompt_snapshot']));
       const events = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));

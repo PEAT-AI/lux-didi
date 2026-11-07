@@ -33,7 +33,9 @@ type Candidate = { id: string; kind: MemoryKind | undefined; body: string; autho
   sources: readonly string[]; observedAt: number; eventAt: number | null; loop: boolean; score: number; text: string };
 
 /** Inputs have already passed route admission. The compiler has no data-class policy or age filter. */
-function build(input: MemoryBlockInput, dropped: ReadonlySet<string>) {
+export interface MemoryCaps { readonly identity: number; readonly loops: number; readonly conversations: number }
+
+function build(input: MemoryBlockInput, caps?: MemoryCaps) {
   const date = (at: number, timeZone = input.timeZone): string => new Intl.DateTimeFormat('en-GB', {
     timeZone, day: 'numeric', month: 'short', year: 'numeric',
   }).format(at);
@@ -50,7 +52,9 @@ function build(input: MemoryBlockInput, dropped: ReadonlySet<string>) {
     return reason === undefined;
   });
   const budgets = CONTEXT_BUDGET.memory;
-  const budget = (part: keyof typeof budgets): number => budgets[part][input.floors || input.floorParts?.some(value => value === part) ? 'floor' : 'ceiling'];
+  const budget = (part: keyof typeof budgets): number => caps === undefined || part === 'now'
+    ? budgets[part][input.floors || input.floorParts?.some(value => value === part) ? 'floor' : 'ceiling']
+    : caps[part];
   const now = selectWholeItems('# Now', [{ id: 'clock', text: input.clock }], budget('now'));
   const normalize = (text: string): string => text.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en');
   const seen = new Set(now.selectedIds.length ? [normalize(input.clock)] : []);
@@ -81,11 +85,22 @@ function build(input: MemoryBlockInput, dropped: ReadonlySet<string>) {
   const coverable = (candidate: Candidate): boolean => candidate.kind === undefined ? false
     : candidate.kind === 'plan' ? candidate.eventAt === null || candidate.eventAt - input.now <= HORIZON_DAYS * day
       : COVERED_KINDS.includes(candidate.kind);
+  // B1 of the review: one pooled share let a burst of long preferences spend all of it and evict the
+  // facts, so each covered kind keeps its own bounded share of the part. Unused share still flows back
+  // to the score order below.
   const charged = { identity: '# Who he is'.length, loops: '# Open loops'.length };
+  const kindsInPart = { identity: new Set<string>(), loops: new Set<string>() };
+  for (const candidate of candidates) if (coverable(candidate)) kindsInPart[candidate.loop ? 'loops' : 'identity'].add(String(candidate.kind));
+  const spent = { identity: new Map<string, number>(), loops: new Map<string, number>() };
   const promoted = new Set<string>();
   for (const candidate of candidates) {
     const part = candidate.loop ? 'loops' : 'identity';
-    if (!coverable(candidate) || !wholeItemFits(charged[part], candidate.text, budget(part) * COVERAGE_SHARE)) continue;
+    if (!coverable(candidate)) continue;
+    const quota = budget(part) * COVERAGE_SHARE / Math.max(1, kindsInPart[part].size);
+    const used = spent[part].get(String(candidate.kind)) ?? 0;
+    const charge = estimatedTokens('\n\n' + candidate.text);
+    if (used + charge > quota || !wholeItemFits(charged[part], candidate.text, budget(part) * COVERAGE_SHARE)) continue;
+    spent[part].set(String(candidate.kind), used + charge);
     promoted.add(candidate.id); charged[part] += 2 + candidate.text.length;
   }
   const identityItems: BudgetItem[] = [], loopItems: BudgetItem[] = [];
@@ -94,7 +109,6 @@ function build(input: MemoryBlockInput, dropped: ReadonlySet<string>) {
   const ranked: string[] = [];
   for (const candidate of [...candidates.filter(value => promoted.has(value.id)), ...candidates.filter(value => !promoted.has(value.id))]) {
     const key = normalize(candidate.body);
-    if (dropped.has(candidate.id)) { omitted.push({ id: candidate.id, reason: 'budget' }); continue; }
     if (seen.has(key)) { omitted.push({ id: candidate.id, reason: 'duplicate' }); continue; }
     // D7: one charged append per candidate, never a fresh join of the whole part. Acceptance is
     // monotone (a part only grows), so the first rejection of a candidate is also its last.
@@ -143,13 +157,34 @@ function build(input: MemoryBlockInput, dropped: ReadonlySet<string>) {
  * #940 DREAM-1: the block is selected against the room the composed instruction actually leaves, so a
  * start that would overrun gives back its lowest ranked whole item until it fits. No item is ever cut.
  */
+/** The share of the memory part budget each section keeps when the composed instruction is over target. */
+const capFor = (tokens: number): MemoryCaps => {
+  const memory = CONTEXT_BUDGET.memory;
+  const share = { identity: memory.identity.ceiling, loops: memory.loops.ceiling, conversations: memory.conversations.ceiling };
+  const total = share.identity + share.loops + share.conversations;
+  const chars = Math.max(0, tokens) * ESTIMATED_CHARS_PER_TOKEN;
+  return { identity: Math.floor(chars * share.identity / total), loops: Math.floor(chars * share.loops / total),
+    conversations: Math.floor(chars * share.conversations / total) };
+};
+
+/**
+ * #940 DREAM-1: the block is selected against the room the composed instruction actually leaves. Over
+ * that room, the section budgets shrink to the allowance and the block is rebuilt, which gives back
+ * whole items from the lowest ranked end; no item is ever cut. A pass that frees no room ends the trim.
+ */
 export function compileMemoryBlock(input: MemoryBlockInput) {
-  const dropped = new Set<string>();
-  let built = build(input, dropped);
   const limit = input.allowanceTokens;
-  while (limit !== undefined && estimatedTokens(built.block.text) > limit && built.ranked.length > 0) {
-    dropped.add(built.ranked[built.ranked.length - 1]!);
-    built = build(input, dropped);
+  let built = build(input);
+  if (limit === undefined) return built.block;
+  let target = limit;
+  for (let pass = 0; pass < 8; pass += 1) {
+    const rendered = estimatedTokens(built.block.text);
+    if (rendered <= limit || target <= 0) break;
+    target = Math.max(0, target - Math.max(1, rendered - limit));
+    const next = build(input, capFor(target));
+    // Termination: every pass lowers the target by at least one token, and `best` only ever gets smaller.
+    if (estimatedTokens(next.block.text) < rendered) built = next;
+    else if (target === 0) break;
   }
   return built.block;
 }
@@ -163,7 +198,12 @@ export interface OmissionRecord {
   readonly reasons: Readonly<Record<OmissionReason, number>>;
   readonly kinds: Readonly<Record<string, number>>;
   readonly selectedIds: readonly string[];
+  /** Ids the record could not carry. host/log.ts refuses more than OMISSION_ID_CAP of them. */
+  readonly selectedTruncated: number;
 }
+
+/** host/log.ts keeps a bounded id list, so the busiest start states its drop instead of losing the line. */
+export const OMISSION_ID_CAP = 128;
 
 /** L6 (#940): one record per start block instead of one line per omitted item, and no item text in it. */
 export function omissionRecord(block: { readonly selectedIds: readonly string[];
@@ -176,6 +216,8 @@ export function omissionRecord(block: { readonly selectedIds: readonly string[];
     const kind = block.kindOf?.(value.id);
     if (kind !== undefined) kinds[kind] = (kinds[kind] ?? 0) + 1;
   }
+  const selectedIds = block.selectedIds.slice(0, OMISSION_ID_CAP);
   return { event: 'live_context_items_omitted', selected: block.selectedIds.length,
-    omitted: block.omitted.length, reasons, kinds, selectedIds: block.selectedIds };
+    omitted: block.omitted.length, reasons, kinds, selectedIds,
+    selectedTruncated: block.selectedIds.length - selectedIds.length };
 }

@@ -1871,7 +1871,11 @@ export class LiveSessionOwner {
       const summaryOmissions = composed.itemOmissions.filter(item => summaryIds.has(item.id));
       // L6 (#940): one record per start block, counted by reason and kind, naming what was selected.
       const kindOf = new Map(admittedRecords.map(record => [record.id, record.memoryItem?.kind]));
-      console.error(JSON.stringify(omissionRecord({ selectedIds: [...kindOf.keys(), ...summaryIds].filter(id => !composed.itemOmissions.some(item => item.id === id)),
+      // Typed memory leads the id list, because it is what a later diagnosis reads and the record caps
+      // the list; the ids come from the block itself, never from everything admitted minus everything omitted.
+      const typed = composed.selectedIds.filter(id => kindOf.get(id) !== undefined);
+      const untyped = composed.selectedIds.filter(id => kindOf.get(id) === undefined);
+      console.error(JSON.stringify(omissionRecord({ selectedIds: [...new Set([...typed, ...summaryIds, ...untyped])],
         omitted: composed.itemOmissions, kindOf: id => kindOf.get(id) })));
       if (composed.overTarget) console.error(JSON.stringify({ event: 'live_context_target_overrun', estimatedTokens: composed.estimatedTokens, fixedEstimatedTokens: composed.fixedEstimatedTokens, sections: composed.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) }));
       // M20-R1: a start that lost authored text to the last-resort clip is never a silent one.

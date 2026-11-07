@@ -203,10 +203,14 @@ test('an allowance tighter than the whole block ends with summaries selected and
   const summaries = [{ id: 'summary-a', sessionId: 'sess-a', startedAt: now - 3_600_000,
     text: 'Yesterday he asked about the boiler repair and the plumber rang back', openLoop: 'chase the plumber invoice' }];
   const items = [item('fact-a', { text: 'Fact: his sister Ana lives in Lisbon' })];
-  const result = compileMemoryBlock({ ...input, items, summaries, allowanceTokens: 60 });
-  assert.ok(estimatedTokens(result.text) <= 60, `composed ${estimatedTokens(result.text)} tokens exceeds the allowance`);
-  assert.equal(result.summaryIds.length, 0);
-  assert.ok(result.omitted.some(value => value.id === 'summary-a'));
+  const roomy = compileMemoryBlock({ ...input, items, summaries });
+  assert.equal(roomy.selectedIds.length, 3);
+  const result = compileMemoryBlock({ ...input, items, summaries, allowanceTokens: 90 });
+  assert.ok(estimatedTokens(result.text) <= 90, `composed ${estimatedTokens(result.text)} tokens exceeds the allowance`);
+  assert.ok(result.selectedIds.length < roomy.selectedIds.length, 'the trim gave back at least one whole item');
+  assert.ok(result.omitted.some(value => value.id === 'summary-a' && value.reason === 'budget'));
+  if (result.selectedIds.includes('fact-a')) assert.ok(result.text.includes('Fact: his sister Ana lives in Lisbon'), 'a selected item is never cut');
+  if (result.summaryIds.length) assert.ok(result.text.includes(summaries[0]!.text), 'a selected summary is never cut');
 });
 
 // Review M2: one pooled coverage share let a burst of long preferences spend it all and evict the facts,

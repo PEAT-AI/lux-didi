@@ -860,7 +860,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   // L6 (#940): one aggregated startup omission record instead of one line per omitted item.
   if (value.event === 'live_context_items_omitted') {
-    if (!closedKeys(value, ['event', 'selected', 'omitted', 'reasons', 'kinds', 'selectedIds'])) return;
+    if (!closedKeys(value, ['event', 'selected', 'omitted', 'reasons', 'kinds', 'selectedIds', 'selectedTruncated'])) return;
     if (['selected', 'omitted'].some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
     const reasons = value.reasons, kinds = value.kinds;
     if (!reasons || typeof reasons !== 'object' || Array.isArray(reasons) || !closedKeys(reasons as Record<string, unknown>, ['budget', 'duplicate', 'superseded', 'invalid', 'expired', 'not-yet-valid'])) return;
@@ -871,7 +871,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.values(kinds).some(count => !Number.isSafeInteger(count) || Number(count) < 0)) return;
     if (!Array.isArray(value.selectedIds) || value.selectedIds.length > 128) return;
     if (value.selectedIds.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(id))) return;
-    return { event: value.event, selected: value.selected, omitted: value.omitted, reasons: value.reasons, kinds, selectedIds: value.selectedIds };
+    if (value.selectedTruncated !== undefined
+      && (!Number.isSafeInteger(value.selectedTruncated) || Number(value.selectedTruncated) < 0)) return;
+    return { event: value.event, selected: value.selected, omitted: value.omitted, reasons: value.reasons, kinds, selectedIds: value.selectedIds,
+      ...(value.selectedTruncated === undefined ? {} : { selectedTruncated: value.selectedTruncated }) };
   }
   if (value.event === 'live_context_target_overrun') {
     if (!closedKeys(value, ['event', 'estimatedTokens', 'fixedEstimatedTokens', 'sections'])) return;

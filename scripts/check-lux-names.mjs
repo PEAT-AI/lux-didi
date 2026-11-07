@@ -33,4 +33,4 @@ scan(join(root, 'server'));
 scan(join(root, 'scripts'));
 scan(join(root, 'web/src'));
 if (failures.length) { console.error(`Lux wire identities outside lux-names.ts: ${failures.join(', ')}`); process.exitCode = 1; }
-else console.log('Lux wire identity check: no stray source names or host-owned parameter spellings');
+else console.log('Lux wire identity check: no stray tool names, and no parameter spelling outside the declared wire files');

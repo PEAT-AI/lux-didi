@@ -6,7 +6,7 @@ import type { OwnerProfileSnapshot } from '../prompt/types.js';
 import {
   LIVE_MUTE_PICKUP, LIVE_RECOVERY_PICKUP, NAYA_LIVE_BASE, composeLiveSessionInstruction,
 } from '../prompt/live-persona.js';
-import { SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT, SEED_TOKEN_PROXY_LIMIT, alarmSessionInstructions, condenseSeed, fitSeedTurns } from '../live/index.js';
+import { APPEND_TOKEN_LIMIT, SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT, SEED_TOKEN_PROXY_LIMIT, alarmSessionInstructions, condenseSeed, fitSeedTurns } from '../live/index.js';
 
 /**
  * The provider's documented live-session ceilings, quoted from its own guides and never from our estimates:
@@ -15,7 +15,6 @@ import { SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT, SEED_TOKEN_PROXY_LIMIT, alarmSessi
  * pass here holds at either reading of the tokenizer.
  */
 const PROVIDER_INSTRUCTION_TOKENS = 16_384;
-const PROVIDER_APPEND_TOKENS = 500;
 const PESSIMISTIC_CHARS_PER_TOKEN = 3.0;
 const PROVIDER_INSTRUCTION_CHARS = PROVIDER_INSTRUCTION_TOKENS * PESSIMISTIC_CHARS_PER_TOKEN;
 /** The owner-style section measured on the release 10.18 canary, in characters. */
@@ -30,6 +29,17 @@ function oversize(tokens: number, multiple = WORST_CASE_MULTIPLE): string {
   return 'x'.repeat(chars(tokens) * multiple);
 }
 
+/** Authored style text arrives as paragraphs, which is the unit the last-resort clip is allowed to shed. */
+function styleParagraphs(totalChars: number): string {
+  const paragraphs: string[] = [];
+  let used = 0;
+  for (let index = 0; used < totalChars; index += 1) {
+    const paragraph = `${index} ${'S'.repeat(200)}`;
+    paragraphs.push(paragraph); used += paragraph.length + 2;
+  }
+  return paragraphs.join('\n\n');
+}
+
 function ownerLore(paragraphs: number): string {
   return Array.from({ length: paragraphs }, (_, index) => `${index} ${'L'.repeat(200)}`).join('\n\n');
 }
@@ -37,7 +47,7 @@ function ownerLore(paragraphs: number): string {
 function owner(styleChars: number, loreParagraphs: number): OwnerProfileSnapshot {
   return {
     schemaVersion: 1, kind: 'profile', ownerId: 'p1-synthetic', profileVersion: 'p1', displayName: 'Synthetic Owner',
-    style: { text: 'S'.repeat(styleChars), dataClass: 'private' },
+    style: { text: styleParagraphs(styleChars), dataClass: 'private' },
     lore: { text: ownerLore(loreParagraphs), dataClass: 'sensitive' },
   };
 }
@@ -55,11 +65,16 @@ function startContext(patch: Partial<MemoryBlockInput> = {}): MemoryBlockInput {
   return { now: NOW, timeZone: 'UTC', clock: 'Sat 7 Nov 2026, 00:00 UTC', items: [], entries: [], summaries: [], ...patch };
 }
 
-/** Every section the composer can carry at once, each oversized, the owner style at three times the measured size. */
-function worstCase() {
+/**
+ * Every section the composer can carry at once, each oversized, the owner style at three times the measured
+ * size. Two parts stay at their reservation rather than three times it: the fixed persona text, because the
+ * ruling keeps the refusal of a start whose fixed text alone exceeds hard (asserted separately below), and the
+ * memory block, whose selection is charged to the per-part ceilings by design.
+ */
+function worstCaseInput() {
   const records = memoryRecords(64);
-  return composeLiveSessionInstruction({
-    text: `${NAYA_LIVE_BASE}\n\n${oversize(CONTEXT_BUDGET.sections.fixed.ceiling)}`,
+  return {
+    text: `${NAYA_LIVE_BASE}\n\n${oversize(CONTEXT_BUDGET.sections.fixed.ceiling, 1)}`,
     tools: ['search_knowledge'],
     records,
     trustedChars: 60_000,
@@ -72,11 +87,11 @@ function worstCase() {
     openersNote: oversize(CONTEXT_BUDGET.sections.openings.ceiling),
     openingFacts: oversize(CONTEXT_BUDGET.sections.openings.ceiling),
     ownerProfile: owner(MEASURED_OWNER_STYLE_CHARS * WORST_CASE_MULTIPLE, 40),
-  });
+  };
 }
 
-// FINDING M20-F1: on base this throws `instruction_too_large` (live-persona.ts:683), so the worst-case start
-// never reaches the model at all. The test stays red on purpose; the report carries the minimal fix.
+const worstCase = () => composeLiveSessionInstruction(worstCaseInput());
+
 test('worst case: every section oversized still composes inside hard admission and the provider instruction limit', () => {
   const composed = worstCase();
   assert.ok(estimatedTokens(composed.text) <= CONTEXT_BUDGET.hard,
@@ -85,9 +100,49 @@ test('worst case: every section oversized still composes inside hard admission a
     `composed instruction is ${composed.text.length} characters, over the provider's ${PROVIDER_INSTRUCTION_CHARS}`);
 });
 
-// FINDING M20-F1: the same refusal, asserted on its own so the failure names the lost call, not the size.
 test('worst case: composition never throws, so an oversized start is never a failed call', () => {
   assert.doesNotThrow(() => worstCase(), 'an oversized start must be trimmed, never refused');
+});
+
+test('M20-R1: the last-resort clip takes the pickup note, then owner-style paragraphs, and reports what it took', () => {
+  const composed = worstCase();
+  assert.ok(composed.clipped.length > 0, 'the worst case must actually exercise the clip, or this test proves nothing');
+  for (const item of composed.clipped) {
+    assert.ok(item.id === 'pickup' || item.id === 'owner-style', `the clip must never reach ${item.id}`);
+    assert.ok(item.chars > 0, 'a clip reports the characters it removed');
+  }
+  // The pickup note goes first, whole, and the style is cut only after it.
+  assert.deepEqual(composed.clipped.map(item => item.id), ['pickup', 'owner-style']);
+});
+
+test('M20-R1: the clip never touches the pinned lore or the memory block, nor their floors', () => {
+  const clipped = worstCase();
+  const input = worstCaseInput();
+  // The control is the same start with an owner style that needs no clip, so nothing else may differ.
+  const control = composeLiveSessionInstruction({ ...input, pickupNote: 'Synthetic pickup', ownerProfile: owner(2_000, 40) });
+  const section = (result: typeof clipped, id: string) => result.sections.find(entry => entry.id === id);
+  assert.equal(section(clipped, 'owner-lore')?.chars, section(control, 'owner-lore')?.chars, 'the lore section is byte-identical');
+  assert.equal(section(clipped, 'memory')?.chars, section(control, 'memory')?.chars, 'the memory block is byte-identical');
+  for (const id of ['owner-lore', 'memory']) assert.ok(section(clipped, id) !== undefined, `the clip never drops ${id}`);
+  const identityOf = (result: typeof clipped): string => {
+    const at = result.text.indexOf('# Who he is');
+    assert.ok(at !== -1, 'the identity part is never dropped');
+    return result.text.slice(at, result.text.indexOf('# Open loops', at));
+  };
+  assert.equal(identityOf(clipped), identityOf(control), 'the identity part is byte-identical');
+  assert.ok(estimatedTokens(identityOf(clipped)) >= CONTEXT_BUDGET.memory.identity.floor - 40,
+    `identity keeps its floor: ${estimatedTokens(identityOf(clipped))} estimated tokens`);
+});
+
+test('M20-R1: a start whose fixed text alone exceeds hard admission is still refused', () => {
+  // One unbroken owner-style paragraph has no boundary to cut at, so this is the one refusal the ruling keeps.
+  const record = [{ id: 'note', text: 'Synthetic fact', capturedAt: NOW }];
+  assert.throws(() => composeLiveSessionInstruction({
+    text: NAYA_LIVE_BASE, tools: [], records: record, trustedChars: 60_000, now: NOW, timeZone: 'UTC',
+    memoryBlockInput: startContext({ entries: record }),
+    ownerProfile: { schemaVersion: 1, kind: 'profile', ownerId: 'p1-synthetic', profileVersion: 'p1', displayName: 'Synthetic Owner',
+      style: { text: 'S'.repeat(chars(CONTEXT_BUDGET.hard) + 5_000), dataClass: 'private' }, lore: { text: 'Synthetic lore', dataClass: 'sensitive' } },
+  }), { code: 'instruction_too_large' });
 });
 
 test('the pinned lore and the memory floors hold while the yieldable sections overflow', () => {
@@ -132,19 +187,22 @@ test('the pinned lore and the memory floors hold while the yieldable sections ov
   assert.ok(estimatedTokens(composed.text) <= CONTEXT_BUDGET.hard, 'and the whole instruction still fits');
 });
 
-// FINDING M20-F2: `alarmSessionInstructions` (live/index.ts:371) copies the alarm label and series rule in
-// verbatim and neither field carries a bound, so a long reminder alone is over the provider's append budget.
 test('every mid-call append payload stays inside the provider 500-token append budget', () => {
   const payloads: readonly [string, string][] = [
     ['a long alarm reminder', alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R'.repeat(1_200) })],
-    ['a series alarm', alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'Synthetic standup', series: 'S'.repeat(600) })],
+    ['a long series rule', alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'Synthetic standup', series: 'S'.repeat(600) })],
+    ['the longest alarm note', alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R '.repeat(900), series: 'S '.repeat(400), alarmId: 'alarm-synthetic' })],
     ['the recovery pickup', LIVE_RECOVERY_PICKUP],
     ['the mute pickup', LIVE_MUTE_PICKUP],
   ];
   for (const [what, payload] of payloads) {
-    assert.ok(estimatedTokens(payload) <= PROVIDER_APPEND_TOKENS,
-      `${what} is ${estimatedTokens(payload)} estimated tokens, over the provider's ${PROVIDER_APPEND_TOKENS}`);
+    assert.ok(estimatedTokens(payload) <= APPEND_TOKEN_LIMIT,
+      `${what} is ${estimatedTokens(payload)} estimated tokens, over the provider's ${APPEND_TOKEN_LIMIT}`);
   }
+  // The clip is at a word boundary and keeps the fixed instruction text whole.
+  const clipped = alarmSessionInstructions({ ownerDisplayName: 'Synthetic Owner', scheduledTime: '07:00', label: 'R '.repeat(900) });
+  assert.ok(!/\s{2,}R?$|R{2,}/u.test(clipped.replace(/^[\s\S]*words, as the first thing you say: "/u, '')), 'the reminder is cut between words');
+  assert.ok(clipped.includes('[alarm mode]') && clipped.includes('Briefly invite a spoken answer.'), 'the fixed note is never cut');
 });
 
 test('the recovery reseed stays inside 128 messages and 8,192 estimated tokens', () => {

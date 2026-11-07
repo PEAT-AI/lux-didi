@@ -35,6 +35,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, TurnFailedReason } from '../adapters/live-voice/index.js';
 import type { DebtPhase, DebtReason } from '../trace/kinds.js';
 import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
+import { ESTIMATED_CHARS_PER_TOKEN, estimatedTokens } from '../prompt/context-budget.js';
 import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
@@ -368,11 +369,44 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 /** Q5-R4: the most the earlier calls' opening lines may add to a start instruction. */
 export const OPENER_CONTEXT_CHARS = 450;
 
+/** M20-R1: the provider takes 500 tokens per mid-call append, and this note is the one the host appends. */
+export const APPEND_TOKEN_LIMIT = 500;
+const APPEND_CHAR_LIMIT = Math.floor(APPEND_TOKEN_LIMIT * ESTIMATED_CHARS_PER_TOKEN);
+
+/** Cut a free-text field at a word boundary, never mid-word, and to nothing when there is no room left. */
+function clipToChars(text: string, room: number): string {
+  if (text.length <= room) return text;
+  if (room <= 0) return '';
+  const cut = text.slice(0, room);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).trimEnd();
+}
+
 export function alarmSessionInstructions(input: SeriesAlarmSetup): string {
-  const reminder = input.label?.trim();
-  const overview = reminder && /\bbrief|overview|rundown|what['’]?s on|check[- ]?in/i.test(reminder);
-  const series = input.series?.trim();
-  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder first, in your own words, as the first thing you say: ${JSON.stringify(reminder)}. One sentence that names ${JSON.stringify(input.ownerDisplayName)}, states ${JSON.stringify(input.scheduledTime)} and gives the reminder in your own voice, like "${input.ownerDisplayName}, it is ${input.scheduledTime}: ${reminder}".` : ''}${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  const overview = (reminder: string | undefined): boolean => reminder !== undefined
+    && /\bbrief|overview|rundown|what['’]?s on|check[- ]?in/i.test(reminder);
+  const build = (reminder: string | undefined, series: string | undefined): string => {
+    const overviewing = overview(reminder);
+    return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.` +
+    `${reminder ? ` Say the reminder first, in your own words, as the first thing you say: ${JSON.stringify(reminder)}. One sentence that names ${JSON.stringify(input.ownerDisplayName)}, states ${JSON.stringify(input.scheduledTime)} and gives the reminder in your own voice, like "${input.ownerDisplayName}, it is ${input.scheduledTime}: ${reminder}".` : ''}` +
+    `${series ? ` This occurrence is the regular reminder that repeats ${series}; name it as the regular one when it helps, and never call it finished.` : ''}` +
+    `${overviewing ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  };
+  const full = build(input.label?.trim(), input.series?.trim());
+  if (estimatedTokens(full) <= APPEND_TOKEN_LIMIT) return full;
+  // The reminder and the series rule are the only free text here, so they are shed in that order, at a word
+  // boundary, until the append fits the provider budget; the fixed instruction text is never cut.
+  let reminder = input.label?.trim();
+  let series = input.series?.trim();
+  let text = full;
+  for (let pass = 0; pass < 6 && estimatedTokens(text) > APPEND_TOKEN_LIMIT; pass += 1) {
+    const over = text.length - APPEND_CHAR_LIMIT;
+    if (reminder !== undefined && reminder.length > 0) reminder = clipToChars(reminder, reminder.length - over - 2);
+    else if (series !== undefined && series.length > 0) series = clipToChars(series, series.length - over - 2);
+    else break;
+    text = build(reminder !== undefined && reminder.length > 0 ? reminder : undefined, series !== undefined && series.length > 0 ? series : undefined);
+  }
+  return text;
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
@@ -1778,6 +1812,8 @@ export class LiveSessionOwner {
       const summaryOmissions = composed.itemOmissions.filter(item => summaryIds.has(item.id));
       for (const omission of composed.itemOmissions) console.error(JSON.stringify({ event: 'live_context_item_omitted', id: omission.id, reason: omission.reason }));
       if (composed.overTarget) console.error(JSON.stringify({ event: 'live_context_target_overrun', estimatedTokens: composed.estimatedTokens, fixedEstimatedTokens: composed.fixedEstimatedTokens, sections: composed.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) }));
+      // M20-R1: a start that lost authored text to the last-resort clip is never a silent one.
+      if (composed.clipped.length) console.error(JSON.stringify({ event: 'live_instruction_clipped', estimatedTokens: composed.estimatedTokens, total: composed.text.length, clipped: composed.clipped.map(item => ({ id: item.id, chars: item.chars })) }));
       // M2: what the standing section did with its own budget, once per build, including the build that
       // selected nothing: that zero is the line a "my memory did not reach the call" report needs.
       hostLogEvent({ event: 'memory_excluded', liveSessionId,

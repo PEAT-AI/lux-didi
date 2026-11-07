@@ -336,7 +336,8 @@ test('#924/#802: a silent continuation is nudged once, well before the rung, and
   const live = await openCall(t);
   await live.emit(ownerFinal('What did we decide about the bridge?'));
   await live.emit(toolCall('silent-1'));
-  await live.advance(250);
+  // The tool result settles first, so the turn really owes an answer when the adapter reports silence.
+  await drive(live, () => false, 2_000);
   await live.emit(silentContinuation());
   const spent = await drive(live, () => rungReceipts(live).length > 0, 3_000);
   assert.equal(rungReceipts(live).length, 1, 'one quiet nudge for one stuck continuation');

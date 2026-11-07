@@ -24,7 +24,7 @@ import { webDestinationAllowed } from '../tools/web-destination.js';
 import type { ModelPort } from '../adapters/model/types.js';
 
 /** Task authority. Outside content is evidence, never permission. No executor here sends to a person. */
-export const EFFECT_KINDS = ['draft_email', 'draft_chat', 'create_event', 'delete_event', 'remember_note', 'save_to_vault', 'trello_write', 'set_alarm', 'cancel_alarm', 'snooze_alarm', 'open'] as const;
+export const EFFECT_KINDS = ['draft_email', 'draft_chat', 'create_event', 'delete_event', 'respond_event', 'remember_note', 'save_to_vault', 'trello_write', 'set_alarm', 'cancel_alarm', 'snooze_alarm', 'open'] as const;
 export type EffectKind = typeof EFFECT_KINDS[number];
 export const REPAIRS = {
   invalid_arguments: 'Correct the tool arguments and try again.',
@@ -205,7 +205,7 @@ export class Authority {
 
 /** Worker effects are registry-owned. Never accept an effect kind from model arguments. */
 export const TASK_EFFECTS: Readonly<Record<string, EffectKind>> = {
-  draft_email: 'draft_email', draft_chat: 'draft_chat', create_event: 'create_event', delete_event: 'delete_event',
+  draft_email: 'draft_email', draft_chat: 'draft_chat', create_event: 'create_event', delete_event: 'delete_event', respond_event: 'respond_event',
   remember_note: 'remember_note', stage_lux_note: 'remember_note', save_to_vault: 'save_to_vault', trello_write: 'trello_write',
   alarm_create: 'set_alarm', alarm_cancel: 'cancel_alarm', alarm_update: 'snooze_alarm', open: 'open',
 };

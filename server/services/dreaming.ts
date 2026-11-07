@@ -21,8 +21,11 @@ import { getBySession as summaryForSession } from '../domain/summaries.js';
 import { DREAMING_PROMPT_VERSION, dreamingExtractorPrompt } from '../prompt/dreaming-extractor.js';
 
 export const DREAMING_EXTRACTOR_VERSION = 'dreaming-v1';
-/** One model request at a time, and at most this many sessions per host start. */
+/** One model request at a time, and at most this many substantive sessions per host start. */
 export const DREAMING_BACKLOG_LIMIT = 12;
+/** A call below this floor carries nothing to remember: it is marked done without a model request. */
+export const DREAMING_FLOOR_MIN_OWNER_TURNS = 2;
+export const DREAMING_FLOOR_MIN_OWNER_CHARS = 60;
 /** A job that failed this often is left alone: the backlog never spends the same call forever. */
 export const DREAMING_MAX_ATTEMPTS = 2;
 /** A transient state carries a validity date unless the call stated one. */
@@ -133,7 +136,9 @@ export function parseExtraction(raw: string): { readonly operations: readonly Dr
     if (oldId === null) { rejected.push({ op: name, reason: 'missing_target', turnStartId: start }); continue; }
     operations.push({ op: 'supersede', oldId, item: body, turnStartId: start, turnEndId: end });
   }
-  if (list.length > DREAMING_MAX_OPERATIONS) rejected.push({ op: 'document', reason: 'too_many_operations' });
+  if (list.length > DREAMING_MAX_OPERATIONS) {
+    for (let index = DREAMING_MAX_OPERATIONS; index < list.length; index += 1) rejected.push({ op: 'document', reason: 'over_cap' });
+  }
   return { operations, rejected };
 }
 
@@ -237,6 +242,13 @@ export function readDreamingSession(store: StorePort, liveSessionId: string, fal
   });
 }
 
+/** A call earns the extractor's request only when its owner said something twice, and at some length. */
+function belowSubstantiveFloor(turns: readonly DreamingTurn[]): boolean {
+  const owner = turns.filter(turn => turn.role === 'owner');
+  const chars = owner.reduce((total, turn) => total + turn.text.trim().length, 0);
+  return owner.length < DREAMING_FLOOR_MIN_OWNER_TURNS || chars < DREAMING_FLOOR_MIN_OWNER_CHARS;
+}
+
 function localStamp(ms: number, timeZone: string): string {
   return new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(new Date(ms));
 }
@@ -306,7 +318,7 @@ export interface Dreaming {
   /** Fire-and-forget: the call's summary has settled, so its turns are ready. Never awaited by the voice path. */
   schedule(liveSessionId: string): void;
   runSession(liveSessionId: string): Promise<DreamingOutcome>;
-  /** Oldest unprocessed owner sessions, one model request at a time, at most `limit` per host start. */
+  /** Newest unprocessed owner sessions, one model request at a time, at most `limit` per host start. */
   backlogBatch(limit?: number): Promise<DreamingBatchOutcome>;
   /** The host is closing: a queued job settles as skipped instead of touching a closed store. */
   stop(): void;
@@ -370,6 +382,13 @@ export function createDreaming(options: DreamingOptions): Dreaming {
     if (existing !== null && existing.state === 'done') {
       return { status: 'already_done', ops: NO_OPS, rejected: 0, coverageGap: session.coverageGap, elapsedMs: options.now() - startedAt };
     }
+    if (belowSubstantiveFloor(session.turns)) {
+      const floor = options.store.transaction(tx => claimJob(tx, liveSessionId, DREAMING_EXTRACTOR_VERSION, startedAt));
+      options.store.transaction(tx => completeJob(tx, floor.id, session.turns.at(-1)?.id ?? 0, options.now()));
+      options.log({ event: 'dreaming_done', liveSessionId, jobId: floor.id, outcome: 'skipped_below_floor', ops: opsLine(NO_OPS),
+        rejected: 0, coverageGap: session.coverageGap, elapsedMs: options.now() - startedAt });
+      return skipped('skipped_below_floor');
+    }
     if (existing !== null && existing.state === 'failed' && existing.attempts >= DREAMING_MAX_ATTEMPTS) return skipped('attempts_exhausted');
     const claim = options.store.transaction(tx => claimJob(tx, liveSessionId, DREAMING_EXTRACTOR_VERSION, startedAt));
     const items = options.store.transaction(tx => relatedItems(tx, `${session.turns.map(turn => turn.text).join(' ')} ${session.summary ?? ''}`));
@@ -407,7 +426,7 @@ export function createDreaming(options: DreamingOptions): Dreaming {
     return { status: 'done', ops, rejected: rejected.length, coverageGap: session.coverageGap, elapsedMs };
   }
 
-  /** Ended owner sessions with turns of their own, oldest first: the backlog's order, never its schedule. */
+  /** Ended owner sessions with turns of their own, newest first: the backlog's order, never its schedule. */
   function candidates(limit: number): readonly string[] {
     return options.store.transaction(tx => tx.all(
       `SELECT s.live_session_id AS id
@@ -415,7 +434,7 @@ export function createDreaming(options: DreamingOptions): Dreaming {
         WHERE s.lifecycle='terminal' AND s.journal_complete=1 AND ${ownerMemorySessionSql('s')}
           AND NOT EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind='live' AND h.source_id=s.live_session_id)
           AND EXISTS (SELECT 1 FROM history_turns t WHERE t.live_session_id=s.live_session_id)
-        ORDER BY (s.terminal_at IS NULL), s.terminal_at ASC, s.created_at ASC
+        ORDER BY (s.terminal_at IS NULL), s.terminal_at DESC, s.created_at DESC
         LIMIT ?`, [limit]).map(row => String(row['id'])));
   }
 
@@ -435,14 +454,18 @@ export function createDreaming(options: DreamingOptions): Dreaming {
         .filter(id => options.store.transaction(tx => job(tx, id, DREAMING_EXTRACTOR_VERSION))?.state !== 'done');
       const ops: Record<string, number> = {};
       let processed = 0;
-      for (const id of pending.slice(0, limit)) {
+      let skippedBelowFloor = 0;
+      for (const id of pending) {
+        if (processed >= limit) break;
         const outcome = await runSession(id);
+        if (outcome.reason === 'skipped_below_floor') { skippedBelowFloor += 1; continue; }
         processed += 1;
         for (const [name, count] of Object.entries(outcome.ops)) ops[name] = (ops[name] ?? 0) + count;
       }
-      const remaining = Math.max(0, pending.length - processed);
+      const remaining = Math.max(0, pending.length - processed - skippedBelowFloor);
       const elapsedMs = options.now() - startedAt;
-      options.log({ event: 'dreaming_backlog', sessionsProcessed: processed, sessionsRemaining: remaining, ops: opsLine(ops), elapsedMs });
+      options.log({ event: 'dreaming_backlog', sessionsProcessed: processed, sessionsSkipped: skippedBelowFloor,
+        sessionsRemaining: remaining, ops: opsLine(ops), elapsedMs });
       return { processed, remaining, ops, elapsedMs };
     },
   };

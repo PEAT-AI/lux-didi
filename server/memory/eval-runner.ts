@@ -219,17 +219,22 @@ export function readGolden(path: string): GoldenItem[] {
     if (typeof item.cutoff_session !== 'string' || item.cutoff_session === '') {
       throw new Error(`memory_eval_golden_invalid: ${item.id} has no cutoff_session`);
     }
-    for (const key of ['gold_turn_ids', 'required', 'forbidden'] as const) {
+    for (const key of ['required', 'forbidden'] as const) {
       const value = item[key];
       if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) {
         throw new Error(`memory_eval_golden_invalid: ${item.id} has no string list ${key}`);
       }
     }
+    // M17: the golden file writes turn ids as numbers; the store joins on their text form.
+    const goldTurnIds = item['gold_turn_ids'];
+    if (!Array.isArray(goldTurnIds) || goldTurnIds.some(entry => typeof entry !== 'string' && !Number.isInteger(entry))) {
+      throw new Error(`memory_eval_golden_invalid: ${item.id} has no string list gold_turn_ids`);
+    }
     for (const key of ['expect_in_start_block', 'expect_search', 'expect_abstain'] as const) {
       if (typeof item[key] !== 'boolean') throw new Error(`memory_eval_golden_invalid: ${item.id} has no ${key}`);
     }
     if (typeof item.notes !== 'string') throw new Error(`memory_eval_golden_invalid: ${item.id} has no notes`);
-    items.push(item as GoldenItem);
+    items.push({ ...item, gold_turn_ids: goldTurnIds.map(entry => String(entry)) } as GoldenItem);
   });
   if (items.length === 0) throw new Error('memory_eval_golden_empty: no items');
   return items;

@@ -808,11 +808,23 @@ test('estimated startup counts reject negative, nonnumeric and unknown fields', 
 test('a dreaming_done line names a below-floor skip and carries no other outcome', () => {
   const line = { event: 'dreaming_done', liveSessionId: LIVE_SESSION_ID, jobId: 'job-1', ops: '', rejected: 0,
     coverageGap: 0, elapsedMs: 4 };
-  assert.equal('outcome' in (safeEvent(line) ?? {}), false, 'a line written before the outcome word still validates');
+  assert.equal(safeEvent(line), undefined,
+    'R1: the closed shape needs the outcome word, which is why extraction receipts used to vanish');
   assert.equal(safeEvent({ ...line, outcome: 'extracted' })?.['outcome'], 'extracted');
   assert.equal(safeEvent({ ...line, outcome: 'superseded' })?.['outcome'], 'superseded',
     'a job that collapsed an earlier duplicate names it');
   const skipped = safeEvent({ ...line, outcome: 'skipped_below_floor' });
   assert.equal(skipped?.['outcome'], 'skipped_below_floor');
   assert.equal(safeEvent({ ...line, outcome: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'the outcome is a closed word');
+  assert.equal(safeEvent({ ...line, outcome: 'extracted', ops: { add: 1 } }), undefined, 'ops is a string, never an object');
+});
+
+test('R1: a dreaming started and failed receipt is admitted with a closed reason code', () => {
+  const started = { event: 'dreaming_started', liveSessionId: LIVE_SESSION_ID, jobId: 'job-1' };
+  assert.equal(safeEvent(started)?.['event'], 'dreaming_started');
+  assert.equal(safeEvent({ ...started, text: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'a started line carries no words');
+  const failed = { event: 'dreaming_failed', liveSessionId: LIVE_SESSION_ID, jobId: 'job-1', reason: 'model_error' };
+  assert.equal(safeEvent(failed)?.['reason'], 'model_error');
+  assert.equal(safeEvent({ ...failed, reason: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'the reason is a closed code');
+  assert.equal(safeEvent({ ...failed, reason: 'model_private_content' }), undefined, 'an unknown code is refused');
 });

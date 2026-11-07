@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../dist/runtime/store.js';
@@ -9,6 +9,7 @@ import { liveMigrations } from '../dist/live/schema.js';
 import { recordHistorySession } from '../dist/domain/history-lifecycle.js';
 import * as memory from '../dist/domain/memory-items.js';
 import { afterListenerServing } from '../dist/host/runtime.js';
+import { HostLog } from '../dist/host/log.js';
 import {
   buildDreamingInput, createDreaming, DREAMING_BACKLOG_LIMIT, DREAMING_EXTRACTOR_VERSION, DREAMING_MAX_ATTEMPTS,
   DREAMING_MAX_OPERATIONS, ownerCorrectionTurnIds,
@@ -28,6 +29,12 @@ function open() {
   const dir = mkdtempSync(join(tmpdir(), 'didi-dreaming-'));
   const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
   return { store, dir, cleanup: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+/** The receipts a real HostLog kept, exactly as the host writes them: a dropped line is simply absent. */
+function receipts(dir: string): Record<string, unknown>[] {
+  return readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').filter(line => line.length > 0)
+    .map(line => JSON.parse(line) as Record<string, unknown>);
 }
 
 function seedSession(store: Store, id: string, options: { key?: string; endedAt?: number } = {}): void {
@@ -378,6 +385,52 @@ test('#949: the same transient state dreamed from two jobs leaves one active row
     assert.equal(superseded[0]!.validUntil, NOW + 3_600_000, 'the supersede carries the date it happened');
     assert.equal(logged.find(event => event.event === 'dreaming_done')?.['outcome'], 'superseded');
   } finally { h.cleanup(); }
+});
+
+test('R1: a real extraction keeps one done receipt and one started receipt in the host log', async () => {
+  const h = open();
+  const logDir = mkdtempSync(join(tmpdir(), 'didi-dreaming-receipt-'));
+  try {
+    const hostLog = new HostLog(logDir);
+    seedSession(h.store, 's-receipt');
+    const ids = seedTurns(h.store, 's-receipt', [['owner', 'I want the morning calls from now on, never before nine'],
+      ['owner', 'And keep the coffee black, not with milk']]);
+    const model = new FakeModel(() => operations({ op: 'add', kind: 'preference', text: 'He prefers morning calls.',
+      subject: 'preference:calls', salience: 2, turn_start_id: ids[0], turn_end_id: ids[0] }));
+    const outcome = await dreaming(h.store, model, { log: event => hostLog.event(event) }).runSession('s-receipt');
+    assert.equal(outcome.status, 'done');
+    const rows = receipts(logDir);
+    const done = rows.filter(row => row.event === 'dreaming_done');
+    assert.equal(done.length, 1, 'the extraction leaves one done receipt, never silence');
+    assert.equal(typeof done[0]!['ops'], 'string', 'ops is the closed string the schema admits');
+    assert.equal(done[0]!['ops'], 'add:1');
+    assert.equal(done[0]!['outcome'], 'extracted');
+    assert.equal(rows.filter(row => row.event === 'dreaming_started').length, 1, 'one started receipt names the job');
+  } finally {
+    rmSync(logDir, { recursive: true, force: true });
+    h.cleanup();
+  }
+});
+
+test('R1: a model failure keeps one failed receipt and never the provider words', async () => {
+  const h = open();
+  const logDir = mkdtempSync(join(tmpdir(), 'didi-dreaming-failed-'));
+  try {
+    const hostLog = new HostLog(logDir);
+    seedSession(h.store, 's-failed');
+    seedTurns(h.store, 's-failed', [['owner', 'I want the morning calls from now on, never before nine'],
+      ['owner', 'And keep the coffee black, not with milk']]);
+    const model = new FakeModel(() => ({ ...reply('', 'error'), reason: 'SYNTHETIC PRIVATE CONTENT' }));
+    const outcome = await dreaming(h.store, model, { log: event => hostLog.event(event) }).runSession('s-failed');
+    assert.equal(outcome.status, 'failed');
+    const failed = receipts(logDir).filter(row => row.event === 'dreaming_failed');
+    assert.equal(failed.length, 1, 'the failure leaves one receipt');
+    assert.equal(failed[0]!['reason'], 'model_error', 'the reason is a closed code, never the provider text');
+    assert.equal(readFileSync(join(logDir, 'logs', 'host.log'), 'utf8').includes('SYNTHETIC PRIVATE CONTENT'), false);
+  } finally {
+    rmSync(logDir, { recursive: true, force: true });
+    h.cleanup();
+  }
 });
 
 test('a below-floor call does not spend the backlog limit', async () => {

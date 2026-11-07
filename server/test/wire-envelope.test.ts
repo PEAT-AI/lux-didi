@@ -75,17 +75,21 @@ test('the envelope check has teeth: an unmarked host line is caught', () => {
  * test that covers it. `host` rows are host-originated guidance, `owner` rows are the owner's own words.
  */
 const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 'owner'; covers: readonly { file: string; title: string }[] }[] = [
-  { expression: "hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.')", count: 1, channel: 'host', covers: [{ file: 'live-session.test.ts', title: "alarm due during a live call injects once and unrelated earlier speech cannot acknowledge it" }] },
+  // The alarm opening, the muted offer and the continuation request reach the adapter through one helper,
+  // so its plain-note path is the one text hand-off that carries them on an adapter with no commentary.
+  {
+    expression: 'slice', count: 1, channel: 'host',
+    covers: [
+      { file: 'live-session.test.ts', title: 'alarm due during a live call injects once and unrelated earlier speech cannot acknowledge it' },
+      { file: 'live-mute.test.ts', title: 'an answer that arrives while muted is held, never played, and offered once after two silent seconds' },
+      { file: 'host-speech-gemini.test.ts', title: 'an adapter with no commentary channel announces the alarm opening through the host text it accepts' },
+    ],
+  },
   { expression: "hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`)", count: 1, channel: 'host', covers: [{ file: 'live-session.test.ts', title: "alarm session speaks its reminder, repeats after silence and acknowledges only its alarm" }] },
   { expression: "hostNote('This alarm is acknowledged. Stop wake reminders and continue as a normal call. Honor any requested snooze/cancel with the alarm tools.')", count: 1, channel: 'host', covers: [{ file: 'live-session.test.ts', title: "alarm session speaks its reminder, repeats after silence and acknowledges only its alarm" }] },
   {
     expression: 'hostNote(correction.text)', count: 1, channel: 'host',
     covers: [{ file: 'live-session.test.ts', title: 'OPEN2-5: an open claim the turn did not make gets one correction, never two' }],
-  },
-
-  {
-    expression: 'MUTED_OFFER_TEXT', count: 1, channel: 'host',
-    covers: [{ file: 'live-mute.test.ts', title: 'an answer that arrives while muted is held, never played, and offered once after two silent seconds' }],
   },
 
 

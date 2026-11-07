@@ -172,6 +172,43 @@ export class VaultWriter {
     })).then(() => {});
   }
 
+  readonly #helperTurns = new Map<string, Set<string>>();
+
+  /** Helper writes use persisted owner turns, never model claims of consent or session identity. */
+  async writeTask(input: { sessionId: string; tool: 'vault_save' | 'vault_update'; args: Record<string, unknown> }): Promise<VaultWriteResult> {
+    const args = input.args, turnId = String(args.requested_turn_id ?? '');
+    const refused = (reason: string): VaultWriteResult => ({ disposition: 'refused', reason });
+    const turn = this.#store.transaction(tx => tx.get('SELECT id,role,text,at FROM history_turns WHERE live_session_id=? AND id=?', [input.sessionId, turnId]));
+    if (!turn || turn.role !== 'owner') return refused('requested_turn_id must name a persisted owner turn in this call');
+    const used = this.#helperTurns.get(input.sessionId) ?? new Set<string>();
+    if (used.has(turnId)) return refused('one write per owner turn');
+    if (used.size >= 10) return refused('ten writes per call');
+    if (!this.#transport.write) return refused('vault write transport unavailable');
+    used.add(turnId); this.#helperTurns.set(input.sessionId, used);
+    const source = { source_kind: 'voice_call', source_ref: { app: 'didi-call', session_id: input.sessionId, turn_start_id: turnId, turn_end_id: turnId, spoken_at: new Date(Number(turn.at)).toISOString() } };
+    const provenance = `\n\nProvenance: didi-call; speaker=owner; confidence=1; session=${input.sessionId}; requested_turn_id=${turnId}.`;
+    let receipt: VaultWriteResult;
+    try {
+      if (input.tool === 'vault_save') {
+        receipt = await this.#transport.write('create_insight', { ...source, content: String(args.content) + provenance,
+          insight_title: args.title, insight_type: args.category, project: args.project ?? null,
+          quote: String(turn.text).slice(0, 600), idempotency_key: `${input.sessionId}:${turnId}:${turnId}`,
+          follow_up_state: args.follow_up_state ?? 'none' });
+      } else if (args.content != null || args.follow_up_state != null) {
+        receipt = await this.#transport.write('update_insight', { ...source, insight_id: args.insight_id,
+          ...(args.content != null ? { content: String(args.content) + provenance } : {}),
+          ...(args.follow_up_state != null ? { follow_up_state: args.follow_up_state } : {}), revision_reason: provenance.trim() });
+      } else receipt = { disposition: 'updated', insight_id: Number(args.insight_id) };
+      const id = receipt.insight_id;
+      if (args.link_target != null && id && receipt.disposition !== 'refused' && receipt.disposition !== 'duplicate_of') {
+        const link = await this.#transport.write('create_insight_link', { source_insight_id: id, target_insight_id: args.link_target, relation_type: 'PART_OF', provenance_source: 'TRANSCRIPT' });
+        receipt = { ...receipt, link };
+      }
+    } catch { receipt = refused('outcome_unknown'); }
+    hostLogEvent({ event: 'vault_write', tool: input.tool, outcome: receipt.disposition ?? 'completed', insight_id_prefix: receipt.insight_id ? String(receipt.insight_id).slice(0, 8) : '' });
+    return receipt;
+  }
+
   /** Task admission is owned by Authority; this boundary only validates and atomically claims its exact payload. */
   async saveTask(input: { sessionId: string; identity: Identity; content: string; title: string; outsideTextSeen: boolean }): Promise<VaultReceipt> {
     const frozen = freezeNote({ title: input.title, body: input.content, externalContextPresent: input.outsideTextSeen });

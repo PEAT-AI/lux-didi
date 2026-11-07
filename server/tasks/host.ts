@@ -82,11 +82,18 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
             return { status: 'ok', text: 'Saved to local notes.', references: [{ id: entry.id }], next_cursor: null, coverage: 'One note committed.', repair: null };
           });
         }
-        if (name === 'save_to_vault') {
-          if (!options.vault || !identity) return failed('The vault write port or task identity is unavailable. Nothing was saved.');
-          const receipt = await options.vault.saveTask({ sessionId, identity, content: String(args.text), title: String(args.title), outsideTextSeen: exposed ?? false });
-          if (receipt.saved) return documentResult(JSON.stringify(receipt), 'vault-receipt');
-          return { ...failed(receipt.guidance ?? 'The vault did not confirm this save.'), receipt: { operation_id: identity.operation_id, state: receipt.code === 'outcome_unknown' ? 'unknown' : 'failed' } };
+        if (name === 'vault_save' || name === 'vault_update') {
+          if (!options.vault) return failed('The vault write port is unavailable. Nothing was saved.');
+          const write = options.vault.writeTask({ sessionId, tool: name, args }).then(receipt => documentResult(JSON.stringify(receipt), 'vault-receipt'));
+          // Cancellation stops waiting, not a write that may already have reached lux.
+          let onAbort: (() => void) | undefined;
+          const pending = new Promise<ReturnType<typeof documentResult>>(resolve => {
+            onAbort = () => resolve(documentResult(JSON.stringify({ disposition: 'pending' }), 'vault-receipt'));
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+          });
+          try { return await Promise.race([write, pending]); }
+          finally { if (onAbort) signal.removeEventListener('abort', onAbort); }
         }
         if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.recall(tx, String(args.query)))), 'local-memory');
         if (name === 'read_memory') {

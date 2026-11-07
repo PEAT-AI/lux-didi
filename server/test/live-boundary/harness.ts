@@ -219,7 +219,7 @@ async function injected(allowed: boolean, source = "read_mail"): Promise<void> {
   let inference = 0; const executed: string[] = [];
   const f = fixture(async () => {
     inference++;
-    if (inference === 1) return { text: '', calls: [{ id: 'mail', name: source, args: source === 'read_mail' ? { id: 'synthetic-mail', cursor: null } : source === 'read_thread' ? { ref: 'synthetic-thread', cursor: null } : source === 'search_knowledge' ? { query: 'synthetic', mode: null } : { query: 'synthetic' } }] };
+    if (inference === 1) return { text: '', calls: [{ id: 'mail', name: source, args: source === 'read_mail' ? { id: 'synthetic-mail', cursor: null } : source === 'read_thread' ? { ref: 'synthetic-thread', cursor: null } : { query: 'synthetic' } }] };
     if (inference === 2) return { text: '', calls: [{ id: 'read', name: 'search_mail', args: { query: 'synthetic', cursor: null } }] };
     if (inference === 3) return { text: '', calls: [{ id: 'write', name: 'remember_note', args: { text: 'Synthetic note' } }] };
     return { text: 'Synthetic task complete.', calls: [] };

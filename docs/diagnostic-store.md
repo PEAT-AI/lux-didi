@@ -136,3 +136,16 @@ what turns her older calls into typed memory.
 
 
 The `live_instruction_sizes` event records complete rendered section character counts, the total estimated tokens (3.2 characters per estimated token), stable-prefix characters and estimated tokens, and measured fixed-section characters and estimated tokens. A target overrun preserves fixed text and per-call floors below hard admission, while closed `live_context_target_overrun` and `live_context_item_omitted` diagnostics carry only sizes or stable ids and enumerated reasons, never content. When a start can only fit hard admission by shedding the pickup note and then whole owner-style paragraphs, the closed `live_instruction_clipped` diagnostic names which of the two was cut and by how many characters, with the sizes of the start that was sent, so a start that lost authored text is never silent.
+
+The `live_instruction_sizes` event records complete rendered section character counts, the total estimated tokens (3.2 characters per estimated token), stable-prefix characters and estimated tokens, and measured fixed-section characters and estimated tokens. A target overrun preserves fixed text and per-call floors below hard admission, while closed `live_context_target_overrun` and `live_context_item_omitted` diagnostics carry only sizes or stable ids and enumerated reasons, never content.
+
+## Trusted connector rediscovery (M21)
+
+`mcp_trusted_rediscovered` is emitted once per digest change of the trusted first-party
+`lux-knowledge` endpoint, when a discovery at the next connect observed a different tool catalogue
+than the stored one. The episode carries the endpoint id and the first 12 hex characters of the old
+and new digest, and nothing else: no tool name, description, schema or payload. The registered event
+is what an owner reads to confirm that a lux release was picked up without an operator approval; the
+endpoint's own read tools are granted at the digest just observed, under a generation the host
+advances itself. Every other connector keeps its digest approval, so a changed catalogue there still
+produces `connector_approval_refused` with its closed reason.

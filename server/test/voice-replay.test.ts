@@ -33,7 +33,7 @@ test('task replay: barge-in and finalized correction replace the stale result wi
 test('task replay: parallel reads with mixed outcomes preserve both operations and produce one answer', async t => {
   const release = deferred<void>(); t.after(() => release.resolve()); let steps = 0, reads = 0;
   const f = await liveTaskFixture(t, async () => ++steps === 1
-    ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic parallel' } }, { id: 'synthetic-read_mail',  name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } }] }
+    ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic parallel' , mode: null } }, { id: 'synthetic-read_mail',  name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } }] }
     : { text: 'One synthetic source was available; the other failed.', calls: [] }, { executors: {
       search_knowledge: async () => { reads++; await release.promise; return documentResult('Synthetic knowledge evidence.', 'synthetic-knowledge'); },
       read_mail: async () => { reads++; release.resolve(); return failed('Synthetic mail source refused the read.'); },
@@ -48,7 +48,7 @@ test('task replay: a newer completed owner turn starts fresh work rather than re
   let steps = 0, reads = 0;
   const f = await liveTaskFixture(t, async () => {
     steps++;
-    return steps % 2 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: steps === 1 ? 'first synthetic query' : 'second synthetic query' } }] }
+    return steps % 2 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: steps === 1 ? 'first synthetic query' : 'second synthetic query' , mode: null } }] }
       : { text: steps === 2 ? 'The first synthetic answer.' : 'The second synthetic answer.', calls: [] };
   }, { executors: { search_knowledge: async () => { reads++; return documentResult('Synthetic evidence.', `synthetic-${reads}`); } } });
   f.finalize('Find the first synthetic record.'); f.bind('first'); const first = await f.answer();

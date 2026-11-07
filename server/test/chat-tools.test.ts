@@ -58,7 +58,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     if (illegalFinal) {
       control.onEvent?.({ type: 'text', text: 'PROVISIONAL', provisional: true });
       return { ...result(request, 'complete', 'PROVISIONAL'), providerContent: { role: 'model', parts: [
-        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_knowledge', args: { query: 'one more', limit: 1 }, id: randomUUID() } },
+        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_knowledge', args: { query: 'one more', limit: 1 , mode: null }, id: randomUUID() } },
       ] } };
     }
     if (finalStatus !== 'complete') return result(request, finalStatus, '');

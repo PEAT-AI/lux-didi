@@ -116,7 +116,7 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   const result = await runWorker({ registry, identity: { task_id: 'fixture-vault', task_revision: 1, connection_generation: 1 },
     input: 'orchid watering', signal: new AbortController().signal,
     infer: async request => {
-      if (++hop === 1) return { text: '', calls: [{ id: 'search', name: 'search_knowledge', args: { query: 'orchid watering' } }] };
+      if (++hop === 1) return { text: '', calls: [{ id: 'search', name: 'search_knowledge', args: { query: 'orchid watering' , mode: null } }] };
       if (hop === 2) {
         assert.equal(request.outputs[0]?.result.status, 'ok');
         assert.match(request.outputs[0]!.result.text, /Score: 0.518/);

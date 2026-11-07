@@ -10,7 +10,7 @@ test('host task context carries captured evidence and continuation into the next
   const inputs: string[] = [], outputs: string[] = [];
   const f = await liveTaskFixture(t, async request => {
     inputs.push(request.input); outputs.push(JSON.stringify(request.outputs));
-    return inputs.length === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic context' } }] }
+    return inputs.length === 1 ? { text: '', calls: [{ id: 'synthetic-search_knowledge',  name: 'search_knowledge', args: { query: 'synthetic context' , mode: null } }] }
       : { text: 'The synthetic context is retained.', calls: [] };
   }, { executors: { search_knowledge: async () => ({ ...documentResult('Synthetic captured context record.', 'synthetic-context'), next_cursor: 'synthetic-next-page' }) } });
   f.bind(); f.finalize('Find the synthetic context record.');

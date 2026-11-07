@@ -20,7 +20,7 @@ import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 import { fixture as voiceFixture } from './live-voice-fixture.js';
 
 const endpoints = [
-  { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_knowledge', task: 'search_knowledge', args: { query: 'synthetic' } },
+  { id: 'lux-knowledge', connector: 'lux-knowledge', tool: 'search_knowledge', task: 'search_knowledge', args: { query: 'synthetic', mode: null } },
   { id: 'gmail', connector: 'google', tool: 'gmail_search_messages', task: 'search_mail', args: { query: 'synthetic', cursor: null } },
   { id: 'calendar', connector: 'google', tool: 'calendar_list_events', task: 'calendar_events', args: { start: '2026-11-03T00:00:00Z', end: '2026-11-04T00:00:00Z' } },
   { id: 'mattermost', connector: 'mattermost', tool: 'mattermost_search', task: 'search_chat', args: { query: 'synthetic' } },

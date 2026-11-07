@@ -751,7 +751,7 @@ test('K1: a declared tool without tailored guidance states its expected shape', 
   const tool: ToolDefinition = { name: 'search_knowledge', description: 'Search', effect: 'read', accountId: 'acct', resourceId: 'res',
     parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'] },
     validate: () => false, execute: async () => ({ status: 'failed' as const }) };
-  const batch = await runToolCalls(owner, [{ id: '1', name: 'search_knowledge', args: { query: '' } }], errorContext(tool) as never);
+  const batch = await runToolCalls(owner, [{ id: '1', name: 'search_knowledge', args: { query: '' , mode: null } }], errorContext(tool) as never);
   // AL-R1: the refusal names the declared key it is about before it states the shape.
   assert.match(batch.tools[0]!.reason, /Invalid arguments for search_knowledge\. Rejected argument: limit:required\. Expected an object with query \(string\), limit \(integer\)\./);
 });

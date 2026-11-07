@@ -197,7 +197,7 @@ test('C-DELIVERY: tool evidence is delivered even if the voice already answered 
   const f = fixture(t, async () => ++inferences === 1 ? first.promise : { text: 'Synthetic evidence answer.', calls: [] }, 'openai', undefined,
     async () => ({ status: 'ok', text: 'Synthetic evidence.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null }));
   const running = f.call.input('Read the synthetic source.', 1); f.call.spoke();
-  first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] });
+  first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic', mode: null } }] });
   const result = await running; assert.equal(result.findings.length, 1); assert.equal(f.results().length, 1);
   assert.equal(f.results()[0]!.text, 'Synthetic evidence answer.');
 });
@@ -205,7 +205,7 @@ test('C-DELIVERY: a correction during a running read revises only after transcri
   const clock = quietClock(); let release!: () => void; let reads = 0; let inferences = 0;
   const read = new Promise<void>(resolve => { release = resolve; });
   const f = fixture(t, async () => ++inferences === 1
-    ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] }
+    ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic', mode: null } }] }
     : { text: 'Synthetic corrected result.', calls: [] }, 'openai', clock.after,
     async () => { reads++; await read; return { status: 'ok', text: 'Synthetic read result.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null }; });
   t.after(release);
@@ -231,7 +231,7 @@ for (const failedRead of [false, true]) test(`review F1: prior voice speech cann
     return { status: 'ok', text: 'Synthetic evidence.', references: [], next_cursor: null, coverage: 'Whole synthetic source.', repair: null };
   });
   const running = f.call.input('Read the synthetic source.', 1); f.call.spoke();
-  first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] });
+  first.resolve({ text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic', mode: null } }] });
   const result = await running; assert.equal(reads, 1);
   assert.equal(result.status, failedRead ? 'incomplete' : 'complete');
   assert.equal(result.findings.length, failedRead ? 0 : 1);
@@ -284,7 +284,7 @@ for (const rejected of [false, true]) test(`C-SILENCE: newer revision retires te
 });
 for (const text of ['', ' ', '\n']) test(`C-SILENCE: blank composition keeps findings and coverage ${JSON.stringify(text)}`, async t => {
   let runs = 0;
-  const f = fixture(t, async () => ++runs === 1 ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic' } }] } : { text, calls: [] }, 'openai', undefined,
+  const f = fixture(t, async () => ++runs === 1 ? { text: '', calls: [{ id: 'read', name: 'search_knowledge', args: { query: 'Synthetic', mode: null } }] } : { text, calls: [] }, 'openai', undefined,
     async () => ({ status: 'ok', text: 'Synthetic findings.', references: [], next_cursor: null, coverage: 'Synthetic coverage.', repair: null }));
   await f.call.input('Synthetic findings ask', 1);
   assert.match(f.results()[0]!.text, /Synthetic findings/);
@@ -302,7 +302,7 @@ test('C-SILENCE: recovery rejection waits for another event, not activity', asyn
 test('SILENCE-R1: failed composition speaks plain findings with one incomplete clause', async t => {
   let runs = 0;
   const f = fixture(t, async () => {
-    if (++runs === 1) return { text: '', calls: ['first', 'second'].map(id => ({ id, name: 'search_knowledge', args: { query: `Synthetic ${id}` } })) };
+    if (++runs === 1) return { text: '', calls: ['first', 'second'].map(id => ({ id, name: 'search_knowledge', args: { query: `Synthetic ${id}`, mode: null } })) };
     throw new Error('Synthetic composition failure');
   }, 'openai', undefined, async (_name, args) => ({ status: 'ok', text: `${(args as { query: string }).query} finding.`, references: [], next_cursor: null, coverage: 'Synthetic coverage.', repair: null }));
   const answer = await f.call.input('Synthetic two sources', 1);

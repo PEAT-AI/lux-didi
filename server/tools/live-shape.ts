@@ -656,8 +656,12 @@ function statedHitCount(raw: string): number | undefined {
 /** A ranked Markdown search reply: every '**#id**' block is one hit, and no hit is dropped silently. */
 function knowledgeRanked(raw: string): ShapedResult | undefined {
   const clean = knowledgeHeaderAsText(raw);
-  const parts = clean.split(/^(?=(?:- )?\*\*#[0-9]+\*\*)/mu).filter(part => KNOWLEDGE_HIT_START.test(part));
-  if (parts.length === 0) return undefined;
+  const blocks = clean.split(/^(?=(?:- )?\*\*#[0-9]+\*\*)/mu);
+  const firstHit = blocks.findIndex(block => KNOWLEDGE_HIT_START.test(block));
+  if (firstHit === -1) return undefined;
+  // F1: the digest's own header and retrieval line are text the helper reads, never a preamble to drop.
+  const preamble = blocks.slice(0, firstHit).join('').trim();
+  const parts = blocks.slice(firstHit).filter(block => KNOWLEDGE_HIT_START.test(block));
   const kept: string[] = [];
   let used = 0;
   let omitted = 0;
@@ -688,7 +692,7 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
   const total = Math.max(statedHitCount(raw) ?? 0, parts.length);
   const short = trimmed > 0 || total > kept.length;
   const tail = short ? `\n\n[showing ${kept.length} of ${total} hits; ask a narrower question or a higher limit for the rest]` : '';
-  const text = `${kept.join('\n\n')}${tail}`;
+  const text = `${preamble.length > 0 ? `${preamble}\n\n` : ''}${kept.join('\n\n')}${tail}`;
   return withOpenHandles({ text, partial: short || omitted > 0, originalCharacters: original, omittedCharacters: omitted, sources: bodySourceLinks(text) });
 }
 

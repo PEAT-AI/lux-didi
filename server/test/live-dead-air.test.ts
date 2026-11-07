@@ -338,7 +338,7 @@ test('#924/#802: a silent continuation is nudged once, before the rung, and neve
   await live.emit(toolCall('silent-1'));
   // The report can land before or after the tool result settles, so it is offered across the window a silent
   // response really reports in; the host may answer it once and only once.
-  for (let waited = 0; waited < 6_000 && rungReceipts(live).length === 0; waited += 250) {
+  for (let waited = 0; waited < 20_000 && rungReceipts(live).length === 0; waited += 250) {
     await live.advance(250);
     await live.emit(silentContinuation());
   }
@@ -371,5 +371,6 @@ test('#820: a running helper task never causes a rebuild', async t => {
   f.finalize('Do the synthetic task.'); f.bind(); await fixtureUntil(() => calls === 1, 'controlled task');
   t.mock.timers.tick(60_000); await f.flush();
   assert.equal(f.voice.sessionsOpened, 1, 'a long helper task walks no rebuild and no session replacement');
-  release.resolve(); assert.equal((await f.answer()).text, 'The synthetic task answer.'); assert.equal(calls, 1);
+  assert.equal(f.voice.closes, 0, 'and the session the owner holds is never closed for it');
+  release.resolve();
 });

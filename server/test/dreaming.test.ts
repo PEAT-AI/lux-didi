@@ -359,8 +359,8 @@ test('#949: the same transient state dreamed from two jobs leaves one active row
     assert.equal((await dreaming(h.store, modelA).runSession('s-state-a')).status, 'done');
 
     seedSession(h.store, 's-state-b', { endedAt: NOW + 3_600_000 });
-    const second = seedTurns(h.store, 's-state-b', [['owner', 'Checking in about the booking for Friday morning'],
-      ['assistant', 'All set.']]);
+    const second = seedTurns(h.store, 's-state-b', [['owner', 'Checking in about the booking for Friday morning and the hire car'],
+      ['owner', 'The plan covers the whole weekend away']]);
     const modelB = new FakeModel(() => operations({ op: 'add', kind: 'transient_state', text: 'He is away on a long trip.',
       subject: 'state:travel', salience: 2, turn_start_id: second[0], turn_end_id: second[0] }));
     const logged: Record<string, unknown>[] = [];

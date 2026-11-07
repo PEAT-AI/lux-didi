@@ -147,3 +147,36 @@ test('real short weak-candidate rows retain their id and rank without invented e
   assert.equal((result.references[0] as unknown as Record<string, unknown>)?.snippet_status, undefined, 'full row is not marked title-only');
   assert.doesNotMatch(result.text, /Score: 0\.348/, 'a short remote row has no per-hit score to reconstruct');
 });
+
+test('existing lux write transport sends LK6 provenance and preserves candidate receipts', async () => {
+  const { createLuxWriteTransport } = await import('../adapters/lux-write/client.js');
+  const calls: Record<string, unknown>[] = [];
+  const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:8765/mcp' }, async (_url, init) => {
+    const call = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push(call);
+    const result = call.method === 'tools/call'
+      ? { structuredContent: { disposition: 'created', insight_id: 42, candidates: [{ insight_id: 9 }] } }
+      : {};
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }), { status: 200 });
+  });
+  const receipt = await transport.write('create_insight', {
+    content: 'Synthetic owner fact. Speaker: owner. Confidence: 1.', insight_title: 'Synthetic fact',
+    insight_type: 'PATTERN', source_kind: 'voice_call',
+    source_ref: { app: 'didi-call', session_id: 'synthetic-session', turn_start_id: '7', turn_end_id: '7', spoken_at: '2026-11-07T00:00:00Z' },
+    quote: 'Please save this synthetic fact.', idempotency_key: 'synthetic-session:7:7', follow_up_state: 'open',
+  });
+  assert.equal(receipt.disposition, 'created');
+  assert.equal(receipt.insight_id, 42);
+  assert.deepEqual(receipt.candidates, [{ insight_id: 9 }]);
+  assert.deepEqual((calls[2]?.params as Record<string, unknown>).name, 'create_insight');
+  assert.equal(((calls[2]?.params as Record<string, unknown>).arguments as Record<string, unknown>).idempotency_key, 'synthetic-session:7:7');
+});
+
+test('existing lux write transport refuses destructive tool names without dispatch', async () => {
+  const { createLuxWriteTransport } = await import('../adapters/lux-write/client.js');
+  let dispatched = false;
+  const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:8765/mcp' }, async () => { dispatched = true; throw Error('must not dispatch'); });
+  const receipt = await transport.write('purge_insight', { insight_ids: [42] });
+  assert.equal(receipt.disposition, 'refused');
+  assert.equal(dispatched, false);
+});

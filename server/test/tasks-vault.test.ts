@@ -216,7 +216,10 @@ test('helper writes require persisted owner consent, retain update ids and bound
     write: async (tool, args) => { calls.push({ tool, args }); return { disposition: tool === 'create_insight' ? 'created' : 'updated', insight_id: Number(args.insight_id ?? 42) }; },
   } });
   const args = { payload: { insight_title: 'Synthetic title', content: 'Synthetic fact', insight_type: 'PATTERN', follow_up_state: 'open' } };
-  const run = (turn: string, sessionId = 'synthetic-call') => writer.writeTask({ sessionId, tool: 'vault_save', args: { ...args, requested_turn_id: turn } });
+  // The host selects the operation by discovered schema; the model supplies only the nested payload.
+  const createSchema = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' }, follow_up_state: { type: 'string' } } };
+  const updateSchema = { type: 'object', required: ['insight_id'], properties: { insight_id: { type: 'integer', minimum: 1 }, content: { type: 'string' }, follow_up_state: { type: 'string' } } };
+  const run = (turn: string, sessionId = 'synthetic-call') => writer.writeTask({ sessionId, tool: 'vault_save', operation: 'create_insight', inputSchema: createSchema, maxPayloadBytes: 100000, authorized: () => true, args: { ...args, requested_turn_id: turn } });
   assert.equal((await run('1')).disposition, 'refused');
   assert.equal((await run('999')).disposition, 'refused');
   assert.equal((await run('2', 'other-call')).disposition, 'refused');
@@ -226,7 +229,7 @@ test('helper writes require persisted owner consent, retain update ids and bound
   assert.deepEqual(calls[0]?.args.source_ref, { app: 'lux-didi', session_id: 'synthetic-call', turn_start_id: '2', turn_end_id: '2', spoken_at: new Date(1794009600000).toISOString() });
   assert.match(String(calls[0]?.args.content), /speaker=owner; confidence=1/);
   assert.equal((await run('2')).disposition, 'refused', 'one write per turn');
-  const updated = await writer.writeTask({ sessionId: 'synthetic-call', tool: 'vault_update', args: { requested_turn_id: '3', payload: { insight_id: 42, content: 'Corrected synthetic fact', follow_up_state: 'closed' } } });
+  const updated = await writer.writeTask({ sessionId: 'synthetic-call', tool: 'vault_update', operation: 'update_insight', inputSchema: updateSchema, maxPayloadBytes: 100000, authorized: () => true, args: { requested_turn_id: '3', payload: { insight_id: 42, content: 'Corrected synthetic fact', follow_up_state: 'closed' } } });
   assert.equal(updated.insight_id, 42, 'correction keeps the stored id');
   assert.equal(calls[1]?.args.follow_up_state, 'closed');
   for (let id = 4; id <= 11; id++) assert.equal((await run(String(id))).disposition, 'created');

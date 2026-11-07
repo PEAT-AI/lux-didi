@@ -5,6 +5,7 @@ import { TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, validateTrelloRead, va
 import type { AuthorityPort, Effect, Identity } from './authority.js';
 import { OPEN_SCHEMA, executeOpen, nativeActions } from '../tools/open.js';
 import { FIND_FILE_SCHEMA, findFile } from '../tools/find-file.js';
+import { CALENDAR_RSVP_SCHEMA } from '../tools/calendar-rsvp.js';
 import { failed, type ToolResult } from './results.js';
 export type Schema = Record<string, unknown>;
 export interface TaskTool {
@@ -96,7 +97,8 @@ const definitions: Definition[] = [
   { name: 'draft_email', description: 'Create an email draft, not send.', fields: { to: strings, subject: string, body: string }, effect: 'local', outside: false },
   { name: 'draft_chat', description: 'Save a draft in the configured Mattermost reply box, never post it. Resolve the target to @username, #channel or thread:<channel-id>:<root-post-id>.', fields: { target: string, text: string }, effect: 'local', outside: false },
   { name: 'create_event', description: 'Create a calendar event.', fields: { title: string, start: string, end: string, calendar_id: optionalString }, effect: 'external', outside: false },
-  { name: 'delete_event', description: 'Delete a calendar event.', fields: { id: string }, effect: 'destructive', outside: false },
+  { name: 'delete_event', description: 'Delete a calendar event.', fields: { id: string }, effect:'destructive', outside: false },
+  { name: CALENDAR_RSVP_SCHEMA.name, description: CALENDAR_RSVP_SCHEMA.description, fields: CALENDAR_RSVP_SCHEMA.parameters.properties, effect: 'external', outside: false },
   // Distinct schemas avoid action-dependent optional fields and model guessing.
   { name: 'alarm_create', description: 'Create a local alarm.', fields: { text: string, at: string, recurrence: alarmRecurrence }, effect: 'local', outside: false },
   { name: 'alarm_list', description: 'List local alarms.', fields: {}, outside: false },

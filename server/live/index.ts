@@ -1474,9 +1474,11 @@ export class LiveSessionOwner {
    * as a host text turn, the path it does accept. A closed transport sends nothing and reports it.
    */
   #sendHostNote(handle: ActiveSession, text: string): boolean {
-    if (handle.session.sendSessionCommentary?.({ text }) !== undefined) return true;
-    if (!handle.ready) return false;
-    try { handle.session.sendText({ text }); } catch { return false; }
+    try {
+      if (handle.session.sendSessionCommentary?.({ text }) !== undefined) return true;
+      if (!handle.ready) return false;
+      handle.session.sendText({ text });
+    } catch { return false; }
     return true;
   }
 

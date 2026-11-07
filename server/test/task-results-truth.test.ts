@@ -94,15 +94,19 @@ test('a call that ends while its task is open settles the persisted task to a te
   const directory = mkdtempSync(join(tmpdir(), 'task-results-truth-'));
   const store = new Store(directory), delivery = new FakeDelivery();
   try {
-    const runtime = new TaskRuntime({ store, delivery, execute: () => new Promise<ToolResult>(() => {}),
+    let entered!: () => void;
+    const inFlight = new Promise<void>(resolve => { entered = resolve; });
+    const runtime = new TaskRuntime({ store, delivery, execute: () => { entered(); return new Promise<ToolResult>(() => {}); },
       authority: new Authority({ checkEffect: async () => true, log: () => {}, journal: { get: async () => undefined, put: async () => {} } }),
       infer: async () => ({ text: '', calls: [{ id: '1', name: 'read_mail', args: { id: 'page', cursor: null } }, { id: '2', name: 'search_knowledge', args: { query: 'synthetic', mode: null } }] }) });
     const { result } = runtime.finalize('open the synthetic page', 1);
     const row = () => store.transaction(tx => tx.get('SELECT status FROM tasks'));
+    await inFlight;
     assert.equal(row()?.status, 'running');
     runtime.close();
     const answer = await result;
     assert.equal(answer.status, 'cancelled');
+    assert.deepEqual(answer.actions?.map(action => action.outcome), ['running', 'running'], 'a dispatched call that never answered is still running');
     assert.match(resultCommentary(answer).content, /^Actions: read_mail still running; search_knowledge still running\./,
       'a call that never answered is named as running, never as done and never as failed');
     assert.equal(row()?.status, 'cancelled', 'the row of a task whose call ended is terminal, never running');

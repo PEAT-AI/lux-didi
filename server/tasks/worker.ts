@@ -93,7 +93,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   };
   const pendingLuxWrites = new Map<string, ToolResult>();
   const partialText = (): string => findings.map(item => [item.text, item.coverage].filter(Boolean).join(' ')).filter(Boolean).join(' ');
-  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [partialText(), ...[...pendingLuxWrites.values()].map(result => result.text)].filter(Boolean).join(' '), findings: [...findings, ...pendingLuxWrites.values()], failures, receipts, ...(failure ? { failure } : expired ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
+  const incomplete = (): WorkerResult => ({ status: 'incomplete', text: [partialText(), ...[...pendingLuxWrites.values()].map(result => result.text)].filter(Boolean).join(' '), findings: [...findings, ...pendingLuxWrites.values()], failures, receipts, ...(failure ? { failure } : expired && !pendingLuxWrites.size ? { failure: { stage: 'inference' as const, reason_code: 'deadline', detail: '' } } : {}) });
   const finish = (): WorkerResult => expired ? incomplete() : { status: 'cancelled', text: partialText(), findings, failures, receipts };
   async function compose(): Promise<WorkerResult> {
     if (revisionExpired || clock.now() - start >= REVISION_DEADLINE_MS) { expired = true; return incomplete(); }

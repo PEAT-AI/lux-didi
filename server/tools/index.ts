@@ -1,3 +1,5 @@
+import { luxToolAdmitted } from '../connectors/lux-knowledge.js';
+import { luxWriteAdmitted } from '../connectors/lux-names.js';
 import { checkOwnerTime } from './time-check.js';
 import { commitAlarmEffect } from '../runtime/store.js';
 import { authorizedTaskEffect } from '../tasks/authority.js';
@@ -245,8 +247,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     return call;
   };
   const pageForCall = (call: ToolCallRefusal): ReceivedBodyPage | undefined => [...bodyPages.values()].find(page => page.runId === call.runId && page.argumentsHash === call.argumentsHash);
+  const luxTaskRead = (snapshot: RunSnapshot, name: string): boolean => snapshot.connections.some(bound => {
+    const p = bound.policy;
+    return p.connector === 'lux-knowledge' && p.toolNames.includes(name)
+      && registry.visibleTools(p.endpoint.id).some(tool => tool.name === name && luxToolAdmitted(tool) && !luxWriteAdmitted(tool));
+  });
+  const taskToolAdmitted = (snapshot: RunSnapshot, name: string): boolean => TASK_TOOL_NAMES.has(name) || luxTaskRead(snapshot, name);
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal, transaction?: Transaction): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
-    if (TASK_TOOL_NAMES.has(call.toolName) && call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE) {
+    if (taskToolAdmitted(snapshot, call.toolName) && call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE) {
       // Native source admission and completion bind the selected source in runTask/evidenceCurrent, not every unrelated connector.
       return { connectionId: TASK_ACCOUNT, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
     }
@@ -335,7 +343,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       try { originalCall(tx, call.runId, evidence.parent); return authorizedStoredResult(tx, snapshot, evidence.parent) !== undefined; } catch { return false; }
     }
     if (evidence.kind === 'local-history') return call.toolName === HISTORY_IDENTITY.name && historyEvidenceCurrent(tx, ownerId, evidence);
-    const taskRead = call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE && TASK_TOOL_NAMES.has(call.toolName);
+    const taskRead = call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE && taskToolAdmitted(snapshot, call.toolName);
     const bound = taskRead
       ? snapshot.connections.find(item => item.policy.endpoint.id === evidence.source.endpointId && item.policy.endpoint.account === evidence.source.account && item.policy.endpoint.resource === evidence.source.resource)
       : snapshot.connections.find(item => item.connectionId === target(snapshot, call, tx).connectionId);
@@ -529,15 +537,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
         const call = storedCall(tx, row), { signal: _signal, ...execution } = context;
         const expected = { ...execution, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), ...(call.callId !== undefined ? { callId: call.callId } : {}) };
-        if (!TASK_TOOL_NAMES.has(name) || context.accountId !== TASK_ACCOUNT || context.resourceId !== TASK_RESOURCE || canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-        const snapshot = validateCallRun(tx, call); target(snapshot, call, tx);
+        const snapshot = validateCallRun(tx, call);
+        if (!taskToolAdmitted(snapshot, name) || context.accountId !== TASK_ACCOUNT || context.resourceId !== TASK_RESOURCE || canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+        target(snapshot, call, tx);
         return call as ToolCallIntent;
       });
     },
     taskVisible(runId, name) {
       return store.transaction(tx => {
         const { snapshot } = readRun(tx, runId);
-        const luxRead = snapshot.connections.some(bound => bound.policy.connector === 'lux-knowledge' && bound.policy.toolNames.includes(name));
+        const luxRead = luxTaskRead(snapshot, name);
         if (!isConnectorTaskRead(name) && !luxRead) return true;
         return snapshot.connections.some(bound => {
           const p = bound.policy, c = p.sourcePolicy.unknownClass;

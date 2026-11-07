@@ -313,6 +313,73 @@ test('a call below the substantive floor is marked done with no model request an
   } finally { h.cleanup(); }
 });
 
+test('#948: a short call that states a durable preference still reaches the extractor', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-coffee');
+    const ids = seedTurns(h.store, 's-coffee', [['owner', 'I take my coffee black from now on'],
+      ['assistant', 'Black it is.']]);
+    const model = new FakeModel(() => operations({ op: 'add', kind: 'preference', text: 'He takes his coffee black.',
+      subject: 'coffee', salience: 2, turn_start_id: ids[0], turn_end_id: ids[0] }));
+    const logged: Record<string, unknown>[] = [];
+    const outcome = await dreaming(h.store, model, { log: event => logged.push(event) }).runSession('s-coffee');
+    assert.equal(model.requests.length, 1, 'the durable line earns one request');
+    assert.equal(outcome.status, 'done');
+    const items = h.store.transaction(tx => memory.itemsForSubject(tx, 'coffee'));
+    assert.equal(items.length, 1, 'exactly one preference item, never two');
+    assert.equal(items[0]!.kind, 'preference');
+    assert.equal(logged.find(event => event.event === 'dreaming_done')?.['outcome'], 'extracted',
+      'the job counts as an extraction');
+  } finally { h.cleanup(); }
+});
+
+test('#948: a short greeting carries no durable statement and yields nothing', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-greeting');
+    seedTurns(h.store, 's-greeting', [['owner', 'Hi Naya'], ['assistant', 'Morning.']]);
+    const model = new FakeModel(() => operations({ op: 'add', kind: 'preference', text: 'He takes his coffee black.',
+      subject: 'coffee', salience: 2, turn_start_id: 1, turn_end_id: 1 }));
+    const outcome = await dreaming(h.store, model).runSession('s-greeting');
+    assert.equal(outcome.status, 'skipped');
+    assert.equal(outcome.reason, 'skipped_below_floor');
+    assert.equal(model.requests.length, 0, 'small talk still spends no request');
+    assert.equal(h.store.transaction(tx => memory.activeItems(tx).length), 0);
+  } finally { h.cleanup(); }
+});
+
+test('#949: the same transient state dreamed from two jobs leaves one active row and one superseded', async () => {
+  const h = open();
+  try {
+    seedSession(h.store, 's-state-a');
+    const first = seedTurns(h.store, 's-state-a', [['owner', 'I am travelling to Phuket next Friday with my daughter'],
+      ['assistant', 'Noted.']]);
+    const modelA = new FakeModel(() => operations({ op: 'add', kind: 'transient_state', text: 'He is travelling this week.',
+      subject: 'state:travel', salience: 2, turn_start_id: first[0], turn_end_id: first[0] }));
+    assert.equal((await dreaming(h.store, modelA).runSession('s-state-a')).status, 'done');
+
+    seedSession(h.store, 's-state-b', { endedAt: NOW + 3_600_000 });
+    const second = seedTurns(h.store, 's-state-b', [['owner', 'Checking in about the booking for Friday morning'],
+      ['assistant', 'All set.']]);
+    const modelB = new FakeModel(() => operations({ op: 'add', kind: 'transient_state', text: 'He is away on a long trip.',
+      subject: 'state:travel', salience: 2, turn_start_id: second[0], turn_end_id: second[0] }));
+    const logged: Record<string, unknown>[] = [];
+    const outcome = await dreaming(h.store, modelB, { now: () => NOW + 3_600_000, log: event => logged.push(event) })
+      .runSession('s-state-b');
+    assert.equal(outcome.status, 'done');
+
+    const rows = h.store.transaction(tx => memory.itemsForSubject(tx, 'state:travel'));
+    assert.equal(rows.length, 2, 'the second job writes its own row');
+    const active = rows.filter(row => row.status === 'active');
+    const superseded = rows.filter(row => row.status === 'superseded');
+    assert.equal(active.length, 1, 'one active row survives the second job');
+    assert.equal(superseded.length, 1, 'the earlier row is superseded, never left active beside it');
+    assert.equal(superseded[0]!.supersededBy, active[0]!.id);
+    assert.equal(superseded[0]!.validUntil, NOW + 3_600_000, 'the supersede carries the date it happened');
+    assert.equal(logged.find(event => event.event === 'dreaming_done')?.['outcome'], 'superseded');
+  } finally { h.cleanup(); }
+});
+
 test('a below-floor call does not spend the backlog limit', async () => {
   const h = open();
   try {

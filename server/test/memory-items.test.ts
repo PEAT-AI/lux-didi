@@ -96,6 +96,25 @@ test('supersedeItem keeps the old row as history with its validity end and never
   } finally { f.done(); }
 });
 
+test('#949: the active row for a kind and subject is found by its normalized subject', () => {
+  const f = fixture();
+  try {
+    const stored = f.store.transaction(tx => {
+      const row = items.insertItem(tx, { kind: 'transient_state', text: 'He is travelling this week.', subject: 'State:Travel',
+        validFrom: 1000, createdAt: 1000, createdBy: 'dreaming:v1' });
+      const other = items.insertItem(tx, { kind: 'durable_fact', text: 'He lives in Berlin.', subject: 'home:berlin',
+        validFrom: 1000, createdAt: 1000, createdBy: 'dreaming:v1' });
+      return { row, other,
+        hit: items.activeItem(tx, 'transient_state', '  state:travel '),
+        missKind: items.activeItem(tx, 'preference', 'state:travel'),
+        missSubject: items.activeItem(tx, 'transient_state', 'state:commute') };
+    });
+    assert.equal(stored.hit?.id, stored.row.id, 'a case and space difference is the same subject');
+    assert.equal(stored.missKind, null, 'another kind under the same subject is a different row');
+    assert.equal(stored.missSubject, null);
+  } finally { f.done(); }
+});
+
 test('invalidateItem marks the row invalid and activeItems drops it', () => {
   const f = fixture();
   try {

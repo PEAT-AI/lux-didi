@@ -31,7 +31,7 @@ import type { ConnectionPolicy, LiveAuthority, RunAcceptance, ToolsOwnerOptions,
 
 const tools: McpTool[] = [
   { name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } },
-  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['insight_ids', 'include_links'], additionalProperties: false } },
+  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' }, offset: { type: 'integer', minimum: 0 }, max_chars: { type: 'integer', minimum: 1 } }, required: ['insight_ids', 'include_links'], additionalProperties: false } },
 ];
 const route = { identity: 'synthetic-route', provider: 'gemini' as const, modelId: 'synthetic-model', allowedClasses: ['ordinary', 'private'] as const };
 // This suite drives the HTTP arm; the union's stdio arm has no url.
@@ -48,7 +48,7 @@ const request: ModelRequest = { system: 'synthetic', promptVersion: '1', content
 function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: true }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
-interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
+interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string, args: Record<string, unknown>) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-test-'));
   let store = new Store(dir, toolsMigrations);
@@ -63,7 +63,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   let onDispatch: (() => void) | undefined;
   let result: unknown = options.result ?? { content: [{ type: 'text', text: 'nonempty synthetic α insight' }] };
   sdk.setRequestHandler('tools/list', () => ({ tools: sourceTools }) as never);
-  sdk.setRequestHandler('tools/call', request => { onDispatch?.(); return (options.resultOf ? options.resultOf(request.params.name) : result) as never; });
+  sdk.setRequestHandler('tools/call', request => { onDispatch?.(); return (options.resultOf ? options.resultOf(request.params.name, request.params.arguments ?? {}) : result) as never; });
   await sdk.connect(transport);
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
@@ -825,12 +825,12 @@ for (const effect of ['read', 'write'] as const) {
 
 // Task document continuations are typed id plus character offset, not the
 // retired owner-only read_body capability tokens.
-async function pagedTaskFixture(t: TestContext, resultOf: () => unknown) {
+async function pagedTaskFixture(t: TestContext, resultOf: (name: string, args: Record<string, unknown>) => unknown) {
   const p = policy(); p.bounds = { ...p.bounds, maxEntityBytes: 200_000, maxResultBytes: 200_000 };
   return fixture(t, { policy: p, memoryBytes: 1_000_000, responseBytes: 200_000, resultOf });
 }
-async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, cursor: string | null, executionId: string) {
-  const args = { insight_ids: [Number(id)], include_links: false, cursor }, call = { ...f.intent(executionId, 'get_insight', args), callId: executionId };
+async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, offset: number, executionId: string) {
+  const args = { insight_ids: [7], include_links: false, offset, max_chars: 6000 }, call = { ...f.intent(executionId, 'get_insight', args), callId: executionId };
   f.owner.journal.intent(call);
   const outcome = await f.definitions().find(tool => tool.name === 'get_insight')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page execution failed');
@@ -838,31 +838,32 @@ async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, 
   assert.equal(gate.state, 'allowed'); if (gate.state !== 'allowed') throw Error('page delivery refused');
   return gate.results[0]!.response;
 }
-test('task document pages reconstruct the complete source body and reject invalid cursors', async t => {
+test('native task document offsets reconstruct the complete source body without a cursor alias', async t => {
   const body = 'A'.repeat(25_000) + 'synthetic-tail';
-  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: body }) }] }));
-  const source = await f.reader.call('get_insight', { insight_ids: [7], include_links: false }, f.signal);
-  assert.equal(source.state, 'completed', 'the same configured reader can fetch the source before task projection');
-  const first = await readTaskPage(f, '7', null, 'page-first');
-  assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
-  const next = await readTaskPage(f, '7', first.next_cursor, 'page-next');
-  assert.equal(String(first.text) + String(next.text), JSON.stringify({ id: 7, content: body }), 'whole-body paging neither truncates nor duplicates content');
-  assert.equal(next.next_cursor, null);
-  const invalid = await readTaskPage(f, '7', 'not-a-cursor', 'page-invalid');
-  assert.equal(invalid.status, 'failed', 'malformed offsets cannot silently restart or choose another parent');
+  const f = await pagedTaskFixture(t, (_name, args) => ({ content: [{ type: 'text', text: body.slice(Number(args.offset), Number(args.offset) + Number(args.max_chars)) }] }));
+  let reconstructed = '';
+  for (let offset = 0; offset < body.length; offset += 6000) {
+    const page = await readTaskPage(f, offset, `page-${offset}`);
+    reconstructed += String(page['text']);
+    assert.deepEqual(f.calls.at(-1)!.arguments, { insight_ids: [7], include_links: false, offset, max_chars: 6000 });
+  }
+  assert.equal(reconstructed, body);
+  const read = f.definitions().find(tool => tool.name === 'get_insight')!;
+  assert.equal(read.validate({ insight_ids: [7], include_links: false, cursor: 'not-a-cursor' }), false);
 });
-test('SOURCE DEFECT task document pages: a continuation cannot silently splice changed source bytes', async t => {
-  const original = 'A'.repeat(25_000) + 'original-tail'; let current = original;
-  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: current }) }] }));
-  const first = await readTaskPage(f, '7', null, 'version-first'); assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');
-  current = 'B'.repeat(25_000) + 'changed-tail';
-  const next = await readTaskPage(f, '7', first.next_cursor, 'version-next');
-  if (next.status !== 'failed') assert.equal(String(first.text) + String(next.text), `### insight 7 [id 7]\n${original}`, 'continue the captured version or explicitly refuse, never splice different documents');
-  else assert.ok(next.repair, 'a version change refusal tells the worker to restart');
+test('native task document reads retain each distinct source response instead of merging changed bytes', async t => {
+  let body = 'A'.repeat(6000);
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: body }] }));
+  const first = await readTaskPage(f, 0, 'page-before');
+  body = 'B'.repeat(6000);
+  const second = await readTaskPage(f, 0, 'page-after');
+  assert.equal(first['text'], 'A'.repeat(6000));
+  assert.equal(second['text'], 'B'.repeat(6000));
+  assert.equal(f.calls.length, 2, 'each native offset request gets fresh source evidence');
 });
-test('SOURCE DEFECT task read delivery: a captured document page is refused after its source is revoked', async t => {
-  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: 'A'.repeat(25_000) }) }] }));
-  const args = { insight_ids: [7], include_links: false }, call = f.intent('pending-page', 'get_insight', args); f.owner.journal.intent(call);
+test('SOURCE DEFECT task read delivery: a captured native document page is refused after its source is revoked', async t => {
+  const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: 'A'.repeat(6000) }] }));
+  const args = { insight_ids: [7], include_links: false, offset: 0, max_chars: 6000 }, call = f.intent('pending-page', 'get_insight', args); f.owner.journal.intent(call);
   const outcome = await f.definitions().find(tool => tool.name === 'get_insight')!.execute(args, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed'); if (outcome.status !== 'completed') throw Error('page read failed');
   f.owner.applyConnection(policy({ generation: 2, enabled: false }));

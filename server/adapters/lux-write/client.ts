@@ -16,10 +16,11 @@ function localEndpoint(url: string): boolean {
 }
 const PROTOCOL_VERSION = '2025-06-18';
 const TIMEOUT_MS = 8000;
-function parseMessage(text: string): unknown {
-  try { return JSON.parse(text); } catch { /* MCP SSE carries JSON in data lines. */ }
+function parseMessage(text: string, expectedId?: unknown): unknown {
+  const selected = (value: unknown): unknown => expectedId === undefined || record(value)?.id === expectedId ? value : undefined;
+  try { const value = selected(JSON.parse(text)); if (value !== undefined) return value; } catch { /* MCP SSE carries JSON in data lines. */ }
   for (const line of text.split('\n')) if (line.startsWith('data:')) {
-    try { return JSON.parse(line.slice(5).trim()); } catch { /* Ignore non-JSON progress frames. */ }
+    try { const value = selected(JSON.parse(line.slice(5).trim())); if (value !== undefined) return value; } catch { /* Ignore non-JSON progress frames. */ }
   }
   return undefined;
 }
@@ -58,7 +59,7 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
       if (!response.ok) throw Error('http');
       const text = await response.text();
       if (body.method === 'notifications/initialized') return {};
-      const message = record(parseMessage(text));
+      const message = record(parseMessage(text, body.id));
       if (!message || message.error || !record(message.result)) throw Error('protocol');
       return record(message.result)!;
     };
@@ -92,16 +93,16 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
     if (tool === LUX_TOOLS.feedback && typeof body === 'string') {
       const match = /^Recorded (useful|wrong|stale|irrelevant) feedback on insight (\d+) as row (\d+)\.$/.exec(body);
       return match && match[1] === args[LUX_PARAMS.verdict] && Number(match[2]) === args[LUX_PARAMS.insightId]
-        ? { disposition: 'recorded', insight_id: Number(match[2]) } : refused('invalid_receipt');
+        ? { disposition: 'recorded', [LUX_PARAMS.insightId]: Number(match[2]) } : refused('invalid_receipt');
     }
     if (!receipt) { phase('schema_rejected'); return refused('invalid_receipt'); }
     if (tool === LUX_TOOLS.create) {
       if (!['created', 'duplicate_of', 'refused'].includes(String(receipt.disposition))) return refused('invalid_receipt');
-      if (receipt.disposition !== 'refused' && (!Number.isSafeInteger(receipt.insight_id) || Number(receipt.insight_id) < 1)) return refused('invalid_receipt');
+      if (receipt.disposition !== 'refused' && (!Number.isSafeInteger(receipt[LUX_PARAMS.insightId]) || Number(receipt[LUX_PARAMS.insightId]) < 1)) return refused('invalid_receipt');
       return receipt as VaultWriteResult;
     }
-    if (tool === LUX_TOOLS.update) return { ...receipt, disposition: receipt.action === 'updated' && receipt.insight_id === args[LUX_PARAMS.insightId] ? 'updated' : 'refused', ...(receipt.action !== 'updated' ? { reason: String(receipt.action ?? 'invalid_receipt') } : {}) } as VaultWriteResult;
-    if (tool === LUX_TOOLS.link) return { ...receipt, disposition: ['created', 'exists'].includes(String(receipt.action)) && Number.isSafeInteger(receipt.link_id) ? 'linked' : 'refused', insight_id: Number(args[LUX_PARAMS.sourceInsightId]) } as VaultWriteResult;
+    if (tool === LUX_TOOLS.update) return { ...receipt, disposition: receipt.action === 'updated' && receipt[LUX_PARAMS.insightId] === args[LUX_PARAMS.insightId] ? 'updated' : 'refused', ...(receipt.action !== 'updated' ? { reason: String(receipt.action ?? 'invalid_receipt') } : {}) } as VaultWriteResult;
+    if (tool === LUX_TOOLS.link) return { ...receipt, disposition: ['created', 'exists'].includes(String(receipt.action)) && Number.isSafeInteger(receipt.link_id) && Number(receipt.link_id) > 0 ? 'linked' : 'refused', [LUX_PARAMS.insightId]: Number(args[LUX_PARAMS.sourceInsightId]) } as VaultWriteResult;
     if (['created', 'updated', 'linked', 'recorded', 'duplicate_of', 'refused'].includes(String(receipt.disposition))) return receipt as VaultWriteResult;
     return refused('invalid_receipt');
   };
@@ -119,7 +120,7 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
     },
     async save(args: VaultSaveArgs): Promise<VaultTransportResult> {
       const receipt = await write(LUX_TOOLS.create, { [LUX_PARAMS.content]: args.content, [LUX_PARAMS.title]: args.title, [LUX_PARAMS.category]: args.insightType, [LUX_PARAMS.project]: args.project, ...args.source });
-      if (receipt.disposition === 'created') return { outcome: 'inserted', insightId: String(receipt.insight_id) };
+      if (receipt.disposition === 'created') return { outcome: 'inserted', insightId: String(receipt[LUX_PARAMS.insightId]) };
       if (receipt.disposition === 'duplicate_of') return { outcome: 'duplicate' };
       return { outcome: receipt.reason === 'outcome_unknown' ? 'unknown' : receipt.reason === 'transport_unavailable' ? 'unavailable' : 'failed' };
     },

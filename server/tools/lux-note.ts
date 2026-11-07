@@ -31,7 +31,7 @@ const VAULT_PROJECT = 'didi-voice';
 export type FrozenNote = { readonly state: 'frozen'; readonly payload: string; readonly payloadSha: string }
   | { readonly state: 'refused'; readonly code: 'payload_empty' | 'too_long' };
 
-/** The whole insight-create payload and its digest are frozen here; nothing later may change them. */
+/** Freeze the owner payload and tool identity; dispatch adds deterministic host attribution, not model edits. */
 export function freezeNote(note: { readonly title: string; readonly body: string; readonly externalContextPresent?: boolean }): FrozenNote {
   const title = note.title.replace(/\s+/g, ' ').trim();
   const body = note.body.trim();

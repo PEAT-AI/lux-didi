@@ -50,7 +50,7 @@ export function createLuxKnowledgeReader({ port, registry, config }: LuxKnowledg
       const limit = wire[LUX_PARAMS.limit], query = wire[LUX_PARAMS.query], ids = wire[LUX_PARAMS.insightIds];
       if ((typeof limit === 'number' && limit > settings.maxSearchLimit) || (typeof query === 'string' && query.length > settings.maxQueryChars) || (Array.isArray(ids) && ids.length > settings.maxGetIds)) return { state: 'refused', reason: 'request_bound_exceeded' };
       const result = await port.call({ endpointId: settings.endpointId, toolName: tool, arguments: wire, generation: settings.generation, account: settings.account, resource: settings.resource }, signal);
-      if (result.state === 'refused' || result.state === 'unknown') return result;
+      if ('reason' in result) return result;
       if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
       return { state: result.state, classification: 'unknown', capability: 'local-only', tool,
         decodedResult: structuredClone(result.decodedResult), source: { ...result.source }, observedAt: result.freshness.receivedAt,

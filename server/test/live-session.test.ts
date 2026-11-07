@@ -3524,8 +3524,8 @@ test('opening facts are present without a kind list, template or suggested openi
   const encoded = /^OPENING_FACTS (.+)$/mu.exec(system)?.[1];
   assert.ok(encoded);
   assert.deepEqual(Object.keys(JSON.parse(encoded) as object), ['now', 'day', 'open_thread', 'commitments', 'saved_for_him', 'exclude_topics']);
-  assert.match(system, /Never open on a subject in exclude_topics/);
-  assert.match(system, /You choose the angle and every word/);
+  assert.match(system, /Exclude exclude_topics from openings/);
+  assert.match(system, /Choose every word and angle in persona/);
   assert.doesNotMatch(system, /Opening options|Pick one of these|Never invent beyond these options|Earlier opener topic classes|^- (?:calendar|open loop|recent thread):/mu);
 });
 
@@ -5372,7 +5372,7 @@ test('delivered opening topics persist once and only the last three calls seed e
   const facts = JSON.parse(/^OPENING_FACTS (.+)$/mu.exec(system)![1]!) as { exclude_topics: string[] };
   assert.ok(!facts.exclude_topics.includes('sleep'), 'the fourth-oldest call no longer excludes its topic');
   for (const subject of subjects.slice(1)) assert.ok(facts.exclude_topics.includes(subject));
-  assert.match(system, /Never open on a subject in exclude_topics/);
+  assert.match(system, /Exclude exclude_topics from openings/);
   assert.doesNotMatch(system, /Opening options|Pick one of these|Earlier opener topic classes/);
 });
 

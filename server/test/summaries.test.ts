@@ -487,7 +487,8 @@ test('the compiled conversation budget selects a newest-first whole-summary pref
       trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, memoryBlockInput: input });
     assert.equal(composed.earlierConversationsIncluded, true);
     assert.deepEqual(composed.summaryIds, block.summaryIds);
-    assert.ok(block.parts[3]!.estimatedTokens <= 800);
+    assert.ok(block.parts[3]!.estimatedTokens <= 1_000);
+    assert.ok(block.parts[3]!.estimatedTokens > 800, 'the expanded budget admits a larger whole-summary prefix');
   } finally { h.cleanup(); }
 });
 

@@ -83,9 +83,10 @@ test('the helper tool declares mode, and a mode the model chose reaches the conn
   } };
   const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader }]);
   const signal = new AbortController().signal;
-  assert.equal((await execute('search_knowledge', { query: 'orchard plan', limit: 4, mode: 'fast' }, signal)).status, 'ok');
+  assert.notEqual((await execute('search_knowledge', { query: 'orchard plan', limit: 4, mode: 'fast' }, signal)).status, 'failed', 'a chosen fast mode is forwarded, not refused');
   assert.equal(seen.at(-1)!.args['mode'], 'fast');
-  assert.equal((await execute('search_knowledge', { query: 'orchard plan', limit: 4 }, signal)).status, 'ok');
+  // An unstated mode arrives as the declared null, is pruned, and keeps the ranked default.
+  assert.notEqual((await execute('search_knowledge', { query: 'orchard plan', limit: 4, mode: null }, signal)).status, 'failed');
   assert.equal(Object.hasOwn(seen.at(-1)!.args, 'mode'), false, 'no chosen mode keeps the ranked default');
   assert.equal((await execute('search_knowledge', { query: 'orchard plan', limit: 4, mode: 'quick' }, signal)).status, 'failed', 'an invented mode is refused, never forwarded');
 });

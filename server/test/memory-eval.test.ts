@@ -416,3 +416,25 @@ test('a gold turn id that is neither a string nor an integer still refuses the g
     assert.throws(() => readGolden(path), /memory_eval_golden_invalid/);
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
+
+test('a start block that carries its needles is covered even when the item misses', async () => {
+  await withStore('clean', async (store, work) => {
+    const golden = join(work, 'golden-stage.jsonl');
+    // The start block carries the date from the owner's own memory; the gold turn is in a call whose
+    // text never mentions the optician, so the search cannot reach it. Start passes, the item misses.
+    writeFileSync(golden, goldenLine({
+      id: 'stage-start-pass-item-miss', class: 2, query: 'when is the optician appointment',
+      gold_turn_ids: ['302'], required: ['12 November'], expect_in_start_block: true, expect_search: true,
+    }));
+    const out = join(work, 'report.json');
+    cli(['--store', store, '--golden', golden, '--out', out]);
+    const report = readReport(out);
+    const item = report.items_detail.find(entry => entry.id === 'stage-start-pass-item-miss')!;
+    assert.ok(item.misses.includes('retrieval_miss'), `the search must miss: ${item.misses.join(',')}`);
+    assert.equal(item.verdict, 'miss', 'the item as a whole misses');
+    assert.equal(item.start.status, 'scored');
+    assert.equal(item.start.passed, true, 'the start stage is judged on its own text, never on the item verdict');
+    assert.equal(report.overall.startCoverage.scored, 1);
+    assert.equal(report.overall.startCoverage.passed, 1, 'turn-one coverage counts the stage, not the item verdict');
+  });
+});

@@ -152,11 +152,12 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   const batch = await h.read(expanded, run.host, [...pair, 'mattermost']);
   assert.equal(batch.outcome.status, 'complete'); assert.equal(batch.seen.length, 2);
   assert(batch.seen[1]!.dataClasses.includes('private'), 'private connector evidence reaches the explicitly private-capable route');
-  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + 1, id + ': ' + JSON.stringify(batch.outcome.tools));
+  for (const id of pair) assert.equal(h.counts.get(id), beforePair.get(id)! + (id === 'lux-knowledge' ? 0 : 1), id + ': ' + JSON.stringify(batch.outcome.tools));
+  assert.ok(batch.outcome.tools.some(tool => tool.name === 'search_insights' && tool.status === 'refused'), 'trusted rediscovery advances lux generation, so the old accepted run cannot use its replacement grant');
   assert.equal(h.counts.get('mattermost'), 0);
   const responses = batch.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse] : []));
   assert.equal(responses.length, 3);
-  assert.match(JSON.stringify(responses), /Synthetic result/);
+  assert.doesNotMatch(JSON.stringify(responses), /Synthetic result/, 'a stale lux generation discloses no replacement-source evidence');
   assert.match(JSON.stringify(responses), /Synthetic mail/);
   assert(!JSON.stringify(responses).includes('synthetic mattermost read'));
   const rows = h.store.transaction(tx => tx.all('SELECT state,intent_json,result_json FROM tool_calls WHERE run_id=?', [run.host.runId]));
@@ -169,6 +170,7 @@ for (const builder of ['live', 'chat-shaped'] as const) test(`connection-scoped 
   for (const id of all) assert.equal(h.counts.get(id), beforeAll.get(id)! + 1, id + ': ' + JSON.stringify(allRead.outcome.tools));
   const allResponses = allRead.seen[1]!.contents.flatMap(c => c.parts.flatMap(p => p.functionResponse ? [p.functionResponse.response] : []));
   assert.equal(allResponses.length, 5);
+  assert.match(JSON.stringify(allResponses), /Synthetic result/, 'a newly accepted run reads the current discovered lux generation');
   for (const response of allResponses) assert(typeof response['text'] === 'string' && (response['text'].length > 0 || Array.isArray(response['references']) && response['references'].length > 0), 'each admitted read releases verified text or ranked references');
   const generations = () => h.store.transaction(tx => tx.all('SELECT connection_id,generation FROM tool_connections ORDER BY connection_id'));
   const unchanged = generations(); await h.start(); assert.deepEqual(generations(), unchanged, 'unchanged restart must not bump generations');

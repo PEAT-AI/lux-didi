@@ -47,6 +47,8 @@ A read with no readable body text is `failed`, never `ok`, so the helper can tel
 
 `calendar_events` asks the connector for the whole window inside the existing 50-event budget (`GOOGLE_DEFAULTS.maxListResults`), and the warm digest's `Today:` line reads the same 50-event budget. Completeness is judged on the structured source, not on the rendered display text: a window reports `partial` only when the source returned a continuation or reported an unread calendar, never because the display text was mistaken for an unranked blob.
 
+`respond_event` answers one invitation through the same calendar_write endpoint: `calendar_respond_event` carries the event id, `accepted`, `declined` or `tentative`, and an optional note. It sets the owner's own response status and tells nobody, and an event he was not invited to comes back as one closed refusal (`not_attendee`, `not_an_invitation`) instead of an answer.
+
 ## One owner account, proven before every use
 
 Every identity-bearing connector acts as the one owner email in `ownerIdentity` of `provider-38/mcp.json` (for example `owner@example.invalid`) and never as another account. The comparison is exact and case-insensitive on the EMAIL: a connector that reports an email must match it, so a matching username never carries a different mailbox (`server/connectors/identity.ts`).

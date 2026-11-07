@@ -84,7 +84,7 @@ test('every declared task tool uses only schema keywords the provider accepts', 
   assert.deepEqual(offenders, [], 'a rejected schema keyword would make every helper request fail with HTTP 400');
 });
 
-test('every native connector declaration uses only schema keywords the provider accepts', () => {
+test('every native connector declaration uses only schema keywords the provider accepts, and discovery publishes the rest', () => {
   // #1013: a native connector declaration goes to the provider without passing through createRegistry,
   // so the registry walk above never sees it and every one of them is checked here.
   const policy = {
@@ -103,11 +103,8 @@ test('every native connector declaration uses only schema keywords the provider 
     return found;
   });
   assert.deepEqual(offenders, [], 'a native declaration with a rejected keyword makes every helper request fail with HTTP 400');
-  const getInsight = declarations.find(item => item.descriptor === 'lux-knowledge' && item.declaration.name === 'get_insight');
-  assert.ok(getInsight, 'the native knowledge reader is missing');
-  const ids = (getInsight.declaration.parameters['properties'] as Record<string, Record<string, unknown>>)['ids']!;
-  assert.equal('uniqueItems' in ids, false, 'a repeated id stays a rule of normalizeGetInsightArgs');
-  assert.deepEqual(getInsight.declaration.normalize?.({ ids: [4, 4] })?.args.ids, [4], 'the duplicate is dropped before dispatch');
+  assert.deepEqual(declarations.filter(item => item.descriptor === 'lux-knowledge'), [],
+    'the vault reader synthesizes no declaration: the daemon publishes every read and write');
 });
 
 test('the discovered exact read bounds its batch without a schema keyword the provider rejects', () => {

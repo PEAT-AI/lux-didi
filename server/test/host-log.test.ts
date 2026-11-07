@@ -812,6 +812,7 @@ test('a dreaming_done line names a below-floor skip and carries no other outcome
   const skipped = safeEvent({ ...line, outcome: 'skipped_below_floor' });
   assert.equal(skipped?.['outcome'], 'skipped_below_floor');
   assert.equal(safeEvent({ ...line, outcome: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'the outcome is a closed word');
+});
 
 test('M21: a trusted rediscovery logs the endpoint id and digest prefixes, never content', () => {
   const rediscovered = { event: 'mcp_trusted_rediscovered', endpointId: 'lux-knowledge',

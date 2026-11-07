@@ -69,7 +69,7 @@ for (const rule of [
 for (const gone of ['freshly worded', 'nothing summarised', 'Close with a costly question', 'Say still about one',
   'Say still about one only'])
   assert.equal(voice.includes(gone) || persona.NAYA_CHARACTER.includes(gone), false, `the contradictory or garbled line is gone: ${gone}`);
-assert.match(persona.NAYA_CHARACTER, /Close with a question only if its answer changes your next action/);
+assert.match(persona.NAYA_CHARACTER, /Close by asking only if his answer changes your next action/);
 assert.match(persona.NAYA_CHARACTER, /Call things still open or true only if confirmed within 24 hours/);
 assert.match(persona.NAYA_VOICE_SURFACE, /greet the moment if none is open/,
   'a call with nothing open greets the moment');
@@ -190,7 +190,7 @@ assert.match(notConnected, /^Connectors: team chat not connected\./mu, 'a connec
 console.log(JSON.stringify({ case: 'connector_truth', approvalNoControl: true, noSettingsLocation: true, notConnected: true }));
 // C-CLAIMS9 outcome 2, W3-R2: the rule holds on a session with no connector rows too, where no connector line
 // is built at all, so it lives in the voice surface the model always receives.
-assert.ok(persona.NAYA_VOICE_SURFACE.includes('Name settings or approval places only from the connector state line.'),
+assert.ok(persona.NAYA_VOICE_SURFACE.includes('Name only settings or approval places in the connector state line.'),
   'the voice surface forbids naming a location the connector state line does not name, with or without connector rows');
 console.log(JSON.stringify({ case: 'connector_truth_without_rows', voiceRule: true }));
 NODE

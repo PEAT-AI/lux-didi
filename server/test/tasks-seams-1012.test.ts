@@ -45,7 +45,7 @@ test('10.12: real tool results reach the helper without losing mail, vault evide
   ]);
   const calls = [
     { id: 'mail', name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } },
-    { id: 'vault', name: 'search_knowledge', args: { query: 'shade house routine' } },
+    { id: 'vault', name: 'search_knowledge', args: { query: 'shade house routine' , mode: null } },
     { id: 'company', name: 'search_company', args: { query: 'synthetic absent record', mode: 'answer', cursor: null } },
   ];
   let hop = 0;

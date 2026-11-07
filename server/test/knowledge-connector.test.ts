@@ -330,7 +330,9 @@ test('3r: the search declaration accepts the bounded-body fields and still refus
   assert.equal(declaration.validate({ query: 'lux didi', limit: 6, detail: 'full' }), false);
   assert.equal(declaration.validate({ query: 'lux didi', limit: 6, max_chars: 100 }), false);
   assert.equal(declaration.validate({ query: 'lux didi', limit: 6, deadline_ms: 30_001 }), false);
-  assert.equal(declaration.validate({ query: 'lux didi', limit: 6, mode: 'fast' }), false, 'an undeclared field is still refused');
+  // FR5: mode is a declared field now, so it validates; the extra key stays refused.
+  assert.equal(declaration.validate({ query: 'lux didi', limit: 6, mode: 'fast' }), true, 'the declared mode field is accepted');
+  assert.equal(declaration.validate({ query: 'lux didi', limit: 6, extra: 'synthetic' }), false, 'an undeclared field is still refused');
   const properties = Object.keys(declaration.parameters['properties'] as Record<string, unknown>);
   assert.deepEqual(properties, ['query', 'limit'], 'the model-facing chat call shape is unchanged');
 });

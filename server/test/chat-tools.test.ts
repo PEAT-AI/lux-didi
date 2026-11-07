@@ -45,7 +45,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     requests.push(structuredClone(request));
     if (failAnswer && (request.declarations?.length ?? 0) === 0) throw new Error('provider down');
     if (ask && request.declarations?.some(d => d.name === (sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge')) && (repeat || !request.contents.some(c => c.parts.some(p => p.functionResponse)))) {
-      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { ids: [42], include_links: true, cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived' }, id: randomUUID() } }] } };
+      return { ...result(request, 'complete', ''), providerContent: { role: 'model', parts: [{ functionCall: { name: sourceKind === 'gmail' ? 'read_mail' : exactRead ? 'read_knowledge' : 'search_knowledge', args: sourceKind === 'gmail' ? { id: mailId, cursor: null } : exactRead ? { ids: [42], include_links: true, cursor: null } : { query: repeat ? `synthetic acquisition round ${requests.length}` : 'which emails arrived', mode: null }, id: randomUUID() } }] } };
     }
     if (followBodies && request.declarations?.some(d => d.name === 'read_received_body')) {
       const prior = request.contents.flatMap(content => content.parts.flatMap(part => part.functionResponse ? [part.functionResponse.response] : [])).at(-1);
@@ -58,7 +58,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
     if (illegalFinal) {
       control.onEvent?.({ type: 'text', text: 'PROVISIONAL', provisional: true });
       return { ...result(request, 'complete', 'PROVISIONAL'), providerContent: { role: 'model', parts: [
-        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_knowledge', args: { query: 'one more', limit: 1 }, id: randomUUID() } },
+        { text: 'PROVISIONAL' }, { functionCall: { name: 'search_knowledge', args: { query: 'one more', limit: 1 , mode: null }, id: randomUUID() } },
       ] } };
     }
     if (finalStatus !== 'complete') return result(request, finalStatus, '');

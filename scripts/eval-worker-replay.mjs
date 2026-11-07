@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 // Use the shipped public worker instruction, not a second replay-only prompt.
 const instructionSource = readFileSync(new URL('../server/tasks/instructions.ts', import.meta.url), 'utf8');
 export const WORKER_INSTRUCTIONS = JSON.parse(instructionSource.match(/export const WORKER_INSTRUCTIONS = ("[^\n]*");/)[1]);
-if (WORKER_INSTRUCTIONS.length !== 7658) throw new Error('Worker instruction length changed: expected 7658 characters');
+if (WORKER_INSTRUCTIONS.length !== 8170) throw new Error('Worker instruction length changed: expected 8170 characters');
 
 // Synthetic Gmail fixtures and semantics from probe/worker-replay-110.
 // Offline only. A canned replay does not establish real model behaviour.
@@ -342,4 +342,80 @@ export function scoreDepth(scenario, result) {
     } : {}),
     spoken_length: spoken.length,
   };
+}
+
+// FR5: the vault search's two modes, priced offline. A row is the decision order the shipped
+// instruction asks for; a fake connector charges fast 70 ms (LUX-BENCH in-process p50, 62 ms at
+// limit 3) and full 1528 ms (the connector's measured p50 on real calls), so a row scores the
+// order and the simulated wait, never a real clock.
+export const VAULT_FAST_MS = 70;
+export const VAULT_FULL_MS = 1_528;
+/** What the shipped worker text must say for a fast-first row to mean anything. */
+export const VAULT_FAST_RULE = Object.freeze({
+  fast_first: /fast vault search at a small limit/iu,
+  body_before_fact: /read a hit[^.]*body/isu,
+  title_never_fact: /title is never a fact/iu,
+  // FR5-R1: fast top-3 held full's top-1 in 7 of 10 verified queries, so a fast hit is a lead only.
+  leads_not_answers: /fast hits are leads[^.]*never proves? absence/isu,
+  // FR5-R1: the confidence and low_confidence fields contradict each other in fast mode.
+  confidence_not_gate: /confidence fields[^.]*not a gate/isu,
+  fall_back_full: /search full when the fast hit does not clearly match/isu,
+});
+export function instructionCarriesFastFirst(instructions = WORKER_INSTRUCTIONS) {
+  return Object.values(VAULT_FAST_RULE).every(pattern => pattern.test(instructions));
+}
+
+// Synthetic rows: (a) a named topic fast finds, (b) fast returns unrelated keyword hits, (c) fast empty.
+export const VAULT_FAST_ROWS = Object.freeze([
+  { id: 'vault-fast-named-topic', owner_words: 'what does my orchard plan say about watering', record_id: 89820, expect_full: false,
+    fact: 'drip line runs at 04:40', answer: 'The orchard plan has the drip line runs at 04:40 for forty minutes.',
+    unrelated: ['Orchard Road bus lane', 'buses stop at 23:00'] },
+  { id: 'vault-fast-unrelated-hits', owner_words: 'when does the survey boat leave the harbour', record_id: 89441, expect_full: true,
+    fact: 'leaves the harbour at 07:15', answer: 'The survey boat leaves the harbour at 07:15 on Wednesday.',
+    unrelated: ['Orchard Road bus lane', 'buses stop at 23:00'] },
+  { id: 'vault-fast-empty', owner_words: 'what did I write about the pump service', record_id: 89777, expect_full: true,
+    fact: 'pump service is booked for the first Friday', answer: 'The pump service is booked for the first Friday in June.',
+    unrelated: ['Orchard Road bus lane', 'buses stop at 23:00'] },
+  // FR5-R1: fast returned hits for 3 of 5 absent topics, so an absent topic must not be answered
+  // from the fast result at all: the full search runs, none of its hits is a record, and the answer
+  // states the absence only after that search.
+  { id: 'vault-fast-absent-topic', owner_words: 'what did I write about the harbour festival', record_id: null, expect_full: true,
+    fact: null, answer: 'I found nothing about the harbour festival, though I searched the vault twice.',
+    absence: 'nothing about the harbour festival', unrelated: ['Orchard Road bus lane', 'buses stop at 23:00'] },
+]);
+
+// The rule in the tool calls a real call would produce: fast at a small limit first, full only when
+// fast was empty or ambiguous, then the body read the fact comes from.
+export function vaultFastPlan(row) {
+  const calls = [{ name: 'search_knowledge', args: { query: row.owner_words, limit: 4, mode: 'fast' } }];
+  if (row.expect_full) calls.push({ name: 'search_knowledge', args: { query: row.owner_words, limit: 8 } });
+  if (row.record_id !== null) calls.push({ name: 'get_insight', args: { ids: [row.record_id] } });
+  return calls;
+}
+
+export function scoreVaultFast(row, result = {}) {
+  const calls = result.calls ?? [];
+  const spoken = result.spoken ?? '';
+  const searches = calls.filter(call => call.name === 'search_knowledge' && call.args);
+  const fast = searches.findIndex(call => call.args.mode === 'fast');
+  const full = searches.findIndex(call => call.args.mode !== 'fast');
+  const read = row.record_id === null ? undefined : calls.find(call => call.name === 'get_insight' && (call.args?.ids ?? []).includes(row.record_id));
+  return {
+    fast_first: fast !== -1 && searches[fast].args.limit <= 5,
+    full_when_needed: row.expect_full ? full > fast : true,
+    body_read: row.record_id === null ? true : read !== undefined,
+    fact_supported: row.fact === null ? spoken.includes(row.absence) : read !== undefined && spoken.includes(row.fact),
+    unrelated_absent: row.unrelated.every(text => !spoken.includes(text)),
+    instruction_rule: instructionCarriesFastFirst(result.instructions),
+  };
+}
+
+/** Simulated milliseconds from the finished utterance to the first body-supported finding. */
+export function vaultFirstFindingMs(row, route) {
+  if (route === 'full-only') return VAULT_FULL_MS;
+  return row.expect_full ? VAULT_FAST_MS + VAULT_FULL_MS : VAULT_FAST_MS;
+}
+export function vaultPairedMs(rows = VAULT_FAST_ROWS) {
+  const total = route => rows.reduce((sum, row) => sum + vaultFirstFindingMs(row, route), 0);
+  return { fast_first: total('fast-first'), full_only: total('full-only') };
 }

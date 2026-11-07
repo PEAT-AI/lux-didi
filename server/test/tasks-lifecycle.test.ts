@@ -152,7 +152,7 @@ for (const mode of ['inference failure', 'deadline expiry', 'no action'] as cons
   const result = await runWorker({ registry, identity: { task_id: 'partial-fixture', task_revision: 1, connection_generation: 1 },
     input: 'Read the synthetic source', signal: new AbortController().signal,
     clock: { now: () => now, timer: (callback, ms) => { if (ms === 36000) expireRevision = callback; return () => {}; } }, infer: async () => {
-      if (!inferred++) return { text: '', calls: [{ id: 'synthetic-read', name: 'search_knowledge', args: { query: 'synthetic' } }] };
+      if (!inferred++) return { text: '', calls: [{ id: 'synthetic-read', name: 'search_knowledge', args: { query: 'synthetic' , mode: null } }] };
       if (mode === 'no action') return { text: '', calls: [], no_action: true };
       if (mode === 'deadline expiry') { now = 36001; expireRevision(); return { text: '', calls: [] }; }
       throw Error('synthetic inference failure');

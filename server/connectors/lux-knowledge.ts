@@ -55,6 +55,8 @@ export interface LuxKnowledgeSearchInput {
   projectHint?: string;
   /** MED-1022: the voice shape's bound on each further hit, within the server's 100..6000 range. */
   snippetChars?: number;
+  /** FR5: the vault's own search depth; the server defaults to the ranked full search. */
+  mode?: 'fast' | 'full';
   /** MED-1022: an ISO day the connector narrows to; inclusive, in the owner's zone. */
   meetingDateFrom?: string;
   meetingDateTo?: string;
@@ -193,7 +195,7 @@ interface Settings extends Budgets {
 }
 
 function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: LuxKnowledgeSearchInput } | { ok: false; reason: string } {
-  const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs', 'project', 'projectHint', 'snippetChars', 'meetingDateFrom', 'meetingDateTo']);
+  const record = readAllowedRecord(input, ['query', 'limit'], ['detail', 'maxChars', 'deadlineMs', 'project', 'projectHint', 'snippetChars', 'meetingDateFrom', 'meetingDateTo', 'mode']);
   if (record === undefined) return { ok: false, reason: 'invalid-search-input' };
   const query = record['query']!.value;
   const limit = record['limit']!.value;
@@ -207,6 +209,7 @@ function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: Lux
   const snippetChars = record['snippetChars']?.value;
   const meetingDateFrom = record['meetingDateFrom']?.value;
   const meetingDateTo = record['meetingDateTo']?.value;
+  const mode = record['mode']?.value;
   // K4: a project tag is a name the corpus carries, never a pattern the model composed.
   const projectName = (value: unknown): boolean => value === undefined || (typeof value === 'string' && /^[\w.@-]{1,64}$/u.test(value));
   if (!projectName(project) || !projectName(projectHint)) return { ok: false, reason: 'invalid-project' };
@@ -215,6 +218,8 @@ function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: Lux
   if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || (deadlineMs as number) < KNOWLEDGE_DEADLINE_MIN_MS || (deadlineMs as number) > KNOWLEDGE_DEADLINE_MAX_MS)) return { ok: false, reason: 'deadline-ms-out-of-range' };
   if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return { ok: false, reason: 'snippet-chars-out-of-range' };
   if (!isCalendarDay(meetingDateFrom) || !isCalendarDay(meetingDateTo)) return { ok: false, reason: 'invalid-meeting-date' };
+  // FR5: the server's own two modes, never a third spelling of them.
+  if (mode !== undefined && mode !== 'fast' && mode !== 'full') return { ok: false, reason: 'invalid-mode' };
   return {
     ok: true,
     args: {
@@ -227,6 +232,7 @@ function validateSearch(input: unknown, budgets: Budgets): { ok: true; args: Lux
       ...(snippetChars === undefined ? {} : { snippetChars: snippetChars as number }),
       ...(meetingDateFrom === undefined ? {} : { meetingDateFrom: meetingDateFrom as string }),
       ...(meetingDateTo === undefined ? {} : { meetingDateTo: meetingDateTo as string }),
+      ...(mode === undefined ? {} : { mode: mode as 'fast' | 'full' }),
     },
   };
 }
@@ -331,6 +337,8 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
       if (validated.args.snippetChars !== undefined) args['snippet_chars'] = validated.args.snippetChars;
       if (validated.args.meetingDateFrom !== undefined) args['meeting_date_from'] = validated.args.meetingDateFrom;
       if (validated.args.meetingDateTo !== undefined) args['meeting_date_to'] = validated.args.meetingDateTo;
+      // FR5: full is the server's own default, so an unstated mode keeps the ranked wire shape.
+      if (validated.args.mode !== undefined) args['mode'] = validated.args.mode;
       return dispatch('search_knowledge', args, signal);
     },
     async get(input: LuxKnowledgeGetInput, signal?: AbortSignal): Promise<LuxKnowledgeResult> {

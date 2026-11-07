@@ -210,7 +210,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           // MED-1022: the voice shape and the meeting day travel the same way, accepted here and never
           // offered in `parameters`, so the text-chat call shape is unchanged.
           if (!keys.every(key => key === 'query' || key === 'limit' || key === 'detail' || key === 'max_chars' || key === 'deadline_ms' || key === 'project' || key === 'project_hint'
-            || key === 'snippet_chars' || key === 'meeting_date_from' || key === 'meeting_date_to')) return false;
+            || key === 'snippet_chars' || key === 'meeting_date_from' || key === 'meeting_date_to' || key === 'mode')) return false;
           if (!keys.includes('query') || !keys.includes('limit')) return false;
           const query = args['query']; const limit = args['limit'];
           if (!(typeof query === 'string' && query.trim().length > 0 && query.length <= bounds.maxQueryChars && Number.isSafeInteger(limit) && (limit as number) > 0 && (limit as number) <= bounds.maxSearchLimit)) return false;
@@ -225,6 +225,9 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           if (snippetChars !== undefined && (!Number.isSafeInteger(snippetChars) || (snippetChars as number) < KNOWLEDGE_SNIPPET_MIN_CHARS || (snippetChars as number) > KNOWLEDGE_SNIPPET_MAX_CHARS)) return false;
           // MED-1022: the day bounds are two calendar days, never a date expression.
           if (!isCalendarDay(args['meeting_date_from']) || !isCalendarDay(args['meeting_date_to'])) return false;
+          // FR5: the vault's own fast keyword search or its ranked full search, never a third spelling.
+          const mode = args['mode'];
+          if (mode !== undefined && mode !== 'fast' && mode !== 'full') return false;
           return true;
         },
       },
@@ -261,7 +264,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
         // The declaration speaks the wire names; the reader takes the connector's own field names.
         const search = args as {
           query: string; limit: number; detail?: 'snippets' | 'bodies' | 'voice'; max_chars?: number; deadline_ms?: number;
-          project?: string; project_hint?: string; snippet_chars?: number; meeting_date_from?: string; meeting_date_to?: string;
+          project?: string; project_hint?: string; snippet_chars?: number; meeting_date_from?: string; meeting_date_to?: string; mode?: 'fast' | 'full';
         };
         return await reader.search({
           query: search.query, limit: search.limit,
@@ -273,6 +276,7 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
           ...(search.snippet_chars === undefined ? {} : { snippetChars: search.snippet_chars }),
           ...(search.meeting_date_from === undefined ? {} : { meetingDateFrom: search.meeting_date_from }),
           ...(search.meeting_date_to === undefined ? {} : { meetingDateTo: search.meeting_date_to }),
+          ...(search.mode === undefined ? {} : { mode: search.mode }),
         }, signal);
       },
     };

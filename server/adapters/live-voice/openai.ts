@@ -979,13 +979,18 @@ class Session implements LiveVoiceSession {
     this.latestDelegationId = delegation.id;
     this.emit({ type: 'delegation', delegationId: delegation.id }); this.touch();
   }
+  private readonly recentCommands = new Map<string, string>();
+
   private providerError(message: ObjectValue): void {
     const error = object(message.error) ? message.error : {};
     const type = typeof error.type === 'string' ? error.type : 'unknown';
     const errorCode = typeof error.code === 'string' ? error.code : 'none';
     const param = typeof error.param === 'string' ? error.param : 'none';
-    hostLogEvent({ event: 'live_provider_error', type, code: errorCode, param });
     const commandId = typeof error.client_event_id === 'string' ? error.client_event_id : undefined;
+    const commandType = commandId ? this.recentCommands.get(commandId) : undefined;
+    hostLogEvent({ event: 'live_provider_error', type, code: errorCode, param,
+      ...(commandId ? { clientEventId: commandId, eventIdPrefix: commandId.split('_')[0] } : {}),
+      ...(commandType ? { commandType } : {}) });
     if (commandId && this.commentaryCommands.has(commandId)) {
       this.commentaryCommands.delete(commandId); this.emit({ type: 'commentaryRejected', commandId });
       hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: 'cmt' }); this.touch(); return;
@@ -1044,6 +1049,13 @@ class Session implements LiveVoiceSession {
     try {
       if (!this.checkpoint()) return false;
       if (pcmBytes) { this.diagnostic.localWriteCallbackPendingCalls++; this.diagnostic.localWriteCallbackPendingPCMBytes += pcmBytes; }
+      if (!pcmBytes) {
+        const command = JSON.parse(frame) as { event_id?: string; type?: string };
+        if (command.event_id && command.type) {
+          this.recentCommands.set(command.event_id, command.type);
+          if (this.recentCommands.size > 128) this.recentCommands.delete(this.recentCommands.keys().next().value!);
+        }
+      }
       socket.send(frame, error => {
         if (pcmBytes) {
           this.diagnostic.localWriteCallbackPendingCalls--; this.diagnostic.localWriteCallbackPendingPCMBytes -= pcmBytes;

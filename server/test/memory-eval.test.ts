@@ -295,3 +295,28 @@ test('every bar threshold is a BARS constant, so one place confirms them', () =>
   const code = readFileSync(join(ROOT, 'server', 'memory', 'eval-runner.ts'), 'utf8');
   assert.equal(/bar:\s*\d/.test(code), false, 'no bar may carry a literal threshold outside BARS');
 });
+
+function goldenLine(overrides: Record<string, unknown>): string {
+  return `${JSON.stringify({ id: 'n1', class: 1, query: 'coffee', eval_at: '2026-11-06T08:30:00+00:00',
+    cutoff_session: 'live-08', gold_turn_ids: [], required: [], forbidden: [], expect_in_start_block: true,
+    expect_search: false, expect_abstain: false, notes: '', ...overrides })}\n`;
+}
+
+test('gold turn ids written as numbers load, normalised to the ids the store joins on', () => {
+  const work = mkdtempSync(join(tmpdir(), 'memory-eval-golden-'));
+  const path = join(work, 'golden.jsonl');
+  writeFileSync(path, goldenLine({ gold_turn_ids: [801, '802'] }));
+  try {
+    const items = readGolden(path);
+    assert.deepEqual(items[0]!.gold_turn_ids, ['801', '802']);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test('a gold turn id that is neither a string nor an integer still refuses the golden set', () => {
+  const work = mkdtempSync(join(tmpdir(), 'memory-eval-golden-'));
+  const path = join(work, 'golden.jsonl');
+  writeFileSync(path, goldenLine({ gold_turn_ids: [{ turn: 801 }] }));
+  try {
+    assert.throws(() => readGolden(path), /memory_eval_golden_invalid/);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});

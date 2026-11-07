@@ -791,3 +791,12 @@ test('estimated startup counts reject negative, nonnumeric and unknown fields', 
   assert.equal(safeEvent({ ...SIZE, stablePrefixChars: 101 }), undefined);
   assert.equal(safeEvent({ ...SIZE, fixedChars: 31 }), undefined);
 });
+
+test('a dreaming_done line names a below-floor skip and carries no other outcome', () => {
+  const line = { event: 'dreaming_done', liveSessionId: LIVE_SESSION_ID, jobId: 'job-1', ops: '', rejected: 0,
+    coverageGap: 0, elapsedMs: 4 };
+  assert.equal(safeEvent(line)?.['outcome'], undefined, 'an extraction carries no outcome field');
+  const skipped = safeEvent({ ...line, outcome: 'skipped_below_floor' });
+  assert.equal(skipped?.['outcome'], 'skipped_below_floor');
+  assert.equal(safeEvent({ ...line, outcome: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'the outcome is a closed word');
+});

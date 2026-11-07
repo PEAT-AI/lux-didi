@@ -45,7 +45,7 @@ function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 }, ...overrides };
 }
 const request: ModelRequest = { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'synthetic' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } };
-function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic' }): ModelResult {
+function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', mode: null }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
 interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
@@ -110,10 +110,10 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
     return taskDefinitions(task.runtime, task.identity, owner, runId);
   };
   const definitions = () => allDefinitions().filter(tool => tool.name === 'search_knowledge' || tool.name === 'read_knowledge');
-  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic' }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
+  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic', mode: null }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
     executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE });
   const binding = (ref: { id: string; sha256: string }, call = intent()): ToolResultBinding => ({ executionId: call.executionId, name: call.toolName, callId: call.callId!, contentIndex: 2, partIndex: 0, result: structuredClone(ref) });
-  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic' }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
+  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', mode: null }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner, taskRuntime: () => { allDefinitions(); return taskRuns.get('run')!.runtime; },
@@ -290,7 +290,10 @@ test('task search/read strict arguments keep requested ids distinct from verifie
   assert.equal(search.parameters['additionalProperties'], false);
   assert.equal(search.validate({ query: 'x', limit: 4 }), false);
   assert.equal(search.validate({ query: 'x', account: 'foreign' }), false);
-  assert.equal(search.validate({ query: 'x' }), true);
+  assert.equal(search.validate({ query: 'x' }), false, 'the declared mode field travels on every call, null for the ranked default');
+  assert.equal(search.validate({ query: 'x', mode: null }), true);
+  assert.equal(search.validate({ query: 'x', mode: 'fast' }), true);
+  assert.equal(search.validate({ query: 'x', mode: 'quick' }), false, 'only the vault\'s own two modes are admitted');
   const read = f.definitions().find(tool => tool.name === 'read_knowledge')!;
   assert.equal(read.validate({ ids: [13, 7], include_links: false, cursor: null }), true, 'a task read accepts the merged typed batch schema');
   assert.equal(read.validate({ ids: [], include_links: false, cursor: null }), false);
@@ -348,12 +351,12 @@ for (const [label, result, memoryBytes] of [
 test('cancelled task reads never dispatch early or accept a late completion', async t => {
   const f = await fixture(t); f.owner.journal.intent(f.intent());
   const before = new AbortController(); before.abort();
-  assert.equal((await f.execute(f.intent(), { query: 'synthetic' }, before.signal)).status, 'completed');
+  assert.equal((await f.execute(f.intent(), { query: 'synthetic', mode: null }, before.signal)).status, 'completed');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [f.intent().executionId]))?.state, 'failed'); assert.equal(f.calls.length, 0);
   // Fresh independent execution identity; an aborted committed intent is never rekeyed automatically.
   const call = { ...f.intent('run:1:1'), callId: 'second' }; f.owner.journal.intent(call);
   const after = new AbortController(); f.setDispatch(() => after.abort());
-  assert.equal((await f.execute(call, { query: 'synthetic' }, after.signal)).status, 'completed');
+  assert.equal((await f.execute(call, { query: 'synthetic', mode: null }, after.signal)).status, 'completed');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.signal.aborted, true);
   assert.throws(() => f.owner.complete(call, { text: 'late' }, ['private']), /terminal/);
@@ -460,7 +463,7 @@ test('SOURCE DEFECT task identity: a captured declaration rejects a superseded t
   const stale = f.definitions().find(tool => tool.name === 'search_knowledge')!;
   const call = f.intent(); f.owner.journal.intent(call);
   f.taskRuntime().begin('A different finalized synthetic task.', 2);
-  const outcome = await stale.execute({ query: 'synthetic' }, { ...call, signal: f.signal });
+  const outcome = await stale.execute({ query: 'synthetic', mode: null }, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed', 'the task boundary returns its durable failure repair');
   assert.equal(f.calls.length, 0, 'superseded task identity must never reach a connector');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
@@ -751,7 +754,7 @@ test('K1: a declared tool without tailored guidance states its expected shape', 
   const tool: ToolDefinition = { name: 'search_knowledge', description: 'Search', effect: 'read', accountId: 'acct', resourceId: 'res',
     parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'] },
     validate: () => false, execute: async () => ({ status: 'failed' as const }) };
-  const batch = await runToolCalls(owner, [{ id: '1', name: 'search_knowledge', args: { query: '' } }], errorContext(tool) as never);
+  const batch = await runToolCalls(owner, [{ id: '1', name: 'search_knowledge', args: { query: '' , mode: null } }], errorContext(tool) as never);
   // AL-R1: the refusal names the declared key it is about before it states the shape.
   assert.match(batch.tools[0]!.reason, /Invalid arguments for search_knowledge\. Rejected argument: limit:required\. Expected an object with query \(string\), limit \(integer\)\./);
 });
@@ -819,7 +822,7 @@ for (const effect of ['read', 'write'] as const) {
     t.after(detach);
     const original = f.definitions().find(tool => tool.name === 'search_knowledge')!;
     const throwing = { ...original, effect, execute: async () => { throw new TypeError('synthetic handler failure'); } };
-    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic' } }], {
+    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', mode: null } }], {
       registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
       seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],

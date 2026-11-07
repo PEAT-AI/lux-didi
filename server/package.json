@@ -32,5 +32,8 @@
   "bundleDependencies": [
     "@modelcontextprotocol/client",
     "ws"
-  ]
+  ],
+  "overrides": {
+    "zod": "4.6.6"
+  }
 }

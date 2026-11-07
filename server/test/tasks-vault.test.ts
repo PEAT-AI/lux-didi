@@ -23,6 +23,15 @@ _sensitive rows excluded from this search; pass include_sensitive=true to includ
   Score: 0.348
 `;
 
+/** The synthetic daemon's discovered reads: the annotations admit them and the schema is the declaration. */
+const luxToolList = [
+  { name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false },
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, mode: { type: 'string', enum: ['fast', 'full', null], nullable: true } } } },
+  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false },
+    inputSchema: { type: 'object', required: ['insight_ids'], properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } } } },
+];
+const luxReadBinding = (policy: import('../tools/types.js').ConnectionPolicy, reader: unknown) =>
+  ({ connector: 'lux-knowledge', policy, reader: { ...(reader as Record<string, unknown>), discovery: () => luxToolList } });
 const twelveHitEnvelope = vaultEnvelope + Array.from({ length: 10 }, (_, index) =>
   `
 **#${200 + index}** [PATTERN] Synthetic candidate ${index + 3}
@@ -37,12 +46,15 @@ test('vault semantic hits retain evidence and are successful without exact title
   for (const evidence of ['_confidence: medium', 'candidate_match: yes', 'sensitive rows excluded', '[PATTERN]', 'valid from 2026-02-01', 'once a week', 'Score: 0.518', 'Score: 0.348', 'superseded', '#90213']) {
     assert.ok(result.text.includes(evidence), evidence);
   }
-  assert.deepEqual(result.references.map(ref => ref.id), ['115', '89969']);
+  // The discovered payload is returned as one document now, so the ids live in its bytes, not in parsed rows.
+  assert.deepEqual(result.references.map(ref => ref.id), ['search_insights']);
   assert.ok(result.text.indexOf('#115') < result.text.indexOf('#89969'));
 });
 
-test('vault absence is empty while malformed source text is not evidence of absence', () => {
-  assert.equal(projectTaskPayload('search_insights', '# Knowledge Search\n\nNo results found.', { query: 'absent' }).status, 'empty');
+test('the discovered payload is never re-read for a phrase, so its prose is not evidence of absence', () => {
+  const empty = projectTaskPayload('search_insights', '# Knowledge Search\n\nNo results found.', { query: 'absent' });
+  assert.equal(empty.status, 'ok', 'the daemon owns its own emptiness, the host never parses prose');
+  assert.match(empty.text, /No results found/);
   assert.notEqual(projectTaskPayload('search_insights', 'upstream response missing', { query: 'absent' }).status, 'empty');
 });
 
@@ -106,34 +118,38 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
   };
   const seen: { tool: string; args: Record<string, unknown> }[] = [];
   const read = '#89969 Old watering plan\n⚠ superseded by #90213\nLinked rationale: #90213 Current watering plan\nSYNTHETIC PRIVATE ROW';
-  const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader: { async call(tool, args) {
+  const luxBinding = luxReadBinding(policy, { async call(tool: string, args: Record<string, unknown>) {
     seen.push({ tool, args });
     return { state: 'completed', decodedResult: tool === 'search_insights' ? twelveHitEnvelope : read } as import('../connectors/index.js').ConnectorResult;
-  } } }]);
-  const registry = createRegistry({ execute, authority: new FakeAuthority() });
+  } }) as unknown as import('../tasks/connectors.js').BoundConnector;
+  const execute = connectorExecutor([luxBinding]);
+  const { configuredCompanyTools } = await import('../tasks/connectors.js');
+  const registry = createRegistry({ execute, authority: new FakeAuthority() }, configuredCompanyTools([luxBinding]));
   let hop = 0, size = 0;
   const started = performance.now();
   const result = await runWorker({ registry, identity: { task_id: 'fixture-vault', task_revision: 1, connection_generation: 1 },
     input: 'orchid watering', signal: new AbortController().signal,
     infer: async request => {
-      if (++hop === 1) return { text: '', calls: [{ id: 'search', name: 'search_insights', args: { query: 'orchid watering' , mode: null } }] };
+      if (++hop === 1) return { text: '', calls: [{ id: 'search', name: 'search_insights', args: { query: 'orchid watering' } }] };
       if (hop === 2) {
         assert.equal(request.outputs[0]?.result.status, 'ok');
         assert.match(request.outputs[0]!.result.text, /Score: 0.518/);
-        assert.equal(request.outputs[0]!.result.references.length, 12);
-        assert.equal(request.outputs[0]!.result.references[10]?.id, '208', 'rank 11 remains visible');
+        assert.equal(request.outputs[0]!.result.references.length, 1, 'the payload is one document');
+        assert.equal((request.outputs[0]!.result.text.match(/\*\*#\d+\*\*/g) ?? []).length, 12, 'every ranked row stays visible');
+        assert.match(request.outputs[0]!.result.text, /#208/, 'rank 11 remains visible');
         size = Buffer.byteLength(JSON.stringify(request.outputs[0]!.result));
         assert.ok(size < 8000, 'twelve roughly 300-byte rows stay bounded');
-        return { text: '', calls: [{ id: 'read', name: 'read_knowledge', args: { ids: [115, 89969, 90213], include_links: true, cursor: null } }] };
+        return { text: '', calls: [{ id: 'read', name: 'get_insight', args: { insight_ids: [115, 89969, 90213], include_links: true } }] };
       }
       assert.match(request.outputs[1]!.result.text, /SYNTHETIC PRIVATE ROW/);
       assert.match(request.outputs[1]!.result.text, /superseded by #90213/);
       return { text: 'The old plan was replaced by the current weekly schedule.', calls: [] };
     } });
   assert.equal(result.status, 'complete');
+  // The model's own arguments reach the wire unchanged; the daemon's defaults fill the rest.
   assert.deepEqual(seen, [
-    { tool: 'search_insights', args: { query: 'orchid watering', limit: 12, detail: 'snippets' } },
-    { tool: 'get_insight', args: { ids: [115, 89969, 90213], include_links: true } },
+    { tool: 'search_insights', args: { query: 'orchid watering' } },
+    { tool: 'get_insight', args: { insight_ids: [115, 89969, 90213], include_links: true } },
   ]);
   console.info('VAULT_FIXTURE_METRICS', JSON.stringify({ helperTurnMs: performance.now() - started, searchShapedBytes: size, searchSourceChars: twelveHitEnvelope.length }));
 });
@@ -141,10 +157,8 @@ test('a bounded fixture helper turn reads semantic candidates and their replacem
 test('real short weak-candidate rows retain their id and rank without invented evidence', () => {
   const wire = '**#115** [PATTERN] Current plan\n  Score: 0.518\n- **#89969** [TECHNICAL_DECISION] Old watering plan · superseded by #90213';
   const result = projectTaskPayload('search_insights', wire, { query: 'orchid watering' });
-  assert.deepEqual(result.references.map(ref => [ref.id, ref.rank]), [['115', 1], ['89969', 2]]);
-  assert.equal(result.text, wire);
-  assert.equal((result.references[1] as unknown as Record<string, unknown>)?.snippet_status, 'not_supplied');
-  assert.equal((result.references[0] as unknown as Record<string, unknown>)?.snippet_status, undefined, 'full row is not marked title-only');
+  assert.equal(result.text, wire, 'the wire bytes reach the model unchanged');
+  assert.deepEqual(result.references.map(ref => ref.id), ['search_insights'], 'the payload is one document, never re-parsed into rows');
   assert.doesNotMatch(result.text, /Score: 0\.348/, 'a short remote row has no per-hit score to reconstruct');
 });
 

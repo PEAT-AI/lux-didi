@@ -1,6 +1,6 @@
 import { TaskRuntime } from '../tasks/runtime.js';
 import { Authority } from '../tasks/authority.js';
-import { connectorExecutor } from '../tasks/connectors.js';
+import { configuredCompanyTools, connectorExecutor } from '../tasks/connectors.js';
 import { taskDefinitions, TASK_ACCOUNT, TASK_RESOURCE } from '../tasks/chat.js';
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,7 +45,7 @@ function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 }, ...overrides };
 }
 const request: ModelRequest = { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'synthetic' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } };
-function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', mode: null }): ModelResult {
+function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: false }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
 interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
@@ -102,18 +102,18 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const allDefinitions = (runId = 'run') => {
     let task = taskRuns.get(runId);
     if (!task) {
-      const runtime = new TaskRuntime({ store, execute: connectorExecutor(owner.taskBindings(acceptance.connectionIds), owner.taskExecutors(runId)),
+      const runtime = new TaskRuntime({ store, execute: connectorExecutor(owner.taskBindings(acceptance.connectionIds), owner.taskExecutors(runId)), configuredTools: configuredCompanyTools(owner.taskBindings(acceptance.connectionIds)),
         authority: new Authority({ journal: store.taskEffectJournal(), checkEffect: async () => true, log() {} }),
         infer: async () => ({ text: '', calls: [], no_action: true }), delivery: { attach() {}, progress() {}, deliver() {}, closed() {} } });
       task = { runtime, identity: runtime.begin(ownerWords.get(runId)?.join(' ') ?? 'Synthetic owner request', 1).identity }; taskRuns.set(runId, task);
     }
     return taskDefinitions(task.runtime, task.identity, owner, runId);
   };
-  const definitions = () => allDefinitions().filter(tool => tool.name === 'search_insights' || tool.name === 'read_knowledge');
-  const intent = (executionId = 'run:1:0', name = 'search_insights', args: Record<string, unknown> = { query: 'synthetic', mode: null }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
+  const definitions = () => allDefinitions().filter(tool => tool.name === 'search_insights' || tool.name === 'get_insight');
+  const intent = (executionId = 'run:1:0', name = 'search_insights', args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: false }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
     executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE });
   const binding = (ref: { id: string; sha256: string }, call = intent()): ToolResultBinding => ({ executionId: call.executionId, name: call.toolName, callId: call.callId!, contentIndex: 2, partIndex: 0, result: structuredClone(ref) });
-  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', mode: null }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
+  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', limit: 3, include_sensitive: false }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner, taskRuntime: () => { allDefinitions(); return taskRuns.get('run')!.runtime; },
@@ -131,7 +131,7 @@ test('intent commits before exact MCP dispatch; collision stops actual loop with
   const model: ModelPort = { generate: async req => { seen.push(structuredClone(req)); return seen.length === 1 ? modelResult('search_insights') : modelResult(); } };
   const outcome = await f.run(model);
   assert.equal(outcome.status, 'complete'); assert.equal(f.calls.length, 1); assert.equal(seen.length, 2);
-  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 3, detail: 'snippets', include_sensitive: false });
+  assert.deepEqual(f.calls[0]!.arguments, { query: 'synthetic', limit: 3, include_sensitive: false });
   const response = seen[1]!.contents.at(-1)!.parts[0]!.functionResponse!.response;
   assert.equal(response['text'], 'nonempty synthetic α insight');
   assert.deepEqual(seen[1]!.dataClasses, ['ordinary', 'private']);
@@ -351,12 +351,12 @@ for (const [label, result, memoryBytes] of [
 test('cancelled task reads never dispatch early or accept a late completion', async t => {
   const f = await fixture(t); f.owner.journal.intent(f.intent());
   const before = new AbortController(); before.abort();
-  assert.equal((await f.execute(f.intent(), { query: 'synthetic', mode: null }, before.signal)).status, 'completed');
+  assert.equal((await f.execute(f.intent(), { query: 'synthetic', limit: 3, include_sensitive: false }, before.signal)).status, 'completed');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [f.intent().executionId]))?.state, 'failed'); assert.equal(f.calls.length, 0);
   // Fresh independent execution identity; an aborted committed intent is never rekeyed automatically.
   const call = { ...f.intent('run:1:1'), callId: 'second' }; f.owner.journal.intent(call);
   const after = new AbortController(); f.setDispatch(() => after.abort());
-  assert.equal((await f.execute(call, { query: 'synthetic', mode: null }, after.signal)).status, 'completed');
+  assert.equal((await f.execute(call, { query: 'synthetic', limit: 3, include_sensitive: false }, after.signal)).status, 'completed');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.signal.aborted, true);
   assert.throws(() => f.owner.complete(call, { text: 'late' }, ['private']), /terminal/);
@@ -463,7 +463,7 @@ test('SOURCE DEFECT task identity: a captured declaration rejects a superseded t
   const stale = f.definitions().find(tool => tool.name === 'search_insights')!;
   const call = f.intent(); f.owner.journal.intent(call);
   f.taskRuntime().begin('A different finalized synthetic task.', 2);
-  const outcome = await stale.execute({ query: 'synthetic', mode: null }, { ...call, signal: f.signal });
+  const outcome = await stale.execute({ query: 'synthetic', limit: 3, include_sensitive: false }, { ...call, signal: f.signal });
   assert.equal(outcome.status, 'completed', 'the task boundary returns its durable failure repair');
   assert.equal(f.calls.length, 0, 'superseded task identity must never reach a connector');
   assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', [call.executionId]))?.state, 'failed');
@@ -822,7 +822,7 @@ for (const effect of ['read', 'write'] as const) {
     t.after(detach);
     const original = f.definitions().find(tool => tool.name === 'search_insights')!;
     const throwing = { ...original, effect, execute: async () => { throw new TypeError('synthetic handler failure'); } };
-    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', mode: null } }], {
+    const batch = await runToolCalls(f.owner, [{ id: 'call-handler', name: throwing.name, args: { query: 'synthetic', limit: 3, include_sensitive: false } }], {
       registry: [throwing], host: { ...f.host, grants: [{ tool: throwing.name, effect, accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 },
       seenIds: new Set(), step: 0, contentIndex: 0, baseClasses: ['ordinary'],

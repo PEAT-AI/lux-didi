@@ -7,7 +7,8 @@ export type FakeLuxMode = 'inserted' | 'duplicate' | 'fail' | 'drop';
 export interface FakeLux { url: string; calls: { name?: unknown; arguments?: unknown }[] }
 
 /** One MCP-over-HTTP server on loopback: initialize, the initialized notice, then the tools/call it records. */
-export async function fakeLux(t: TestContext, mode: FakeLuxMode, insightId = 'insight-7'): Promise<FakeLux> {
+/** Real lux ids are integers, and the client refuses any other receipt shape. */
+export async function fakeLux(t: TestContext, mode: FakeLuxMode, insightId = 7): Promise<FakeLux> {
   const calls: FakeLux['calls'] = [];
   const server = createServer((request, response) => {
     let body = '';

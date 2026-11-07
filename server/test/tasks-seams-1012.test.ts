@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connectorExecutor, type BoundConnector } from '../tasks/connectors.js';
+import { configuredCompanyTools, connectorExecutor, type BoundConnector } from '../tasks/connectors.js';
 import { createRegistry } from '../tasks/tools.js';
 import { Authority, FakeAuthority } from '../tasks/authority.js';
 import { runWorker } from '../tasks/worker.js';
@@ -13,6 +13,9 @@ import { Store } from '../runtime/store.js';
 import type { ConnectorEvidence } from '../connectors/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 
+/** The synthetic daemon's discovered search, so the fixture binds it the way the host does. */
+const discoveredSearch = { name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false },
+  inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer' }, mode: { type: 'string', enum: ['fast', 'full', null], nullable: true } } } };
 function binding(connector: string, toolNames: string[], decodedResult: unknown): BoundConnector {
   const policy: ConnectionPolicy = {
     schemaVersion: 1, ownerId: 'fixture', connectionId: connector, generation: 1, enabled: true,
@@ -22,7 +25,7 @@ function binding(connector: string, toolNames: string[], decodedResult: unknown)
     route: { identity: 'fixture', allowedClasses: ['ordinary'] },
     bounds: { maxSearchLimit: 25, maxGetIds: 10, maxQueryChars: 4000, maxEntityBytes: 100000, maxResultBytes: 100000 },
   };
-  return { connector, policy, reader: { async call() { return { state: 'completed', decodedResult } as ConnectorEvidence; } } };
+  return { connector, policy, reader: { discovery: () => connector === 'lux-knowledge' ? [discoveredSearch] : [], async call() { return { state: 'completed', decodedResult } as ConnectorEvidence; } } };
 }
 
 const vault = `# Knowledge Search: 'shade house routine'
@@ -45,12 +48,12 @@ test('10.12: real tool results reach the helper without losing mail, vault evide
   ]);
   const calls = [
     { id: 'mail', name: 'read_mail', args: { id: 'synthetic-mail', cursor: null } },
-    { id: 'vault', name: 'search_insights', args: { query: 'shade house routine' , mode: null } },
+    { id: 'vault', name: 'search_insights', args: { query: 'shade house routine' } },
     { id: 'company', name: 'search_company', args: { query: 'synthetic absent record', mode: 'answer', cursor: null } },
   ];
   let hop = 0;
   let assertionError: unknown;
-  const result = await runWorker({ registry: createRegistry({ execute, authority: new FakeAuthority() }),
+  const result = await runWorker({ registry: createRegistry({ execute, authority: new FakeAuthority() }, configuredCompanyTools([binding('lux-knowledge', ['search_insights'], vault)])),
     identity: { task_id: 'synthetic-seams', task_revision: 1, connection_generation: 1 },
     input: 'Read my synthetic mail, find shade house advice and check the synthetic company record.',
     profile: { schemaVersion: 1, kind: 'profile', ownerId: 'synthetic-owner', profileVersion: '1', displayName: 'Synthetic Owner',
@@ -64,7 +67,9 @@ test('10.12: real tool results reach the helper without losing mail, vault evide
       assert.equal(mail?.status, 'ok');
       assert.match(mail!.text, /The synthetic mooring plan is ready/);
       assert.equal(knowledge?.status, 'ok');
-      assert.deepEqual(knowledge!.references.map(ref => ref.id), ['101', '102']);
+      // The discovered payload is one document now; the row ids stay in its bytes.
+      assert.deepEqual(knowledge!.references.map(ref => ref.id), ['search_insights']);
+      assert.match(knowledge!.text, /#101/);
       assert.match(knowledge!.text, /Water the synthetic orchids weekly/);
       assert.match(knowledge!.text, /superseded/);
       assert.notEqual(company?.status, 'failed', JSON.stringify(company));

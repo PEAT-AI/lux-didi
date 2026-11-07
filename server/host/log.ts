@@ -869,6 +869,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: value.event, estimatedTokens: value.estimatedTokens, fixedEstimatedTokens: value.fixedEstimatedTokens,
       sections: value.sections.map(section => ({ id: section.id, chars: section.chars, estimatedTokens: section.estimatedTokens })) };
   }
+  if (value.event === 'live_instruction_clipped') {
+    // M20-R1: the last-resort clip reports what it took and how big the start stayed, never any text.
+    const numeric = ['estimatedTokens', 'total'] as const;
+    if (!closedKeys(value, ['event', ...numeric, 'clipped'])) return;
+    if (numeric.some(key => !Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return;
+    if (!Array.isArray(value.clipped) || value.clipped.length === 0 || value.clipped.length > 2) return;
+    for (const item of value.clipped) {
+      if (!item || typeof item !== 'object' || Array.isArray(item) || !closedKeys(item, ['id', 'chars'])) return;
+      if (item.id !== 'pickup' && item.id !== 'owner-style') return;
+      if (!Number.isSafeInteger(item.chars) || item.chars <= 0) return;
+    }
+    return { event: value.event, estimatedTokens: value.estimatedTokens, total: value.total,
+      clipped: value.clipped.map(item => ({ id: item.id, chars: item.chars })) };
+  }
   if (value.event === 'conversation_summary_injection') {
     // Closed shape: how many summaries were injected, how many were dropped, and the section size.
     // Counts and one size only, never a summary id or any text.

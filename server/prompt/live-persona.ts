@@ -266,6 +266,31 @@ export function ownerProfileSections(owner: OwnerProfileSnapshot): readonly Owne
  */
 export function peopleRosterWithin(room: number): string | undefined { return peopleSectionWithin(room); }
 
+/** M20-R1/M20-R3: the last-resort clip. Whole trailing units come off at the widest boundary that still has one
+ *  to give, so authored prose always yields: paragraphs, then sentences, then words. One unit always stays, so a
+ *  section is shortened and never emptied, and `undefined` means nothing is left to cut at that boundary. */
+function clipTrailingUnits(text: string, boundary: RegExp, keepPunctuation: number, chars: number): string | undefined {
+  const cuts = [...text.matchAll(boundary)].flatMap(match => match.index === undefined ? [] : [match.index + keepPunctuation]);
+  for (let index = cuts.length - 1; index >= 0; index -= 1) {
+    const at = cuts[index]!;
+    if (at > 0 && text.length - at >= chars) return text.slice(0, at).trimEnd();
+  }
+  return undefined;
+}
+
+/** Paragraphs first, then sentences, then words: the ladder the ruling names, one call each. */
+function clipTrailingParagraphs(text: string, chars: number): string | undefined {
+  return clipTrailingUnits(text, /\n\s*\n/gu, 0, chars);
+}
+
+function clipTrailingSentences(text: string, chars: number): string | undefined {
+  return clipTrailingUnits(text, /[.!?]["')\]]?\s+/gu, 1, chars);
+}
+
+function clipTrailingWords(text: string, chars: number): string | undefined {
+  return clipTrailingUnits(text, /\s+/gu, 0, chars);
+}
+
 /**
  * Pin authored whole paragraphs to the lore allocation, including the composer's wrapper.
  * No per-call input participates in selection; ties retain authored order and content-hash ids.
@@ -593,6 +618,15 @@ export function composeLiveSessionInstruction(input: {
   const owner = input.ownerProfile === undefined ? [] : ownerProfileSections(input.ownerProfile);
   const overlay = input.overlay ? overlaySection(input.overlay) : undefined;
   const held = (block: string): boolean => sourceText.includes(block);
+  // M20-R1: these two are the only parts the composer may shorten when the fixed text alone does not fit hard
+  // admission. The owner style keeps its place in the fixed prefix and is spliced in at render time; every other
+  // fixed entry is authored text that never changes.
+  let style = owner.find(section => section.id === 'owner-style' && !held(section.text))?.text;
+  let pickupText = input.pickupNote;
+  const styledFixed = (): Entry[] => {
+    const authored = style;
+    return authored === undefined ? fixed : fixed.map(entry => entry.id === 'owner-style' ? { id: entry.id, text: authored } : entry);
+  };
   type Entry = { readonly id: ComposedSection['id']; readonly text: string };
   const bodySections = bodyEntries(body);
   const fixed: Entry[] = [
@@ -618,8 +652,11 @@ export function composeLiveSessionInstruction(input: {
     .map(text => ({ id: `lore:${digest(text)}`, text }));
   const lore = selectWholeItems(OWNER_LORE_LEADER.trimEnd(), loreItems,
     CONTEXT_BUDGET.sections.lore.ceiling - estimatedTokens(separator + OWNER_LORE_CLOSER));
-  const stable: Entry[] = [...fixed, ...(lore.selectedIds.length ? [{ id: 'owner-lore' as const, text: OWNER_LORE_LEADER + loreItems.filter(item => lore.selectedIds.includes(item.id)).map(item => item.text).join(separator) + OWNER_LORE_CLOSER }] : [])];
-  const stablePrefix = assemble(stable.map(section => section.text));
+  const loreEntry: Entry[] = lore.selectedIds.length ? [{ id: 'owner-lore' as const, text: OWNER_LORE_LEADER + loreItems.filter(item => lore.selectedIds.includes(item.id)).map(item => item.text).join(separator) + OWNER_LORE_CLOSER }] : [];
+  let stable: Entry[] = [...styledFixed(), ...loreEntry];
+  let stablePrefix = assemble(stable.map(section => section.text));
+  // The style clip changes the prefix, so it is rebuilt on every render rather than captured once.
+  const refreshStable = (): void => { stable = [...styledFixed(), ...loreEntry]; stablePrefix = assemble(stable.map(section => section.text)); };
   const now = input.now ?? Date.now();
   const timeZone = input.timeZone ?? 'UTC';
   const blockInput: MemoryBlockInput = input.memoryBlockInput ?? { now, timeZone,
@@ -651,6 +688,7 @@ export function composeLiveSessionInstruction(input: {
   let openingBudget: number = CONTEXT_BUDGET.sections.openings.ceiling;
   let floorParts: ('identity' | 'loops' | 'conversations')[] = [];
   const render = () => {
+    refreshStable();
     const calendarSelection = selectWholeItems('', calendarItems, calendarBudget - estimatedTokens('Today: '));
     const calendar = { ...calendarSelection, text: `Today: ${calendarSelection.text}` };
     const people = selectWholeItems(PEOPLE_HEADING, peopleItems, peopleBudget);
@@ -661,7 +699,7 @@ export function composeLiveSessionInstruction(input: {
       ...(calendar.selectedIds.length ? [{ id: 'calendar' as const, text: calendar.text }] : []),
       ...(people.selectedIds.length ? [{ id: 'people' as const, text: people.text }] : []),
       { id: 'memory', text: block.text },
-      ...(input.pickupNote ? [{ id: 'pickup' as const, text: input.pickupNote }] : []),
+      ...(pickupText ? [{ id: 'pickup' as const, text: pickupText }] : []),
       ...openingItems.filter(item => openings.selectedIds.includes(item.id)).map(item => ({ id: item.id === 'opening:0' ? 'previous-openers' as const : 'opening-options' as const, text: item.text })),
     ];
     return { sections, block, text: assemble(sections.map(section => section.text)),
@@ -679,6 +717,27 @@ export function composeLiveSessionInstruction(input: {
   for (const stage of stages) {
     if (estimatedTokens(rendered.text) <= CONTEXT_BUDGET.target) break;
     stage(); rendered = render();
+  }
+  // M20-R1 last resort, in the order the ruling names: the pickup note, then the owner style at paragraph
+  // boundaries. Hard admission then refuses only what the ruling allows it to refuse: fixed text that alone,
+  // with every authored paragraph already shed, still exceeds it.
+  let pickupClippedChars = 0;
+  let styleClippedChars = 0;
+  if (estimatedTokens(rendered.text) > CONTEXT_BUDGET.hard && pickupText !== undefined) {
+    pickupClippedChars = pickupText.length;
+    pickupText = undefined;
+    rendered = render();
+  }
+  while (estimatedTokens(rendered.text) > CONTEXT_BUDGET.hard) {
+    const current = style;
+    if (current === undefined) break;
+    const overrun = rendered.text.length - Math.floor(CONTEXT_BUDGET.hard * ESTIMATED_CHARS_PER_TOKEN);
+    const need = Math.max(1, overrun);
+    const cut = clipTrailingParagraphs(current, need) ?? clipTrailingSentences(current, need) ?? clipTrailingWords(current, need);
+    if (cut === undefined || cut === current) break;
+    styleClippedChars += current.length - cut.length;
+    style = cut;
+    rendered = render();
   }
   if (estimatedTokens(rendered.text) > CONTEXT_BUDGET.hard) throw new PersonaOverlayError('instruction_too_large');
   const recordIds = new Set(input.records.map(record => record.id));
@@ -698,6 +757,11 @@ export function composeLiveSessionInstruction(input: {
     }),
     standing: { selected: 0, omitted: 0, chars: 0 },
     itemOmissions: rendered.itemOmissions,
+    // M20-R1: what the last-resort clip took, so the host logs a full start that is no longer the authored one.
+    clipped: [
+      ...(pickupClippedChars > 0 ? [{ id: 'pickup' as const, chars: pickupClippedChars }] : []),
+      ...(styleClippedChars > 0 ? [{ id: 'owner-style' as const, chars: styleClippedChars }] : []),
+    ],
     estimatedTokens: estimatedTokens(rendered.text),
     stablePrefixChars: stablePrefix.length,
     stablePrefixEstimatedTokens: estimatedTokens(stablePrefix),

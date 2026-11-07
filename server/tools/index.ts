@@ -249,7 +249,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   const currentLuxTaskTool = (snapshot: RunSnapshot, name: string): boolean => {
     const bindings = snapshot.connections.flatMap(bound => {
       const policy = bound.policy;
-      if (policy.connector !== 'lux-knowledge' || !policy.enabled) return [];
+      if (policy.connector !== 'lux-knowledge' || !policy.enabled || policy.bindingMode !== 'connection') return [];
       const descriptor = connectorDescriptor(policy.connector);
       if (!descriptor) return [];
       const reader = descriptor.createReader({ port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });

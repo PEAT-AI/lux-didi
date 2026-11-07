@@ -14,7 +14,7 @@ const source = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('../..
 const fixture = JSON.parse(readFileSync(join(source, 'fixtures/lux-agent-discovery.json'), 'utf8')) as { tools: ToolDefinition[] };
 function harness(effect: 'read' | 'read-write' = 'read-write') {
   const registry = new McpRegistry();
-  const endpoint = { id: 'synthetic-lux', url: 'http://127.0.0.1:8765/mcp', account: 'synthetic-owner', resource: 'synthetic-vault' };
+  const endpoint = { id: 'synthetic-lux', credentialRef: null, url: 'http://127.0.0.1:8765/mcp', account: 'synthetic-owner', resource: 'synthetic-vault' };
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const digest = registry.observed(endpoint.id, fixture.tools, registry.revision(endpoint.id));
   const toolNames = fixture.tools.filter(luxToolAdmitted).map(tool => tool.name);

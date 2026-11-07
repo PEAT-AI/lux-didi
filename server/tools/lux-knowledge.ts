@@ -8,7 +8,7 @@ import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { shapeLuxKnowledge } from './live-shape.js';
 
 /** Only a complete, integrity-checked text envelope becomes model-visible evidence. */
-export function projectLuxResult(evidence: ConnectorResult & { requestedIds?: readonly number[] }, policy: ConnectionPolicy, port: McpPort, restrictions?: TrustedRestrictions): ModelSnapshot {
+export function projectLuxResult(evidence: ConnectorResult & { requestedIds?: readonly number[] }, policy: ConnectionPolicy, port: McpPort, restrictions?: TrustedRestrictions, opaqueText = false): ModelSnapshot {
   if (evidence.state !== 'completed') throw Error('result_not_completed');
   const source = evidence.source;
   // HTTP compares the exact url; stdio compares the owner-minted binding digest. No raw locator is read.
@@ -41,7 +41,7 @@ export function projectLuxResult(evidence: ConnectorResult & { requestedIds?: re
     texts.push(content['text']);
   }
   const received = texts.join('\n').replace(/\r\n?/g, '\n');
-  const shaped = shapeLuxKnowledge(evidence.tool, received);
+  const shaped = opaqueText ? { text: received, partial: false, originalCharacters: received.length, omittedCharacters: 0, knowledgeConfidence: undefined } : shapeLuxKnowledge(evidence.tool, received);
   const response = {
     partial: shaped.partial, originalCharacters: shaped.originalCharacters, omittedCharacters: shaped.omittedCharacters,
     status: 'completed', text: shaped.text, source: detached(source), entitySha256: payload.sha256,

@@ -40,6 +40,8 @@ test('voice delivery reports an unresolved vault request as pending at the revis
   await started.promise;
   time.deadline();
   await request;
+  assert.match(sent[0] ?? '', /partial/, 'an in-flight write is pending, not a failed request to retry');
+  for (let i = 0; i < sent.length; i++) { assert.ok(i < 20); call.delivery.accepted(`synthetic-${i + 1}`); }
   assert.ok(sent.some(text => /pending/i.test(text)), 'pending must reach the actual voice delivery surface');
   assert.ok(sent.some(text => /not confirmed saved/i.test(text)), 'no success claim before the transport receipt');
   completion.resolve(documentResult('{"disposition":"created","insight_id":42}', 'vault-receipt'));

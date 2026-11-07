@@ -212,13 +212,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
   return async (name, args, signal, outsideTextSeen = false, identity) => {
     if (existing[name]) return existing[name]!(args, signal, { identity, outsideTextSeen });
     const discovered = bindings.find(binding => binding.connector === 'lux-knowledge' && binding.policy.toolNames.includes(name) && binding.reader.discovery?.().some(tool => tool.name === name && !luxWriteAdmitted(tool)));
-    if (discovered) {
-      const result = await discovered.reader.call(name, args, signal);
-      if (result.state !== 'completed') return failed(`The vault refused ${name}: ${'reason' in result ? result.reason : result.state}. No fields were silently dropped.`);
-      return documentResult(renderLuxText(result.decodedResult), name);
-    }
-
-    const mapping = mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
+    const mapping = discovered ? { connector: 'lux-knowledge', tool: name, args: (value: Record<string, unknown>) => value } : mappings[name] ?? (Object.hasOwn(companySteps, name) ? { connector: 'mongoose', tool: name, args: (a: Record<string, unknown>) => Object.fromEntries(Object.entries(a).filter(([, value]) => value !== null)) } : undefined) ?? (name === 'query_company' && typeof args.resource === 'string' ? { connector: 'mongoose', tool: args.resource, args: (a: Record<string, unknown>) => a.filters as Record<string, unknown> } : undefined);
     if (!mapping) return failed('This tool has no configured executor. Use a configured tool or report that capability is unavailable.', 'upstream_error', 'not_configured');
     const candidates = bindings.filter(binding => binding.connector === mapping.connector && nativeTaskReadGranted(binding.policy, mapping.tool));
     const binding = candidates.find(binding => CONNECTOR_DESCRIPTORS[binding.connector]?.declarations(binding.policy).some(declaration => declaration.name === mapping.tool)) ?? candidates.find(binding => binding.connector === 'mongoose');
@@ -258,7 +252,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
             // display snapshot below as the outside-text disclosure provenance.
             const payloadSource = binding.connector === 'lux-knowledge' ? (record(result.decodedResult).content as unknown[]).map(part => text(record(part).text)).join('\n') : ['read_mail', 'calendar_events', 'search_mail', 'search_drive', 'search_company', 'search_chat', 'chat_person', 'chat_group', 'chat_channel'].includes(name) ? result.decodedResult
               : snapshot.response.text ?? snapshot.response;
-            const shaped = projectTaskPayload(name, payloadSource, args);
+            const shaped = binding.connector === 'lux-knowledge' ? documentResult(renderLuxText(payloadSource), name) : projectTaskPayload(name, payloadSource, args);
             if (shaped.status === 'failed') return failure(shaped.repair ?? 'Restart this source read with cursor null.', 'invalid_result');
             return { ...shaped, dataClasses: snapshot.dataClasses, [TASK_DISCLOSURE]: snapshot };
             }
@@ -297,7 +291,7 @@ export function connectorExecutor(bindings: readonly BoundConnector[], existing:
           }
           if (follow.omitted) return disclose({ ...companyPayload(payload(nativeResult)), status: 'partial', coverage: 'Native read coverage incomplete; follow-up pages were unavailable.' });
         }
-        return disclose(projectTaskPayload(name, nativeResult, args));
+        return disclose(binding.connector === 'lux-knowledge' ? documentResult(renderLuxText(nativeResult), name) : projectTaskPayload(name, nativeResult, args));
       });
     } catch { return readerFailure(name, signal.aborted ? 'cancelled' : 'upstream_error', signal.aborted ? 'cancelled' : 'source_down'); } finally { scope.release(); }
   };

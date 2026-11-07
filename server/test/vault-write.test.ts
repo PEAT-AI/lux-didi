@@ -27,13 +27,13 @@ const NOTE = 'the boat survey is on Tuesday';
 
 interface Harness { store: Store; writer: VaultWriter; events: Record<string, unknown>[] }
 
-function harness(t: TestContext, url: string): Harness {
+function harness(t: TestContext, url: string, fetchImpl?: typeof fetch): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'vault-write-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
   t.after(() => store.close());
   const events: Record<string, unknown>[] = [];
-  const writer = new VaultWriter({ store, backoff: async () => {}, transport: createLuxWriteTransport({ url }), now: () => NOW, log: event => { events.push(event); } });
+  const writer = new VaultWriter({ store, backoff: async () => {}, transport: createLuxWriteTransport({ url }, fetchImpl), now: () => NOW, log: event => { events.push(event); } });
   return { store, writer, events };
 }
 
@@ -379,4 +379,58 @@ test('live migration 16 preserves old vault receipts and permits all new write o
     for (const operation of ['create_insight', 'update_insight', 'create_insight_link', 'record_search_feedback']) tx.run('INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES(?,?,?,?,?,?,?,?,?)', [operation, 'synthetic', operation, operation, 'synthetic', 'synthetic', 'Synthetic', 'authorized', 1]);
     assert.throws(() => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES('forbidden','synthetic','forbidden','purge_insight','synthetic','synthetic','Synthetic','authorized',1)"));
   });
+});
+
+/**
+ * The envelope lux e5f88d13 returns (FastMCP wrap_result): the receipt text lux documents is carried in content AND
+ * repeated as a JSON string in structuredContent.result.
+ */
+function wrappedLuxReceipt(receipt: Record<string, unknown>): Record<string, unknown> {
+  const text = JSON.stringify(receipt);
+  return { content: [{ type: 'text', text }], structuredContent: { result: text }, _meta: { fastmcp: { wrap_result: true } } };
+}
+
+const CREATE_RECEIPTS = [
+  { action: 'inserted', disposition: 'created', insight_id: 81, candidates: [] },
+  { action: 'duplicate', disposition: 'duplicate_of', insight_id: 9, candidates: [] },
+  { action: 'refused', disposition: 'refused', insight_id: null, candidates: [] },
+];
+
+for (const receipt of CREATE_RECEIPTS) {
+  test(`C-LUXRECEIPT: a ${receipt.disposition} receipt is read out of lux's wrapped envelope`, async () => {
+    const { fetchImpl } = luxFetch({ callResult: wrappedLuxReceipt(receipt) });
+    const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fetchImpl);
+    const result = await transport.write('create_insight', { content: 'Synthetic candidate.', insight_title: 'Synthetic title' });
+    assert.equal(result.disposition, receipt.disposition, 'the receipt is the wrapped text, never the envelope');
+    if (receipt.disposition !== 'refused') assert.equal(result['insight_id'], receipt.insight_id);
+  });
+}
+
+test('C-LUXRECEIPT: the wrapped value alone still carries the receipt when no text part is present', async () => {
+  const text = JSON.stringify({ action: 'inserted', disposition: 'created', insight_id: 81, candidates: [] });
+  const { fetchImpl } = luxFetch({ callResult: { structuredContent: { result: text } } });
+  const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fetchImpl);
+  assert.deepEqual(await transport.write('create_insight', { content: 'Synthetic candidate.', insight_title: 'Synthetic title' }),
+    { action: 'inserted', disposition: 'created', insight_id: 81, candidates: [] });
+});
+
+test('C-LUXRECEIPT: an envelope that carries no receipt is still invalid_receipt', async () => {
+  for (const callResult of [
+    { content: [{ type: 'text', text: 'no receipt here' }], structuredContent: { ignored: 'alternate representation' } },
+    { content: [{ type: 'text', text: 'no receipt here' }], structuredContent: { result: 'no receipt here' } },
+  ]) {
+    const { fetchImpl } = luxFetch({ callResult });
+    const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fetchImpl);
+    const result = await transport.write('create_insight', { content: 'Synthetic candidate.', insight_title: 'Synthetic title' });
+    assert.deepEqual(result, { disposition: 'refused', reason: 'invalid_receipt' });
+  }
+});
+
+test('C-LUXRECEIPT: a durable voice save is confirmed from lux\'s wrapped envelope', async t => {
+  const { fetchImpl } = luxFetch({ callResult: wrappedLuxReceipt({ action: 'inserted', disposition: 'created', insight_id: 81, candidates: [] }) });
+  const h = harness(t, 'http://127.0.0.1:12345/mcp', fetchImpl);
+  assert.deepEqual(await save(h, NOTE), { disposition: 'created', insight_id: 81 }, 'the save is confirmed, never mapped to failed');
+  const row = h.store.transaction(tx => tx.get('SELECT state,insight_id FROM vault_writes', []));
+  assert.equal(row?.['state'], 'confirmed');
+  assert.equal(row?.['insight_id'], '81');
 });

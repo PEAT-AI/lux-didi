@@ -28,6 +28,9 @@ export async function liveTaskFixture(t: TestContext, infer: Infer, options: {
   const vault = new VaultWriter({ store, now: () => 1000, log: () => {}, transport: { save: async input => {
     writes.push(input);
     return options.outcome === 'unknown' ? { outcome: 'unknown' } : { outcome: 'inserted', insightId: 'synthetic-insight' };
+  }, write: async (_operation, input) => {
+    writes.push(input);
+    return options.outcome === 'unknown' ? { disposition: 'refused', reason: 'outcome_unknown' } : { disposition: 'created', insight_id: 7 };
   } } });
   const owner = createLiveSessionOwner({ store, voice: voice.port,
     profile: validateLiveProfile({ provider: 'openai', liveModelId: 'gpt-live-1', voice: 'marin', keyReference: 'synthetic',
@@ -81,6 +84,6 @@ export const discoveredCreate = { name: 'create_insight', description: 'Create a
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
   inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' }, project: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } } };
 export function luxVaultBinding(decodedResult: unknown = { insight_id: 7, disposition: 'created' }): BoundConnector {
-  return { connector: 'lux-knowledge', policy: { toolNames: [discoveredCreate.name], endpoint: { account: 'synthetic-account', resource: 'lux-knowledge:vault' } },
+  return { connector: 'lux-knowledge', policy: { bounds: { maxEntityBytes: 65536 }, toolNames: [discoveredCreate.name], endpoint: { account: 'synthetic-account', resource: 'lux-knowledge:vault' } },
     reader: { discovery: () => [discoveredCreate], call: async () => ({ state: 'completed', decodedResult }) } } as unknown as BoundConnector;
 }

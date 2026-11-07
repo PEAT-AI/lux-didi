@@ -506,7 +506,7 @@ test('a slow connector is fenced: the answer lands, the aborted call is not retr
   assert.deepEqual(f.requests[1]!.declarations, [], 'the answer call declares no tools');
   const last = events.filter(event => event.type === 'snapshot').at(-1);
   assert.equal(last?.type === 'snapshot' && last.partial, true, 'the final answer event is marked partial');
-  assert.deepEqual(last?.type === 'snapshot' ? last.notReached : undefined, ['searched the knowledge base'],
+  assert.deepEqual(last?.type === 'snapshot' ? last.notReached : undefined, ['search insights'],
     'the fence names the call it cut');
   const receipt = seen.find(entry => entry.event === 'chat_timing');
   assert.equal(receipt?.outcome, 'fenced');

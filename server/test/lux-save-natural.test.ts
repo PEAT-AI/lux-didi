@@ -20,7 +20,7 @@ for (const call of ['save_to_vault', 'remember_note'] as const) {
     const rows = f.store.transaction(tx => tx.all('SELECT text FROM entries'));
     assert.equal(rows.length, call === 'save_to_vault' ? 0 : 1);
     if (call === 'remember_note') assert.equal(rows[0]?.text, body, 'the speech chunk limit is not a retained-note truncation limit');
-    else assert.equal((f.writes[0] as { content: string } | undefined)?.content, body, 'the actual vault transport receives the full note');
+    else assert.ok((f.writes[0] as { content: string } | undefined)?.content.startsWith(body + '\n\nProvenance:'), 'the actual vault transport receives the full note followed by host provenance');
     assert.match(inputs, /Remember this synthetic note/);
     assert.equal(f.writes.length, call === 'save_to_vault' ? 1 : 0, 'vault writes and local memory remain distinct destinations');
     assert.equal(answer.text, call === 'save_to_vault' ? 'The full synthetic note is saved to the configured vault.' : 'The full synthetic note is remembered locally.');

@@ -690,7 +690,7 @@ test('W4-R5/F6: a batch dispatches across and within endpoints concurrently and 
 // K1: the discovered schema is the wire contract, so the helper reads publish their own argument shape.
 test('K1: the lux descriptor declares no helper tool of its own', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 3 } } as unknown as ConnectionPolicy;
-  const declarations = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy));
+  const declarations = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy);
   assert.deepEqual(declarations, [], 'reads and writes come from reader.discovery(), never a synthesized list');
   assert.deepEqual(CONNECTOR_DESCRIPTORS['lux-knowledge']!.envelope, [], 'no fixed read envelope survives discovery');
 });

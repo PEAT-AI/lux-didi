@@ -848,6 +848,7 @@ test('M21: owner-trusted reads grant the annotated catalogue, and a changed lux 
         { name: 'list_topics', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
       ];
       await trusted.refresh();
+      assert.equal(trusted.status().endpoints[0]!.state, 'connected', JSON.stringify(trusted.status().endpoints[0]));
       const after = trusted.registry.currentGrant('source')!;
       assert.notEqual(after.schemaDigest, before);
       assert.ok(after.generation > grant.generation);

@@ -18,7 +18,7 @@ model.
 bash scripts/run-local.sh --build-only
 scripts/didi-memory-eval --store <copy-dir> --golden <golden.jsonl> --out <report.json> \
     [--answers <recorded-first-answers.json>] [--strict] [--data-dir <copy-dir>] \
-    [--verifier <openai-model>] [--time-zone <zone>]
+    [--verifier <openai-model>] [--time-zone <zone>] [--classes <class,class>]
 ```
 
 - `--store` (or `--data-dir`) names a directory that contains a `state.sqlite`
@@ -34,6 +34,9 @@ scripts/didi-memory-eval --store <copy-dir> --golden <golden.jsonl> --out <repor
   `not_run: no_runner`; nothing is invented to fill the gap.
 - `--strict` counts a `not_run` stage as a miss. The release check does not use
   it while the restore tool and the live first-answer runner are absent.
+- `--classes` names the data classes the scored route reads with, ahead of scoring. Without it the
+  harness takes the owner route's own list from the `provider-config/profile.json` its data dir
+  carries, the same profile the live host reads, and refuses to score when neither is there.
 - Unknown argv is refused: an unknown option, a stray argument, a doubled option
   or an option without its value exits 2. A typo must never silently switch a
   stage off on a gate with no human in the loop.

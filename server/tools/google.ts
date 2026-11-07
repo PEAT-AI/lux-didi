@@ -225,7 +225,7 @@ function googleFamilyOf(evidence: ConnectorEvidence): string {
   // W1030: the write tools answer with their own family, so the one command he is told names the token
   // that is actually missing rather than the gmail or calendar read one.
   if (evidence.tool === 'gmail_create_draft') return 'compose';
-  if (evidence.tool === 'calendar_create_event' || evidence.tool === 'calendar_delete_event') return 'calendar_write';
+  if (evidence.tool === 'calendar_create_event' || evidence.tool === 'calendar_delete_event' || evidence.tool === 'calendar_respond_event') return 'calendar_write';
   return evidence.tool.startsWith('gmail') ? 'gmail' : evidence.tool.startsWith('drive') ? 'drive' : 'calendar';
 }
 

@@ -24,7 +24,12 @@ export const CALENDAR_RSVP_SCHEMA = {
 export function calendarResponseStatus(word: unknown): 'accepted' | 'declined' | 'tentative' | undefined {
   return typeof word === 'string' && Object.hasOwn(RESPONSE_STATUS, word) ? RESPONSE_STATUS[word as CalendarResponse] : undefined;
 }
-/** The helper's own codes for an event he was not invited to: one closed answer, never a retry or a guess. */
+/**
+ * The helper's own codes for an event he was not invited to: one closed answer, never a retry or a guess.
+ * Provisional: lux-google-mcp publishes its closed refusal table with calendar_respond_event in the lockstep
+ * PR, and the recorded contract (server/test/fixtures/google-error-contract-6ee466f0.json) has no attendee
+ * code to copy yet. A code outside this set keeps the generic unresolved line, so nothing is answered wrongly.
+ */
 const NOT_HIS_INVITATION: ReadonlySet<string> = new Set(['not-attendee', 'not-an-invitation']);
 export const CALENDAR_RSVP_REFUSAL = 'That event is not an invitation to the owner, so there was nothing to answer.';
 /** The closed refusal for an event that is not his invitation, and undefined for every other cause. */

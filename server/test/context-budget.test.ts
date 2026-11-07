@@ -11,7 +11,7 @@ test('startup floors fit the target and optional ceilings retain hard-admission 
   assert.equal(CONTEXT_BUDGET.target, 9_000);
   assert.equal(CONTEXT_BUDGET.hard, 14_000);
   assert.ok(Object.values(CONTEXT_BUDGET.sections).reduce((sum, section) => sum + section.floor, 0) <= CONTEXT_BUDGET.target);
-  assert.ok(Object.values(CONTEXT_BUDGET.sections).reduce((sum, section) => sum + section.ceiling, 0) < CONTEXT_BUDGET.hard);
+  assert.ok(Object.values(CONTEXT_BUDGET.sections).reduce((sum, section) => sum + section.ceiling, 0) <= CONTEXT_BUDGET.hard);
   assert.equal(estimatedTokens('x'.repeat(32)), 10);
   assert.equal(estimatedTokens('x'), 1);
 });

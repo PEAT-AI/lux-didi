@@ -66,7 +66,7 @@ test('W5: the persona says what carries over between calls and what does not', (
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), '907d50eea24bb5c6a864ebfbc982b5242b3e4b94d8a515014ae134422889f1f8');
+  assert.equal(sha(NAYA_CHARACTER), '75ef7d06b57faecefaead3f7427037059c22cd708e5687dd18dfe967e7fec15e');
   assert.match(NAYA_CHARACTER, /not brevity for its own sake/, 'the numeric duration default is retired; depth follows the ask');
   assert.match(NAYA_CHARACTER, /not invented messages, events, dates, sources or actions/);
   assert.match(NAYA_CHARACTER, /Hold him to stated commitments/);
@@ -1075,6 +1075,7 @@ test('dense persona retains every character and speaking prohibition', () => {
 
 test('Stage 4 preserves wit permission, history access and conditional lookup in natural prose', () => {
   assert.ok(NAYA_CHARACTER.includes('Wit is welcome:'));
+  assert.ok(NAYA_CHARACTER.includes('Keep facts and imagination apart.'));
   assert.ok(NAYA_CHARACTER.includes('You can revisit past conversations word for word through what the helper returned.'));
   assert.ok(NAYA_VOICE_SURFACE.includes('Answer from these instructions without lookup when they already answer it.'));
   assert.ok(NAYA_VOICE_SURFACE.includes('say you found nothing that says so.'));

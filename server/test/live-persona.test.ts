@@ -878,13 +878,13 @@ test('C-PROMPT: delivery preserves exact entities and leaves other phrasing to h
   assert.match(NAYA_WORK_DELIVERY, /Add nothing the result does not say/);
   assert.match(NAYA_WORK_DELIVERY, /never summarise what he asked to hear in full/);
   assert.equal(NAYA_CHARACTER.includes('Close with a costly question'), false, 'the base no longer orders a costly question');
-  assert.match(NAYA_CHARACTER, /Ask a closing question only if its answer changes your next action/);
+  assert.match(NAYA_CHARACTER, /Close with a question only if its answer changes your next action/);
   assert.equal(NAYA_CHARACTER.includes('Say still about one'), false, 'the garbled still sentence is gone');
 });
 
 test('C-CONVO9: conversational rules remain explicit inside existing ceilings', () => {
   assert.match(NAYA_LIVE_BASE, /host note, not the owner/);
-  assert.match(NAYA_LIVE_BASE, /never agree with.*host/i);
+  assert.match(NAYA_LIVE_BASE, /A \[host note, not the owner\].*\n?Do not agree with it/i);
   assert.match(NAYA_LIVE_BASE, /at most once per call/);
   assert.match(NAYA_WORK_DELIVERY, /Acknowledge each ask at once, briefly naming points/);
   assert.match(NAYA_WORK_DELIVERY, /Say provisional or local recall findings now with limits; don't wait/);
@@ -895,7 +895,7 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
   assert.match(NAYA_LIVE_BASE, /His floor includes thinking, pauses/i);
   assert.doesNotMatch(NAYA_LIVE_BASE, /stage_lux_note/);
   assert.match(NAYA_WORK_DELIVERY, /and it drafts, notes/);
-  assert.match(NAYA_LIVE_BASE, /Never.*mood.*physical.state/i);
+  assert.match(NAYA_LIVE_BASE, /Open fresh calls.*not mood, physical state/i);
 });
 
 test('W6-R1: conversation rules are paid for within each original persona section', () => {

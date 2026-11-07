@@ -69,7 +69,7 @@ for (const rule of [
 for (const gone of ['freshly worded', 'nothing summarised', 'Close with a costly question', 'Say still about one',
   'Say still about one only'])
   assert.equal(voice.includes(gone) || persona.NAYA_CHARACTER.includes(gone), false, `the contradictory or garbled line is gone: ${gone}`);
-assert.match(persona.NAYA_CHARACTER, /Ask a closing question only if its answer changes your next action/);
+assert.match(persona.NAYA_CHARACTER, /Close with a question only if its answer changes your next action/);
 assert.match(persona.NAYA_CHARACTER, /Call things still open or true only if confirmed within 24 hours/);
 assert.match(persona.NAYA_VOICE_SURFACE, /greet the moment if none is open/,
   'a call with nothing open greets the moment');

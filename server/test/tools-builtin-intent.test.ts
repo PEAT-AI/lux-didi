@@ -58,7 +58,7 @@ test('A2: current builtin declarations dispatch exact arguments through the task
   } });
   const fixtures: Record<string, Record<string, unknown>> = {
     search_mail: { query: 'synthetic', cursor: null }, search_chat: { query: 'synthetic' },
-    search_knowledge: { query: 'synthetic' }, search_company: { query: 'synthetic', mode: null, cursor: null }, search_drive: { query: 'synthetic' }, search_memory: { query: 'synthetic' },
+    search_knowledge: { query: 'synthetic', mode: null }, search_company: { query: 'synthetic', mode: null, cursor: null }, search_drive: { query: 'synthetic' }, search_memory: { query: 'synthetic' },
     read_mail: { id: 'synthetic-mail', cursor: null }, read_knowledge: { ids: [7], include_links: true, cursor: null }, read_drive: { id: 'synthetic-drive', cursor: null },
     read_thread: { ref: 'synthetic-thread', cursor: null }, read_company: { ref: 'synthetic-company', depth: null, cursor: null }, read_memory: { ref: 'synthetic-memory', cursor: null },
     calendar_events: { start: '2026-03-05T09:00:00Z', end: '2026-03-05T10:00:00Z' }, people_lookup: { name: 'Synthetic' },

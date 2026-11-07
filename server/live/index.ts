@@ -2501,6 +2501,13 @@ export class LiveSessionOwner {
     this.#scheduleDebt(handle, Math.max(1, AUDIBLE_DEBT_RUNG_MS - (this.#now() - lastAudible)), 'rung');
   }
 
+  /**
+   * #820 audit: every `'rebuild'` step is scheduled here, and each schedule has one of two owners. The debt door
+   * is armed only by #armDebt, which a settled tool result or a successful recreate calls, so owner silence with
+   * nothing owed never reaches it. The watchdog door is armed only by #watchdogEvent on an event that says a reply
+   * is owed (a finished transcription, a voice-activity end, a model turn start), and its timer stands down while a
+   * helper call is pending. Silence alone, and a running helper, are therefore not rebuild triggers.
+   */
   #scheduleDebt(handle: ActiveSession, delayMs: number, step: 'rung' | 'rebuild'): void {
     handle.taskDebtPlan = { at: this.#now() + delayMs, step, generation: handle.generation };
     if (handle.taskWorkAt !== undefined) { handle.taskPausedDebt = { remaining: delayMs, step, generation: handle.generation }; return; }

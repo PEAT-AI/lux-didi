@@ -398,7 +398,7 @@ test('MED-1022: a voice knowledge reply reaches the model as every hit, the top 
   assert.match(shaped.text, /\*\*#91293\*\*/u);
   for (let index = 0; index < 5; index += 1) assert.match(shaped.text, new RegExp(`\\*\\*#${91100 + index}\\*\\*`, 'u'), `hit ${index} reaches the model`);
   assert.equal(shaped.text.includes('[showing'), false, 'six hits fit the voice budget, so none is trimmed');
-  assert.equal(shaped.text.includes('Knowledge Search'), false, 'the search header is still stripped');
+  assert.match(shaped.text, /Knowledge Search: 'ocp prep call'/u, 'F1: the search header reaches the helper as text');
 });
 
 test('#574: an event preserves every received attendee name and reports an empty list explicitly', () => {

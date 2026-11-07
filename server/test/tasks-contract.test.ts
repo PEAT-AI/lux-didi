@@ -139,7 +139,9 @@ test('real connector wire shapes retain thread bodies, event times and ranked Ma
   const event = projectTaskPayload('calendar_events', { events: [{ id: 'e', summary: 'Synthetic meeting', start: { dateTime: '2026-01-01T10:00:00Z' }, end: { dateTime: '2026-01-01T11:00:00Z' } }] }, {});
   assert.match(event.text, /Synthetic meeting/); assert.match(event.text, /10:00:00Z/);
   const ranked = projectTaskPayload('search_insights', '**#42** [PATTERN] Orchid', { query: 'Orchid' });
-  assert.equal(ranked.references[0]?.rank, 1);
+  // The discovered payload travels as one document, so the row ids live in its bytes, never in parsed ranks.
+  assert.deepEqual(ranked.references.map(ref => ref.id), ['search_insights']);
+  assert.match(ranked.text, /Orchid/);
   const neighbour = projectTaskPayload('search_insights', '**#42** [PATTERN] Orchid', { query: 'Cedar' });
   assert.equal(neighbour.status, 'ok'); assert.match(neighbour.text, /Orchid/);
 });
@@ -496,7 +498,7 @@ test('task cancellation still aborts reads and emits a cancelled terminal event'
   } finally { reply.resolve(documentResult('synthetic', 'entry:1')); await work; detach(); }
 });
 
-test('invalid insight identifiers name search_insights and valid insight ids reach the reader', async () => {
+test('the discovered exact read passes insight ids through and invents no identifier', async () => {
   const { connectorExecutor } = await import('../tasks/connectors.js');
   const policy: import('../tools/types.js').ConnectionPolicy = {
     schemaVersion: 1, ownerId: 'fixture', connectionId: 'fixture', generation: 1, enabled: true, connector: 'lux-knowledge',
@@ -506,15 +508,19 @@ test('invalid insight identifiers name search_insights and valid insight ids rea
     bounds: { maxQueryChars: 4000, maxSearchLimit: 25, maxGetIds: 10, maxEntityBytes: 100000, maxResultBytes: 100000 },
   };
   const seen: Record<string, unknown>[] = [];
-  const reader: import('../connectors/index.js').ConnectorReader = { call: async (_name, args) => { seen.push(args); return { state: 'completed', decodedResult: { text: 'synthetic insight' } } as unknown as import('../connectors/index.js').ConnectorEvidence; } };
+  const getInsight = { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false },
+    inputSchema: { type: 'object', required: ['insight_ids'], properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } } } };
+  const reader = { discovery: () => [getInsight], call: async (_name: string, args: Record<string, unknown>) => {
+    seen.push(args);
+    return { state: 'completed', decodedResult: { text: 'synthetic insight' } } as unknown as import('../connectors/index.js').ConnectorResult;
+  } };
   const execute = connectorExecutor([{ connector: 'lux-knowledge', policy, reader }]);
-  const invalid = await execute('read_knowledge', { id: 'memory:synthetic' }, new AbortController().signal);
-  assert.equal(invalid.failure_category, 'invalid_argument');
-  assert.match(invalid.repair!, /search_insights/);
-  assert.equal(seen.length, 0);
-  const valid = await execute('read_knowledge', { id: '63' }, new AbortController().signal);
-  assert.equal(valid.text, 'synthetic insight');
-  assert.deepEqual(seen[0], { ids: [63], include_links: true });
+  const valid = await execute('get_insight', { insight_ids: [63], include_links: true }, new AbortController().signal);
+  assert.match(valid.text, /synthetic insight/);
+  assert.deepEqual(seen[0], { insight_ids: [63], include_links: true }, 'the model ids reach the wire unchanged');
+  const retired = await execute('read_knowledge', { id: 'memory:synthetic' }, new AbortController().signal);
+  assert.equal(retired.status, 'failed', 'the retired helper read is not a declared tool, so no local id is repaired');
+  assert.equal(seen.length, 1, 'the retired name never reaches the reader');
 });
 
 test('a no-tool answer with no completed reads can compose for thirteen seconds', async () => {

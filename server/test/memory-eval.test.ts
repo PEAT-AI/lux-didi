@@ -9,9 +9,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import {
   ABSTENTION_MARKERS, BARS, openaiVerifier, readAnswers, readGolden, runEval,
   type MemoryEvalReport, type RestoreTool,
@@ -20,10 +21,31 @@ import { GOLDEN_FILE, answersFile, buildEvalStore } from './fixtures/memory-eval
 
 const ROOT = process.cwd();
 
+/** The live owner route the host loads: live.json in the provider-config the data dir carries. */
+function plantLiveRoute(store: string, classes: readonly string[]): void {
+  const dir = join(store, 'provider-config');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, 'live.json'), JSON.stringify({
+    schemaVersion: 1, enabled: true, dataClasses: [...classes],
+    preferences: { dataClass: classes[0], language: 'de-de', register: 'plain', humor: 'off', verbosity: 'balanced' },
+  }), { mode: 0o600 });
+}
+
+/** Class every planted row sensitive, as the owner's own route stores its sessions. */
+function reclassSensitive(store: string): void {
+  const db = new DatabaseSync(join(store, 'state.sqlite'));
+  try {
+    for (const table of ['routing_labels', 'history_sessions', 'conversation_summaries']) {
+      db.exec(`UPDATE ${table} SET data_class='sensitive'`);
+    }
+  } finally { db.close(); }
+}
+
 async function withStore<T>(variant: 'defect' | 'clean', body: (store: string, work: string) => Promise<T>): Promise<T> {
   const work = mkdtempSync(join(tmpdir(), `memory-eval-${variant}-`));
   const store = buildEvalStore(join(work, 'store'), variant);
   store.close();
+  plantLiveRoute(join(work, 'store'), ['ordinary']);
   try {
     return await body(join(work, 'store'), work);
   } finally {
@@ -80,6 +102,53 @@ test('the clean variant passes every bar', async () => {
     for (const key of ['1', '2', '3', '4', '5', '6', '7']) assert.ok(report.classes[key]!.scored >= 1, `class ${key} has no scored item`);
     assert.equal(report.notRun['restore:tool_missing'], 1);
     assert.ok((report.notRun['answer:no_runner'] ?? 0) >= 1);
+  });
+});
+
+// The live owner route is classed sensitive; an ordinary-only harness scores that store at recall 0.
+test('the scorer reads with the classes the live route carries', async () => {
+  await withStore('clean', async (store, work) => {
+    reclassSensitive(store);
+    plantLiveRoute(store, ['sensitive']);
+    const out = join(work, 'report.json');
+    const result = cli(['--store', store, '--golden', GOLDEN_FILE, '--answers', answersFile('clean'), '--out', out]);
+    assert.equal(result.status, 0, `a sensitive route must score its own sessions:\n${result.stderr}${result.stdout}`);
+    const report = readReport(out);
+    const recall = report.items_detail.find(item => item.id === 'm2-brakes')!;
+    assert.equal(recall.search.status, 'scored');
+    assert.equal(recall.search.overlap, 1, 'the gold turn of the sensitive session is reached');
+    const start = report.items_detail.find(item => item.id === 'm1-coffee')!;
+    assert.equal(start.start.status, 'scored');
+    assert.deepEqual(start.start.missing, [], 'the start item is carried from the sensitive class');
+  });
+});
+
+test('--classes ordinary still restricts the run to the ordinary slice', async () => {
+  await withStore('clean', async (store, work) => {
+    reclassSensitive(store);
+    plantLiveRoute(store, ['sensitive']);
+    const out = join(work, 'report.json');
+    const result = cli(['--store', store, '--golden', GOLDEN_FILE, '--answers', answersFile('clean'), '--out', out, '--classes', 'ordinary']);
+    assert.equal(result.status, 1, 'the ordinary slice no longer holds these sessions');
+    const report = readReport(out);
+    const recall = report.items_detail.find(item => item.id === 'm2-brakes')!;
+    assert.equal(recall.search.overlap, 0, 'an ordinary-only route reaches none of the sensitive gold');
+    const start = report.items_detail.find(item => item.id === 'm1-coffee')!;
+    assert.notEqual(start.verdict, 'pass', 'the start item is not carried from the ordinary slice');
+  });
+});
+
+// F2: a copy with no live.json is scored the way base scored it, not refused and not widened.
+test('a copy with no live route keeps the ordinary default', async () => {
+  await withStore('clean', async (store, work) => {
+    reclassSensitive(store);
+    rmSync(join(store, 'provider-config'), { recursive: true, force: true });
+    const out = join(work, 'report.json');
+    const result = cli(['--store', store, '--golden', GOLDEN_FILE, '--answers', answersFile('clean'), '--out', out]);
+    assert.equal(result.status, 1, 'no live route means the ordinary slice, never a usage error');
+    const report = readReport(out);
+    const recall = report.items_detail.find(item => item.id === 'm2-brakes')!;
+    assert.equal(recall.search.overlap, 0, 'the sensitive rows stay unreadable without a live route');
   });
 });
 

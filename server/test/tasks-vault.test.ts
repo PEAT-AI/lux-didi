@@ -217,7 +217,7 @@ test('helper writes require persisted owner consent, retain update ids and bound
   } });
   const args = { payload: { insight_title: 'Synthetic title', content: 'Synthetic fact', insight_type: 'PATTERN', follow_up_state: 'open' } };
   // The host selects the operation by discovered schema; the model supplies only the nested payload.
-  const createSchema = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' }, follow_up_state: { type: 'string' } } };
+  const createSchema = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' }, follow_up_state: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } };
   const updateSchema = { type: 'object', required: ['insight_id'], properties: { insight_id: { type: 'integer', minimum: 1 }, content: { type: 'string' }, follow_up_state: { type: 'string' } } };
   const run = (turn: string, sessionId = 'synthetic-call') => writer.writeTask({ sessionId, tool: 'vault_save', operation: 'create_insight', inputSchema: createSchema, maxPayloadBytes: 100000, authorized: () => true, args: { ...args, requested_turn_id: turn } });
   assert.equal((await run('1')).disposition, 'refused');

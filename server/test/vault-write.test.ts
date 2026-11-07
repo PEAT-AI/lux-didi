@@ -37,10 +37,11 @@ function harness(t: TestContext, url: string): Harness {
 }
 
 const SPOKEN_AT = new Date(NOW).toISOString();
-const OWNER_TURN_ID = 'task:vault-task:save';
+const OWNER_TURN_ID = '2';
 const PROVENANCE = `\n\nProvenance: lux-didi; speaker=owner; confidence=1; session=${SESSION}; requested_turn_id=${OWNER_TURN_ID}.`;
 /** The discovered create schema is the payload contract; the helper never assembles the wire itself. */
-const CREATE_SCHEMA = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' } } };
+const CREATE_SCHEMA = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' },
+  insight_type: { type: 'string' }, project: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } };
 /** The write carries its provenance and an idempotency key; the key is the op id, minted per op. */
 const saveArgs = (key: unknown) => ({ content: `${NOTE}${PROVENANCE}`, insight_title: NOTE, insight_type: 'UNCATEGORIZED', project: 'didi-voice',
   source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: SESSION, turn_start_id: OWNER_TURN_ID, turn_end_id: OWNER_TURN_ID, spoken_at: SPOKEN_AT }, idempotency_key: key });
@@ -48,7 +49,7 @@ const saveArgs = (key: unknown) => ({ content: `${NOTE}${PROVENANCE}`, insight_t
 /** One owner turn, persisted where the host reads it, then one write that names it. */
 async function save(h: Harness, content: string, turnId = OWNER_TURN_ID): Promise<VaultWriteResult> {
   h.store.transaction(tx => tx.run('INSERT OR IGNORE INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)',
-    [turnId, SESSION, 1, 1, 'owner', content, NOW]));
+    [Number(turnId), SESSION, Number(turnId), Number(turnId), 'owner', content, NOW]));
   return h.writer.writeTask({ sessionId: SESSION, tool: 'vault_save', operation: 'create_insight', inputSchema: CREATE_SCHEMA,
     maxPayloadBytes: 100_000, authorized: () => true, args: { requested_turn_id: turnId, payload: { content, insight_title: content } } });
 }
@@ -56,7 +57,8 @@ async function save(h: Harness, content: string, turnId = OWNER_TURN_ID): Promis
 test('an authorized task saves its exact words once under the vault project', async t => {
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
-  assert.deepEqual(await save(h, NOTE), { saved: true, insightId: '7' });
+  const first = await save(h, NOTE);
+  assert.deepEqual(first, { disposition: 'created', insight_id: 7 });
   const args = (fake.calls[0]?.arguments ?? {}) as Record<string, unknown>;
   assert.equal(typeof args['idempotency_key'], 'string');
   assert.deepEqual({ ...args, idempotency_key: 'op' }, saveArgs('op'));
@@ -65,13 +67,14 @@ test('an authorized task saves its exact words once under the vault project', as
 
 test('an empty authorized task payload writes nothing and returns an honest invalid-payload receipt', async t => {
   const fake = await fakeLux(t, 'inserted'); const h = harness(t, fake.url);
-  assert.deepEqual(await save(h, ''), { saved: false, code: 'write_failed', guidance: 'The note payload was invalid. Nothing was written.' });
+  // The discovered schema owns the payload, so a blank note is refused before the wire.
+  assert.deepEqual(await save(h, ''), { disposition: 'refused', reason: 'invalid_arguments' });
   assert.equal(fake.calls.length, 0);
 });
 
 test('an unreachable vault is logged as unavailable with its closed code', async t => {
   const h = harness(t, 'http://127.0.0.1:1/mcp');
-  assert.deepEqual(await save(h, NOTE), { saved: false, code: 'vault_unavailable', guidance: 'Retried lux once. the vault is not reachable right now' });
+  assert.deepEqual(await save(h, NOTE), { disposition: 'refused', reason: 'transport_unavailable' });
   const attempt = h.events.at(-1);
   assert.equal(attempt?.['state'], 'unavailable');
   assert.equal(attempt?.['code'], 'vault_unavailable');
@@ -81,8 +84,8 @@ test('a dictated note reaches the vault once, and only the vault id comes back',
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: true, insightId: '7' });
-  assert.equal(fake.calls.length, 1, 'exactly one save_insight request');
+  assert.deepEqual(receipt, { disposition: 'created', insight_id: 7 });
+  assert.equal(fake.calls.length, 1, 'exactly one create_insight request');
   assert.equal(fake.calls[0]?.name, 'create_insight');
   const args = (fake.calls[0]?.arguments ?? {}) as Record<string, unknown>;
   assert.deepEqual({ ...args, idempotency_key: 'op' }, saveArgs('op'));
@@ -105,15 +108,15 @@ test('an admitted task operation freezes its first payload and repeats read the 
   const h = harness(t, fake.url);
   // Authority admitted this operation. The writer freezes its exact payload and owns replay, not owner-language classification.
   const paraphrase = await save(h, 'the boat survey is on Wednesday');
-  assert.equal(paraphrase.saved, true, 'the note she keeps reaches the vault');
+  assert.equal(paraphrase.disposition, 'created', 'the note she keeps reaches the vault');
   assert.equal(fake.calls.length, 1, 'one row is claimed once');
   const first = await save(h, NOTE);
-  assert.equal(first.saved, true);
+  assert.equal(first.disposition, 'created');
   const again = await save(h, 'The boat survey, is on TUESDAY');
-  assert.deepEqual(again, { saved: true, insightId: '7' }, 'the stored outcome, past case, spacing and punctuation');
+  assert.deepEqual(again, { disposition: 'created', insight_id: 7 }, 'the stored outcome, past case, spacing and punctuation');
   assert.equal(fake.calls.length, 1, 'the same authorization is never sent twice');
   const after = await save(h, NOTE);
-  assert.deepEqual(after, { saved: true, insightId: '7' }, 'different replay arguments do not change the first frozen operation');
+  assert.deepEqual(after, { disposition: 'created', insight_id: 7 }, 'different replay arguments do not change the first frozen operation');
   assert.equal(fake.calls.length, 1, 'and it still sends nothing');
 });
 
@@ -127,7 +130,7 @@ test('a dispatched row at host start becomes uncertain and is never re-sent', as
   const row = h.store.transaction(tx => tx.get("SELECT state FROM vault_writes WHERE op_id='op-old'", []));
   assert.equal(row?.['state'], 'uncertain');
   const receipt = await save(h, 'old note');
-  assert.deepEqual(receipt, { saved: false, code: 'outcome_unknown', guidance: 'I am not sure it landed, check the vault' });
+  assert.deepEqual(receipt, { disposition: 'refused', reason: 'outcome_unknown' });
   assert.equal(fake.calls.length, 0, 'an uncertain row is never re-sent');
 });
 
@@ -135,15 +138,15 @@ test('a dropped call has no confirmed receipt, is outcome_unknown, and never ret
   const fake = await fakeLux(t, 'drop');
   const h = harness(t, fake.url);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'outcome_unknown', guidance: 'I am not sure it landed, check the vault' });
+  assert.deepEqual(receipt, { disposition: 'refused', reason: 'outcome_unknown' });
   assert.equal(fake.calls.length, 1, 'exactly one request, no retry');
 });
 
-test('a 503 is write_failed after exactly one request', async t => {
+test('a refused vault call is outcome_unknown after exactly one request', async t => {
   const fake = await fakeLux(t, 'fail');
   const h = harness(t, fake.url);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'I could not confirm that the vault saved the note; do not retry it automatically' });
+  assert.deepEqual(receipt, { disposition: 'refused', reason: 'outcome_unknown' });
   assert.equal(fake.calls.length, 1);
 });
 
@@ -151,7 +154,7 @@ test('a duplicate refusal is never reported as saved', async t => {
   const fake = await fakeLux(t, 'duplicate');
   const h = harness(t, fake.url);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'I could not confirm that the vault saved the note; do not retry it automatically' });
+  assert.deepEqual(receipt, { disposition: 'refused', reason: 'outcome_unknown' });
   assert.equal(fake.calls.length, 1);
 });
 
@@ -334,7 +337,7 @@ test('unavailable retries once with backoff and then confirms without a duplicat
   const input = { sessionId: SESSION, tool: 'vault_save' as const, operation: 'create_insight', inputSchema: CREATE_SCHEMA,
     maxPayloadBytes: 100_000, authorized: () => true, args: { requested_turn_id: OWNER_TURN_ID, payload: { content: NOTE, insight_title: NOTE } } };
   h.store.transaction(tx => tx.run('INSERT OR IGNORE INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)',
-    [OWNER_TURN_ID, SESSION, 1, 1, 'owner', NOTE, NOW]));
+    [Number(OWNER_TURN_ID), SESSION, Number(OWNER_TURN_ID), Number(OWNER_TURN_ID), 'owner', NOTE, NOW]));
   const result = await writer.writeTask(input);
   assert.equal(result.saved, true);
   assert.match(String(result.guidance), /retried.*lux/i);

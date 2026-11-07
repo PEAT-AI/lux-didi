@@ -8,6 +8,12 @@ export interface FakeLux { url: string; calls: { name?: unknown; arguments?: unk
 
 /** One MCP-over-HTTP server on loopback: initialize, the initialized notice, then the tools/call it records. */
 /** Real lux ids are integers, and the client refuses any other receipt shape. */
+const writeTool = { name: 'create_insight', description: 'Create an insight', annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' },
+    project: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' }, quote: { type: 'string' },
+    follow_up_state: { type: 'string' }, insight_id: { type: 'integer' } } } };
+const readTool = { name: 'search_insights', description: 'Search insights', annotations: { readOnlyHint: true, destructiveHint: false },
+  inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } } } };
 export async function fakeLux(t: TestContext, mode: FakeLuxMode, insightId = 7): Promise<FakeLux> {
   const calls: FakeLux['calls'] = [];
   const server = createServer((request, response) => {
@@ -22,6 +28,11 @@ export async function fakeLux(t: TestContext, mode: FakeLuxMode, insightId = 7):
         return;
       }
       if (message.method === 'notifications/initialized') { response.statusCode = 202; response.end(); return; }
+      if (message.method === 'tools/list') {
+        // The write client re-reads the daemon's own discovery: the write is admitted by its annotations.
+        reply({ jsonrpc: '2.0', id: message.id, result: { tools: [writeTool, readTool] } });
+        return;
+      }
       if (message.method === 'tools/call') {
         calls.push(message.params ?? {});
         if (mode === 'drop') { request.socket.destroy(); return; }

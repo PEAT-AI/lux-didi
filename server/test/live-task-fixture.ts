@@ -79,7 +79,7 @@ export function discoveredSearchBinding(): BoundConnector {
 /** The discovered lux write the host projects as vault_save: annotations admit it, the schema is its payload. */
 export const discoveredCreate = { name: 'create_insight', description: 'Create an insight the owner asked for.',
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-  inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' }, project: { type: 'string' } } } };
+  inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' }, project: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } } };
 export function luxVaultBinding(decodedResult: unknown = { insight_id: 7, disposition: 'created' }): BoundConnector {
   return { connector: 'lux-knowledge', policy: { toolNames: [discoveredCreate.name], endpoint: { account: 'synthetic-account', resource: 'lux-knowledge:vault' } },
     reader: { discovery: () => [discoveredCreate], call: async () => ({ state: 'completed', decodedResult }) } } as unknown as BoundConnector;

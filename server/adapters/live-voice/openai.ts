@@ -1294,10 +1294,16 @@ class Session implements LiveVoiceSession {
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
-    if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'), item: {
-      type: 'message', role: 'user', content: [{ type: 'input_text', text: input.text }],
-    } }))) fail(this.terminal!.code);
-    if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }))) fail(this.terminal!.code);
+    // #925: `response.item.create` and `response.create` both "Require Responses delegation"
+    // (developers.openai.com/api/reference/resources/live/primary-websocket.md), and this session starts with
+    // `delegation: { type: 'client' }`, so the provider refused the pair with `invalid_request_error` param `type`.
+    // A client-delegation session takes text only through the append events, and `session.instructions.append` is
+    // the one that makes the model act on the words and speak; commentary would only say the owner's words back.
+    // A turn that starts outside a delegation carries a null delegation id, per guides/live-delegation.
+    for (const slice of input.text.match(/[\s\S]{1,1500}/g) ?? [input.text]) {
+      if (!this.write(JSON.stringify({ type: 'session.instructions.append', event_id: this.commandId('cont'),
+        delegation_id: null, content: `The owner typed this message instead of speaking: ${slice}\nAnswer him out loud now.` }))) fail(this.terminal!.code);
+    }
     // Typed owner input has no microphone transcription to return from the provider.
     this.emit({ type: 'inputTranscription', text: input.text, finished: true, finalOrigin: 'typed' });
   }

@@ -39,11 +39,13 @@ test('host commentary produces one null-delegation command and no response.creat
   assert.equal(commands[0].delegation_id, null);
 });
 
-test('typed owner input retains its current response commands, a known provider compatibility gap', async t => {
+test('typed owner input rides the client-delegation instruction channel, not the refused response pair', async t => {
   const { socket, session } = await fakeReady(t);
   const before = socket.sent.length;
   session.sendText({ text: 'Synthetic typed input' });
-  assert.deepEqual(socket.sent.slice(before).map(frame => JSON.parse(frame).type), ['response.item.create', 'response.create']);
+  const frames = socket.sent.slice(before).map(frame => JSON.parse(frame));
+  assert.deepEqual(frames.map(frame => frame.type), ['session.instructions.append']);
+  assert.equal(frames[0].delegation_id, null, 'a turn that starts outside a delegation carries no delegation id');
 });
 
 test('provider rejection identifies the rejected command without its content', async t => {
@@ -176,11 +178,13 @@ test('typed command rejections distinguish both response writes despite their sh
   const detach = attachHostLogSink({ event: raw => { records.push(raw as Record<string, unknown>); } });
   t.after(detach);
   const before = socket.sent.length;
-  session.sendText({ text: 'Synthetic typed input' });
+  // Two slices of the 1500-character append bound, so the attribution still spans two writes with one prefix.
+  session.sendText({ text: 'Synthetic typed input. '.repeat(90) });
   const commands = socket.sent.slice(before).map(frame => JSON.parse(frame));
+  assert.equal(commands.length, 2);
   for (const command of commands) socket.deliver({ type: 'error', error: { type: 'invalid_request_error', param: 'type', client_event_id: command.event_id } });
   const errors = records.filter(record => record.event === 'live_provider_error');
-  assert.deepEqual(errors.map(error => error.commandType), ['response.item.create', 'response.create']);
+  assert.deepEqual(errors.map(error => error.commandType), ['session.instructions.append', 'session.instructions.append']);
   assert.deepEqual(errors.map(error => error.eventIdPrefix), ['cont', 'cont']);
   for (const error of errors) assert.deepEqual(safeEvent(error), error);
 });

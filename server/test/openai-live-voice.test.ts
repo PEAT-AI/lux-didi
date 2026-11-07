@@ -1858,15 +1858,23 @@ for (const opening of ['model_first', 'user_first'] as const) {
 }
 
 
-test('typed owner text sends a user input item then response.create on a ready session', async t => {
-  const opened = await fakeReady(t);
-  const before = opened.socket.sent.length;
-  opened.session.sendText({ text: 'Synthetic typed owner request' });
-  const frames = opened.socket.sent.slice(before).map(frame => JSON.parse(frame));
-  assert.deepEqual(frames.map(frame => frame.type), ['response.item.create', 'response.create']);
-  assert.deepEqual(frames[0].item, { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Synthetic typed owner request' }] });
-  await tick();
-  assert.ok(opened.captured.events.some(event => event.type === 'inputTranscription' && event.text === 'Synthetic typed owner request' && event.finished === true && event.finalOrigin === 'typed'));
+test('typed owner text answers on the client-delegation instruction channel, not the refused response pair', async t => {
+  const { f, session, captured } = await ready(t);
+  session.sendText({ text: 'Synthetic typed owner request' });
+  await f.frame(2);
+  const frames = f.frames.slice(1) as { type: string; delegation_id?: unknown; content?: unknown }[];
+  // #925: `response.item.create` and `response.create` both require Responses delegation and this session starts
+  // with `delegation: { type: 'client' }`, so the provider refused the pair with param `type`. The accepted text
+  // channel under client delegation is the append events; a turn that starts outside a delegation is null-id.
+  assert.deepEqual(frames.map(frame => frame.type), ['session.instructions.append']);
+  assert.equal(frames[0]!.delegation_id, null, 'a turn that starts outside a delegation carries no delegation id');
+  assert.match(String(frames[0]!.content), /Synthetic typed owner request/, 'the typed words reach the model');
+  assert.equal(f.rejections.length, 0, 'the provider rule refuses nothing the adapter wrote');
+  await until(() => captured.events.some(event => event.type === 'inputTranscription' && event.text === 'Synthetic typed owner request' && event.finished === true && event.finalOrigin === 'typed'));
+  // One typed turn end to end: the provider's audible answer reaches the owner, with no refusal in between.
+  speak(f);
+  await until(() => audioBytes(captured) > 0);
+  assert.ok(audioBytes(captured) > 0, 'the typed turn gets an audible answer');
 });
 
 test('typed owner text is refused before provider readiness without sending items', async t => {

@@ -7,7 +7,7 @@ import type { VaultWriter } from '../tools/vault-write.js';
 import { createHash } from 'node:crypto';
 import { readPublishedCatalogues, type Store } from '../runtime/store.js';
 import { join } from 'node:path';
-import type { Credentials } from '../adapters/model/types.js';
+import type { Credentials, DataClass } from '../adapters/model/types.js';
 import type { WebSearchPort } from '../tools/web-search.js';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
@@ -24,6 +24,12 @@ export interface HostTaskOptions {
   bindings(): readonly BoundConnector[];
   draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): Promise<ComposeOutcome>;
   timeZone: string;
+  /**
+   * The route's own data classes, which is what a memory search may return. Both compositions pass
+   * their route's set; a runtime composed without one falls through to `ordinary` alone, never to
+   * every class.
+   */
+  dataClasses?: readonly DataClass[];
   executors?(sessionId: string): ExistingExecutors;
   web?: WebSearchPort;
   vault?: VaultWriter;
@@ -113,7 +119,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
           try { return await Promise.race([write, pending]); }
           finally { if (onAbort) signal.removeEventListener('abort', onAbort); }
         }
-        if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.recall(tx, String(args.query)))), 'local-memory');
+        if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.searchMemory(tx, String(args.query), 20, { classes: options.dataClasses ?? ['ordinary'] }))), 'local-memory');
         if (name === 'read_memory') {
           try {
             const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MemoryItem } from '../domain/memory-items.js';
 import { compileMemoryBlock, MEMORY_BACKGROUND } from '../prompt/memory-block.js';
-import { estimatedTokens } from '../prompt/context-budget.js';
+import { CONTEXT_BUDGET, estimatedTokens } from '../prompt/context-budget.js';
 
 const now = Date.UTC(2026, 10, 6, 17);
 const item = (id: string, patch: Partial<MemoryItem> = {}): MemoryItem => ({
@@ -126,4 +126,27 @@ test('an omitted summary cannot suppress work from an older summary that fits', 
   ] });
   assert.deepEqual(result.summaryIds, ['fitting']);
   assert.ok(result.text.includes(loop));
+});
+
+test('M19 D7: identity selection keeps the base outcome while accumulating once per part', () => {
+  // 300 admitted candidates: the pre-M19 loop re-ran the whole selection for each one.
+  const entries = Array.from({ length: 300 }, (_, index) => ({
+    id: `entry-${String(index).padStart(3, '0')}`, text: `${String(index).padStart(3, '0')}${'E'.repeat(37)}`,
+  }));
+  const result = compileMemoryBlock({ ...input, items: [], entries });
+  // The same acceptance test, applied once per candidate over the accumulating part.
+  const budget = CONTEXT_BUDGET.memory.identity.ceiling;
+  const expected: string[] = [];
+  const rejected: string[] = [];
+  let text = '# Who he is';
+  for (const entry of entries) {
+    const next = [text, `- ${entry.text}`].join('\n\n');
+    if (estimatedTokens('\n\n' + next) > budget) { rejected.push(entry.id); continue; }
+    text = next;
+    expected.push(entry.id);
+  }
+  assert.ok(expected.length > 10 && rejected.length > 10, 'the fixture must straddle the budget boundary');
+  assert.deepEqual(result.selectedIds.filter(id => id !== 'clock'), expected);
+  assert.deepEqual(result.omitted.map(omitted => omitted.id), rejected);
+  assert.ok(result.text.includes(text), 'the selected part text is unchanged');
 });

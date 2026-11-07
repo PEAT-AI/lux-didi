@@ -12,14 +12,17 @@
  * class 7 restore tool, and the compiled start block of a future unit.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import type { SQLRow, SQLValue, Transaction } from '../contracts/storage.js';
+import type { DataClass } from '../adapters/model/types.js';
 import * as memory from '../domain/memory.js';
 import * as summaries from '../domain/summaries.js';
 import { createHistoryReader } from '../domain/history-reader.js';
-import { entryAndParentOrdinary } from '../domain/labels.js';
+import { HISTORY_CLASSES } from '../domain/history-lifecycle.js';
+import { entryAndParentIn } from '../domain/labels.js';
+import { loadLiveConfig } from '../config/live.js';
 import { listStandingMemory } from '../memory/import.js';
 import {
   NAYA_LIVE_BASE,
@@ -156,6 +159,8 @@ export interface RunOptions {
   readonly timeZone?: string | undefined;
   readonly answers?: RecordedAnswersFile | undefined;
   readonly verifier?: Verifier | undefined;
+  /** The evaluated route's data classes; absent means the owner profile's own, as the live route reads them. */
+  readonly classes?: readonly DataClass[] | undefined;
   /** A restore tool under test; absent means the registration probe decides. */
   readonly restoreTool?: RestoreTool | null | undefined;
   readonly now?: (() => number) | undefined;
@@ -188,6 +193,26 @@ function storeStateFile(options: RunOptions): string {
   const found = candidates.find(path => existsSync(path));
   if (found === undefined) throw new Error(`memory_eval_store_unreadable: no ${STATE_FILE} under ${candidates.join(' or ')}`);
   return found;
+}
+
+/**
+ * The data classes the evaluated route reads with. An explicit list wins; otherwise it is the live
+ * owner route's own list, from the live.json the live host loads through `loadLiveConfig`, never an
+ * ordinary-only constant. A copy with no live route keeps the old ordinary default.
+ */
+function routeClasses(options: RunOptions, ownerId: string, dataRoot: string): readonly DataClass[] {
+  if (options.classes !== undefined) return [...options.classes];
+  const loaded = loadLiveConfig({ configDir: join(dataRoot, 'provider-config'), ownerId });
+  return loaded.status === 'configured' ? [...loaded.config.profile.route.dataClasses] : ['ordinary'];
+}
+
+/** `--classes` names the store's own classes; anything else is a usage error, never a quiet default. */
+function parseClasses(value: string): readonly DataClass[] {
+  const names = value.split(',').map(name => name.trim()).filter(name => name !== '');
+  if (names.length === 0 || names.some(name => !HISTORY_CLASSES.includes(name as DataClass))) {
+    throw new Error(`memory_eval_classes_invalid: ${value}; expected ${HISTORY_CLASSES.join(',')}`);
+  }
+  return [...new Set(names)] as DataClass[];
 }
 
 /** Parse the golden file: one JSON object per line, the schema part A writes. */
@@ -270,7 +295,9 @@ function cutoffTime(tx: Transaction, sessionId: string): number | null {
  * the earlier-conversations section, through the composition the live start uses.
  * Nothing ending after the cutoff reaches it.
  */
-export function startBlock(tx: Transaction, input: { nowMs: number; cutoffMs: number; timeZone: string }): {
+export function startBlock(tx: Transaction, input: {
+  nowMs: number; cutoffMs: number; timeZone: string; allowedClasses: readonly DataClass[];
+}): {
   text: string;
   earlierConversationsIncluded: boolean;
   records: number;
@@ -280,7 +307,7 @@ export function startBlock(tx: Transaction, input: { nowMs: number; cutoffMs: nu
             FROM entries e JOIN sessions s ON s.id=e.session_id
            WHERE s.ended_at IS NOT NULL AND s.ended_at <= ?
            ORDER BY e.captured_at ASC, e.id ASC`, [input.cutoffMs])
-    .filter(row => entryAndParentOrdinary(tx, String(row['id']), String(row['session_id'])))
+    .filter(row => entryAndParentIn(tx, String(row['id']), String(row['session_id']), input.allowedClasses))
     .map(row => String(row['id']));
   const resolved: memory.ResolvedEntryRecord[] = [];
   for (let offset = 0; offset < allowedIds.length; offset += memory.MAX_RESOLVE_ENTRIES) {
@@ -295,7 +322,7 @@ export function startBlock(tx: Transaction, input: { nowMs: number; cutoffMs: nu
     })),
   ];
   const earlier = {
-    candidates: summaries.injectionCandidates(tx).filter(candidate => candidate.endedAt <= input.cutoffMs),
+    candidates: summaries.injectionCandidates(tx, input.allowedClasses).filter(candidate => candidate.endedAt <= input.cutoffMs),
   };
   const base = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' });
   // M11 owns the composer: the start block's earlier calls are the memory block's summaries, budgeted there.
@@ -387,6 +414,7 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
     ownerId: String(tx.get('SELECT value FROM runtime_meta WHERE key=?', ['assistantId'])?.['value'] ?? ''),
     authorityEpoch: String(tx.get('SELECT value FROM runtime_meta WHERE key=?', ['authorityEpoch'])?.['value'] ?? ''),
   };
+  const allowedClasses = routeClasses(options, identity.ownerId, dirname(dbPath));
   try {
     for (const item of golden) {
       const nowMs = Date.parse(item.eval_at);
@@ -413,7 +441,7 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
       } else {
         // (b) the start block at eval_at, on the memory the cutoff allows.
         if (item.expect_in_start_block) {
-          const block = startBlock(tx, { nowMs, cutoffMs, timeZone });
+          const block = startBlock(tx, { nowMs, cutoffMs, timeZone, allowedClasses });
           const graded = await gradeStage({ item, stage: 'start', text: block.text, verifier: options.verifier });
           Object.assign(start, {
             status: 'scored', matched: graded.matched, missing: graded.missing, leaked: graded.leaked,
@@ -435,7 +463,7 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
             routeIdentity: 'memory-eval',
             authorityEpoch: identity.authorityEpoch,
             revision: 1,
-            allowedClasses: ['ordinary'],
+            allowedClasses: [...allowedClasses],
           }, { query: item.query, limit: TOP_K, from: new Date(0).toISOString(), to: new Date(cutoffMs).toISOString() });
           const hits = Array.isArray(result.response['hits'])
             ? (result.response['hits'] as { sessionId?: string }[]).map(hit => String(hit.sessionId ?? '')).filter(id => id !== '')
@@ -606,6 +634,7 @@ function average(values: readonly number[]): number | null {
 const USAGE = `usage: didi-memory-eval --store <copy> --golden <file> --out <json> [--strict]
                        [--data-dir <copy>] [--answers <recorded-first-answers.json>]
                        [--time-zone <zone>] [--verifier <openai-model>]
+                       [--classes <ordinary|private|sensitive>[,<class>...]]
 
 Scores the FIRST answer, never the eventual recovery. Reads the store copy and
 never writes it. Without --answers the first-answer and latency stages report
@@ -676,7 +705,7 @@ export function openaiVerifier(options: {
   };
 }
 
-const VALUE_FLAGS: readonly string[] = Object.freeze(['--store', '--data-dir', '--golden', '--out', '--answers', '--time-zone', '--verifier']);
+const VALUE_FLAGS: readonly string[] = Object.freeze(['--store', '--data-dir', '--golden', '--out', '--answers', '--time-zone', '--verifier', '--classes']);
 const BOOLEAN_FLAGS: readonly string[] = Object.freeze(['--strict']);
 
 /** A release gate with no human in the loop refuses argv it does not understand. */
@@ -720,8 +749,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       if (apiKey === undefined || apiKey === '') throw new Error('memory_eval_verifier_key_missing: set OPENAI_API_KEY or drop --verifier');
       verifier = openaiVerifier({ apiKey, model: verifierModel });
     }
+    const classesFlag = flag(argv, '--classes');
     const result = await runEval({
       golden, out,
+      ...(classesFlag === undefined ? {} : { classes: parseClasses(classesFlag) }),
       store: flag(argv, '--store'),
       dataDir: flag(argv, '--data-dir'),
       timeZone: flag(argv, '--time-zone'),

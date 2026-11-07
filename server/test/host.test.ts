@@ -1563,6 +1563,18 @@ test('C-START10: startHost opens the provider while an eight-second interrupted 
       },
       liveTesting: { credentials: { resolve: async () => 'synthetic-live-key' }, socketFactory: upstream.socketFactory },
     });
+    // #896: the body waits for the summary request before it takes the host, so a timeout here would
+    // leave the started listener open for the rest of the run and the process would never exit. This
+    // teardown closes whatever started, whether or not the body reached its own close.
+    t.after(async () => {
+      // The mocked clock is restored first: a close that waits on a timer would otherwise wait forever.
+      try { t.mock.timers.reset(); } catch { /* already restored */ }
+      const started = await Promise.race([starting.catch(() => undefined), new Promise<undefined>(resolve => {
+        const timer = setTimeout(() => { resolve(undefined); }, 5_000);
+        timer.unref();
+      })]);
+      await started?.close();
+    });
     await generating;
     elapsed = SUMMARY_START_SETTLE_BUDGET_MS;
     t.mock.timers.tick(elapsed);

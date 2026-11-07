@@ -5,7 +5,7 @@
 // and are joined at read time, so a forgotten session takes its words with it.
 import { badRequest, notFound } from './contract.js';
 import type { Transaction, SQLRow, SQLValue } from './contract.js';
-import { assertLimit, newId, requireText } from './util.js';
+import { assertLimit, fold, newId, requireText, tokenize } from './util.js';
 
 export const MEMORY_KINDS = [
   'durable_fact', 'preference', 'person_role', 'transient_state',
@@ -218,6 +218,79 @@ export function activeItems(tx: Transaction, query: ActiveItemQuery = {}): Memor
   sql += ' LIMIT ?';
   params.push(limit);
   return tx.all(sql, params).map(mapItem);
+}
+
+/** One FTS5 expression for a query's tokens: each token is a prefix of a stored word. */
+export function ftsExpression(tokens: readonly string[]): string {
+  return tokens.map((token) => `"${token.replaceAll('"', '""')}"*`).join(' OR ');
+}
+
+export interface ItemHit {
+  readonly id: string;
+  readonly text: string;
+  readonly kind: MemoryKind;
+  readonly score: number;
+  /** Epoch ms the fact is about: its event date, else when it became true. */
+  readonly date: number;
+  readonly sourceSessionIds: readonly string[];
+}
+
+export interface ItemSearchResult {
+  readonly hits: ItemHit[];
+  readonly totalMatches: number;
+}
+
+/** A search reads an indexed candidate set, never the table. */
+export const ITEM_CANDIDATES = 200;
+
+/**
+ * D2: the index the dreaming pass already writes is the helper's memory search. Only an active
+ * item is a fact, so a superseded, invalid or expired row is never returned. The caller decides
+ * the route's classes from `sourceSessionIds`; this function has no opinion on access.
+ */
+export function searchItems(tx: Transaction, query: string, limit: number): ItemSearchResult {
+  assertLimit(limit);
+  const tokens = tokenize(typeof query === 'string' ? query : '');
+  if (tokens.length === 0) return { hits: [], totalMatches: 0 };
+  const expression = ftsExpression(tokens);
+  const from = `FROM memory_items_fts JOIN memory_items i ON i.rowid = memory_items_fts.rowid
+      WHERE memory_items_fts MATCH ? AND i.status='active'`;
+  const totalMatches = Number(tx.get(`SELECT COUNT(*) AS n ${from}`, [expression])?.['n'] ?? 0);
+  if (totalMatches === 0) return { hits: [], totalMatches: 0 };
+  const scored = tx
+    .all(`SELECT i.* ${from} ORDER BY i.created_at DESC, i.id LIMIT ?`, [expression, Math.max(limit, ITEM_CANDIDATES)])
+    .map(mapItem)
+    .map((item) => ({ item, score: tokens.filter((token) => fold(`${item.text} ${item.subject}`).includes(token)).length }))
+    .filter((row) => row.score > 0);
+  scored.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.item.createdAt - a.item.createdAt ||
+      (a.item.id < b.item.id ? -1 : a.item.id > b.item.id ? 1 : 0),
+  );
+  const top = scored.slice(0, limit);
+  const sources = new Map<string, string[]>();
+  if (top.length > 0) {
+    const ids = top.map(({ item }) => item.id);
+    for (const row of tx.all(
+      `SELECT memory_id, session_id FROM memory_sources WHERE memory_id IN (${ids.map(() => '?').join(',')}) ORDER BY memory_id, session_id`,
+      ids,
+    )) {
+      const memoryId = String(row['memory_id']);
+      const sessionId = String(row['session_id']);
+      const list = sources.get(memoryId) ?? [];
+      if (!list.includes(sessionId)) list.push(sessionId);
+      sources.set(memoryId, list);
+    }
+  }
+  return {
+    hits: top.map(({ item, score }) => ({
+      id: item.id, text: item.text, kind: item.kind, score,
+      date: item.eventAt ?? item.validFrom,
+      sourceSessionIds: sources.get(item.id) ?? [],
+    })),
+    totalMatches,
+  };
 }
 
 export function itemsForSubject(tx: Transaction, subject: string): MemoryItem[] {

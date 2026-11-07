@@ -768,6 +768,19 @@ test('connector_failure permits only closed refresh classes and integer HTTP sta
 });
 
 
+test('M20-R1: the last-resort clip diagnostic is closed and content-free', () => {
+  const clipped = { event: 'live_instruction_clipped', estimatedTokens: 13_990, total: 44_700,
+    clipped: [{ id: 'pickup', chars: 640 }, { id: 'owner-style', chars: 33_100 }] };
+  assert.deepEqual(safeEvent(clipped), clipped);
+  assert.equal(safeEvent({ ...clipped, text: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+  assert.equal(safeEvent({ ...clipped, clipped: [{ id: 'memory', chars: 10 }] }), undefined);
+  assert.equal(safeEvent({ ...clipped, clipped: [{ id: 'owner-lore', chars: 10 }] }), undefined);
+  assert.equal(safeEvent({ ...clipped, clipped: [] }), undefined);
+  assert.equal(safeEvent({ ...clipped, clipped: [{ id: 'pickup', chars: 0 }] }), undefined);
+  assert.equal(safeEvent({ ...clipped, clipped: [{ id: 'pickup', chars: 10, text: 'SYNTHETIC PRIVATE CONTENT' }] }), undefined);
+  assert.equal(safeEvent({ ...clipped, total: -1 }), undefined);
+});
+
 test('startup omission and target-overrun diagnostics are closed and content-free', () => {
   const omitted = { event: 'live_context_item_omitted', id: `lore:${'a'.repeat(64)}`, reason: 'budget' };
   assert.deepEqual(safeEvent(omitted), omitted);

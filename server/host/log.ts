@@ -127,9 +127,11 @@ const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isA
 /** M9 #914: the dreaming operation names, and the closed refusals the validator may log. */
 const DREAMING_OPS: readonly string[] = ['add', 'supersede', 'invalidate', 'noop', 'document', 'unknown'];
 const DREAMING_REFUSALS: readonly string[] = ['turn_outside_session', 'explicit_owner_protected', 'unknown_target', 'duplicate',
-  'invalid_json', 'missing_operations', 'too_many_operations', 'not_an_object', 'missing_turn_ids', 'missing_target',
+  'invalid_json', 'missing_operations', 'over_cap', 'not_an_object', 'missing_turn_ids', 'missing_target',
   'unknown_operation', 'unknown_kind', 'empty_text', 'text_too_long', 'unknown_subject', 'missing_salience',
   'invalid_salience', 'unparsable_event_at', 'unparsable_valid_until', 'model_noop'];
+/** M17: the one outcome a dreaming_done line may name instead of an extraction. */
+const DREAMING_OUTCOMES: readonly string[] = ['skipped_below_floor'];
 /** Counts by operation, as `add:1 supersede:2`: a closed summary, never the text of an item. */
 const isSafeOps = (value: unknown): value is string => typeof value === 'string' && /^(|(add|supersede|invalidate|noop):\d{1,6}( (add|supersede|invalidate|noop):\d{1,6})*)$/.test(value);
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
@@ -1802,18 +1804,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // M9 #914: the dreaming pass counts operations and names a refusal; it never logs a turn, a subject
     // or a memory sentence, so a line here proves the pass ran without carrying owner content.
     if (value.event === 'dreaming_done') {
-      if (!closedKeys(value, ['event', 'liveSessionId', 'jobId', 'ops', 'rejected', 'coverageGap', 'elapsedMs'])) return;
+      if (!closedKeys(value, ['event', 'liveSessionId', 'jobId', 'ops', 'rejected', 'coverageGap', 'elapsedMs', 'outcome'])) return;
       if (!isSafeId(value.liveSessionId) || !isSafeId(value.jobId) || !isSafeOps(value.ops) ||
         !isSafeCount(value.rejected) || !isSafeCount(value.coverageGap) || !isSafeCount(value.elapsedMs)) return;
+      if (value.outcome !== undefined && !isSafeMember(value.outcome, DREAMING_OUTCOMES)) return;
       return { event: 'dreaming_done', liveSessionId: value.liveSessionId, jobId: value.jobId, ops: value.ops,
-        rejected: value.rejected, coverageGap: value.coverageGap, elapsedMs: value.elapsedMs };
+        rejected: value.rejected, coverageGap: value.coverageGap, elapsedMs: value.elapsedMs,
+        ...(value.outcome === undefined ? {} : { outcome: value.outcome }) };
     }
     if (value.event === 'dreaming_backlog') {
-      if (!closedKeys(value, ['event', 'sessionsProcessed', 'sessionsRemaining', 'ops', 'elapsedMs'])) return;
-      if (!isSafeCount(value.sessionsProcessed) || !isSafeCount(value.sessionsRemaining) || !isSafeOps(value.ops) ||
-        !isSafeCount(value.elapsedMs)) return;
-      return { event: 'dreaming_backlog', sessionsProcessed: value.sessionsProcessed, sessionsRemaining: value.sessionsRemaining,
-        ops: value.ops, elapsedMs: value.elapsedMs };
+      if (!closedKeys(value, ['event', 'sessionsProcessed', 'sessionsSkipped', 'sessionsRemaining', 'ops', 'elapsedMs'])) return;
+      if (!isSafeCount(value.sessionsProcessed) || !isSafeCount(value.sessionsSkipped) || !isSafeCount(value.sessionsRemaining) ||
+        !isSafeOps(value.ops) || !isSafeCount(value.elapsedMs)) return;
+      return { event: 'dreaming_backlog', sessionsProcessed: value.sessionsProcessed, sessionsSkipped: value.sessionsSkipped,
+        sessionsRemaining: value.sessionsRemaining, ops: value.ops, elapsedMs: value.elapsedMs };
     }
     if (!closedKeys(value, ['event', 'liveSessionId', 'op', 'reason'])) return;
     if (!isSafeId(value.liveSessionId) || !isSafeMember(value.op, DREAMING_OPS) || !isSafeMember(value.reason, DREAMING_REFUSALS)) return;

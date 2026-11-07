@@ -371,10 +371,13 @@ function snippetFor(text: string, tokens: string[]): string {
   return `${from > 0 ? '\u2026' : ''}${text.slice(from, to)}${to < text.length ? '\u2026' : ''}`;
 }
 
+/** A route's admitted classes, plus the `unknown` a subject with no label or no source derives. */
+export type RecallClass = DataClass | 'unknown';
+
 export interface RecallOptions {
   readonly eligibility?: 'ordinary-entry-and-parent';
   /** The data classes the caller's route admits; the entry's and its parent's own labels decide. */
-  readonly classes?: readonly DataClass[];
+  readonly classes?: readonly RecallClass[];
 }
 
 /** A search reads at most this many matching rows; the count of matches still covers the whole index. */
@@ -383,8 +386,12 @@ export const RECALL_CANDIDATES = 200;
 /** The start block's own admission rule, kept as one predicate so the count and the hits agree. */
 const ENTRY_AND_PARENT_ORDINARY = "el.data_class='ordinary' AND pl.data_class='ordinary'";
 
-/** An entry is admitted by the most restrictive of its own and its parent's current label, never by an absent one. */
-function classPredicate(classes: readonly DataClass[]): { sql: string; params: SQLValue[] } {
+/**
+ * An entry is admitted by the most restrictive of its own and its parent's current label. A route
+ * with no class at all admits nothing, so an omitted class set can never widen into a search.
+ */
+function classPredicate(classes: readonly RecallClass[]): { sql: string; params: SQLValue[] } {
+  if (classes.length === 0) return { sql: '0', params: [] };
   return {
     sql: `(CASE WHEN el.data_class IS NULL OR pl.data_class IS NULL THEN 'unknown'
         WHEN el.data_class='sensitive' OR pl.data_class='sensitive' THEN 'sensitive'
@@ -470,7 +477,7 @@ export interface MemorySearchResult {
 const CLASS_ORDER = ['ordinary', 'private', 'sensitive', 'unknown'] as const;
 
 /** The start block's rule for a typed fact: its sources' most restrictive class, unknown without a source. */
-function itemClass(tx: Transaction, sourceSessionIds: readonly string[], memo: HistoryEligibility): DataClass | 'unknown' {
+function itemClass(tx: Transaction, sourceSessionIds: readonly string[], memo: HistoryEligibility): RecallClass {
   const classes = sourceSessionIds.map((id) => historySessionEvidence(tx, id, memo)?.dataClass ?? 'unknown');
   if (classes.length === 0) return 'unknown';
   return CLASS_ORDER[Math.max(...classes.map((value) => CLASS_ORDER.indexOf(value)))]!;
@@ -490,7 +497,7 @@ export function searchMemory(tx: Transaction, query: string, limit = 20, options
   // Only an admitted fact is a fact: a withheld class is neither a hit nor a reported match.
   const admitted = typed.hits.flatMap((item) => {
     const dataClass = itemClass(tx, item.sourceSessionIds, memo);
-    if (dataClass === 'unknown' || (options.classes !== undefined && !options.classes.includes(dataClass))) return [];
+    if (options.classes !== undefined && !options.classes.includes(dataClass)) return [];
     return [{ source: 'memory_item' as const, id: item.id, text: item.text, score: item.score, date: item.date }];
   });
   const merged: MemorySearchHit[] = [

@@ -8,6 +8,7 @@ import { domainMigrations } from '../dist/domain/schema.js';
 import * as items from '../dist/domain/memory-items.js';
 import * as memory from '../dist/domain/memory.js';
 import type { Transaction } from '../dist/contracts/storage.js';
+import { fold } from '../dist/domain/util.js';
 
 // Source-run by scripts/check-domain.sh (node strips the types), so every
 // import points at the build the check just produced.
@@ -37,7 +38,7 @@ function turns(store: Store, sessionId: string, texts: readonly string[]): numbe
   });
 }
 
-test('migration 10 creates the memory tables, the indexes and the FTS table, and reopening is clean', () => {
+test('migrations 10 and 11 create the memory tables, the indexes and both FTS tables, and reopening is clean', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mem-items-'));
   const store = new Store(dir, domainMigrations);
   try {
@@ -240,10 +241,13 @@ test('M19 D2: a fact the dreaming pass learned is found by the helper memory sea
       validFrom: 3000, createdAt: 3000, createdBy: 'dreaming:v1',
     }));
     f.store.transaction(tx => items.supersedeItem(tx, replaced.id, written.id, 4000));
+    // F7: an explicit owner entry and a derived fact that score the same, so the tie-break is exercised.
+    entry(f.store, 'e-passport', 'Synthetic passport photo is in the drawer', 1500, 'ordinary', 'ordinary');
     const found = f.store.transaction(tx => memory.searchMemory(tx, 'passport', 20, { classes: ['ordinary'] }));
-    assert.deepEqual(found.hits.map(hit => [hit.source, hit.id, hit.date]), [['memory_item', written.id, 4000]]);
-    assert.ok(found.hits[0]!.text.includes('passport'));
-    assert.equal(found.totalMatches, 1);
+    assert.deepEqual(found.hits.map(hit => [hit.source, hit.id, hit.score, hit.date]),
+      [['entry', 'e-passport', 1, 1500], ['memory_item', written.id, 1, 4000]]);
+    assert.ok(found.hits[1]!.text.includes('passport'));
+    assert.equal(found.totalMatches, 2);
   } finally { f.done(); }
 });
 
@@ -278,11 +282,11 @@ test('M19 D8: recall keeps the base result over an indexed, bounded read', () =>
         tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?,?,1)', [`e-${i}`, `parent-${i}`, 'user', text, 2000 + i, 'UTC']);
       }
     });
-    // The base algorithm, written out: fold, count the tokens present, then score and capture order.
+    // The base algorithm, written out with the product's own fold: the tokens present, score, capture order.
     const base = f.store.transaction(tx => {
       const tokens = ['synthetic', 'keyword'];
       const scored = tx.all('SELECT * FROM entries').map(row => {
-        const text = String(row['text']).toLowerCase();
+        const text = fold(String(row['text']));
         return { id: String(row['id']), capturedAt: Number(row['captured_at']), score: tokens.filter(token => text.includes(token)).length };
       }).filter(row => row.score > 0);
       scored.sort((a, b) => b.score - a.score || b.capturedAt - a.capturedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -295,4 +299,45 @@ test('M19 D8: recall keeps the base result over an indexed, bounded read', () =>
     assert.ok(seen.maxRows <= 200, `recall reads a bounded candidate set, read ${seen.maxRows} rows`);
     assert.ok(seen.queries <= 4, `recall issues a fixed number of queries, issued ${seen.queries}`);
   } finally { f.done(); }
+});
+
+test('M19 D8/F4: the entries index folds diacritics exactly as fold() did', () => {
+  const f = fixture();
+  try {
+    entry(f.store, 'e-cafe', 'Synthetic caf\u00e9 r\u00e9sum\u00e9 note', 1000, 'ordinary', 'ordinary');
+    entry(f.store, 'e-plain', 'Synthetic plain note', 2000, 'ordinary', 'ordinary');
+    // Base matched fold(text).includes(token); the index tokenizer removes diacritics too.
+    for (const query of ['caf\u00e9', 'cafe', 'r\u00e9sum\u00e9']) {
+      const tokens = fold(query).split(/[^\p{L}\p{N}]+/u).filter(token => token.length > 0);
+      const expected = f.store.transaction(tx => tx.all('SELECT * FROM entries')
+        .map(row => ({ id: String(row['id']), text: fold(String(row['text'])) }))
+        .filter(row => tokens.some(token => row.text.includes(token)))
+        .map(row => row.id));
+      const actual = f.store.transaction(tx => memory.recall(tx, query, 20));
+      assert.deepEqual(actual.hits.map(hit => hit.entryId).sort(), expected.sort(), `recall matches the fold oracle for ${query}`);
+    }
+    assert.deepEqual(f.store.transaction(tx => memory.recall(tx, 'cafe', 20)).hits.map(hit => hit.entryId), ['e-cafe']);
+  } finally { f.done(); }
+});
+
+test('M19 D8/F6: an entry already in the store is found on the first recall after migration 11', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-items-upgrade-'));
+  try {
+    // A store at migration 10 only: entries exist, the entries index does not.
+    const before = new Store(dir, domainMigrations.slice(0, 10));
+    before.transaction(tx => {
+      tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', ['s-legacy', 'Synthetic', 1000, 'UTC', 1000, 1000]);
+      for (let i = 0; i < 3; i += 1) {
+        tx.run('INSERT INTO entries VALUES (?,?,?,?,?,?,?,1)', [`old-${i}`, 's-legacy', i + 1, 'user', `Synthetic legacy sentinel ${i}`, 2000 + i, 'UTC']);
+      }
+    });
+    assert.equal(before.transaction(tx => tx.all("SELECT name FROM sqlite_master WHERE name='entries_fts'").length), 0);
+    before.close();
+    // Reopening runs migration 11, whose rebuild statement indexes what is already there.
+    const after = new Store(dir, domainMigrations);
+    try {
+      assert.deepEqual(after.transaction(tx => memory.recall(tx, 'legacy sentinel', 20)).hits.map(hit => hit.entryId), ['old-2', 'old-1', 'old-0']);
+      assert.equal(after.transaction(tx => memory.recall(tx, 'legacy sentinel', 20)).totalMatches, 3);
+    } finally { after.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -86,7 +86,7 @@ const fullLive = openAiInstructions(prompt.composeLiveSessionInstruction({ text:
   delegatedBackend: true, records: [], trustedChars: 60000 }).text);
 const excluded = JSON.parse(readFileSync(new URL('./fixtures/prompt-character-excluded.json', import.meta.url)));
 assert.equal(createHash('sha256').update(prompt.NAYA_CHARACTER).digest('hex'),
-  'b1cac61b593c7f050fb8b3d37026a0057a6ac3bf8c098d925e2ee60c52b2082c', 'release character contains only the authorized wording changes');
+  '907d50eea24bb5c6a864ebfbc982b5242b3e4b94d8a515014ae134422889f1f8', 'release character contains only the authorized wording changes');
 assert.notEqual(prompt.NAYA_CHARACTER, excluded.NAYA_CHARACTER);
 for (const system of [ownerText.system, fullLive, openAiInstructions(none.text)]) {
   assert.equal(system.split(prompt.NAYA_CHARACTER).length - 1, 1);

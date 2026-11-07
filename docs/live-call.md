@@ -272,6 +272,16 @@ The host's closed illness-word list is a conservative backstop; the persona's fl
 
 For information asks, the helper includes every supported fact that matters to the question, in time or relevance order. Overlapping facts appear once; incidental hits stay out. Missing information is named at the end. Length follows the facts, without a target or a recap. There is no preamble or narration of the search. Banter, greetings and remarks without a lookup stay short and in character. Later words can revise an earlier fragment; the answer addresses the latest whole request.
 
+Host speech instructions (the alarm opening, the muted-answer offer and the
+post-tool continuation request) use a session-level `session.commentary.append`
+with explicit `delegation_id: null`, not a typed owner turn. An adapter that has
+no commentary channel (Gemini) sends the same note through the host-text path it
+accepts, so the alarm opening is announced on every adapter. Typed owner input
+keeps its existing response commands; their client-delegation compatibility is
+a known gap. Provider rejection metadata includes the client event id, its prefix
+and the command type when retained in the adapter's bounded recent-command map,
+without logging instruction content.
+
 ### Progressive sourced findings
 
 When the helper holds a sourced fact answering part of the question but still needs further reads, it may call `report_progress` once per task revision with one to five `{ text, source }` findings and a plain `still_checking` description. A second call returns `already_reported`. The host immediately acknowledges `{ delivered: true }` without waiting for speech or stopping the read loop. It records a progress delivery and sends a `partial` commentary beginning `Provisional, still checking <still_checking>:` through the existing provider-ready, owner-quiet, output-quiet and current-revision gates. Superseded revisions never deliver. Item size stays at 450 characters. A pending progress envelope finishes before its queued final result.

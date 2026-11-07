@@ -56,15 +56,25 @@ function keywords(value: unknown, path: string, found: string[]): void {
   }
 }
 
+/** The synthetic daemon's reads, discovered the way the installed connector publishes them. */
+const luxReads = [
+  { name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false },
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' } } } },
+  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false },
+    inputSchema: { type: 'object', required: ['insight_ids'], properties: { insight_ids: { type: 'array', items: { type: 'integer' }, minItems: 1 }, include_links: { type: 'boolean' } } } },
+];
+const luxBindings = (): BoundConnector[] => [{ connector: 'lux-knowledge', policy: { toolNames: luxReads.map(tool => tool.name), endpoint: { account: 'fixture', resource: 'lux-knowledge:vault' } },
+  reader: { discovery: () => luxReads, call: async () => ({ state: 'completed', decodedResult: {} }) } } as unknown as BoundConnector];
 function registryTools(): TaskTool[] {
-  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => ({ status: 'ok', text: '', references: [], next_cursor: null, coverage: '', repair: null } as never) }, configuredCompanyTools(companyBindings()));
+  const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => ({ status: 'ok', text: '', references: [], next_cursor: null, coverage: '', repair: null } as never) }, configuredCompanyTools([...companyBindings(), ...luxBindings()]));
   return [...registry.values()];
 }
 
 test('every declared task tool uses only schema keywords the provider accepts', () => {
   const tools = registryTools();
   // The company tools ride the same request as the static ones, so the count covers both.
-  assert.ok(tools.length > 39, `expected the static and company tools together, got ${tools.length}`);
+  // Reads come from discovery now, so the count covers the static tools plus the company catalogue.
+  assert.ok(tools.length >= 31, `expected the static and company tools together, got ${tools.length}`);
   assert.ok(tools.some(tool => tool.name === 'get_company'), 'the shipped company declaration is missing');
   const offenders = tools.flatMap(tool => {
     const found: string[] = [];
@@ -100,11 +110,13 @@ test('every native connector declaration uses only schema keywords the provider 
   assert.deepEqual(getInsight.declaration.normalize?.({ ids: [4, 4] })?.args.ids, [4], 'the duplicate is dropped before dispatch');
 });
 
-test('read_knowledge refuses duplicate ids without a schema keyword the provider rejects', () => {
-  const tool = registryTools().find(item => item.name === 'read_knowledge');
-  assert.ok(tool);
-  assert.equal(validateArguments(tool, { ids: [4, 4], include_links: false, cursor: null }).ok, false);
-  assert.equal(validateArguments(tool, { ids: [4, 5], include_links: false, cursor: null }).ok, true);
+test('the discovered exact read bounds its batch without a schema keyword the provider rejects', () => {
+  const tool = registryTools().find(item => item.name === 'get_insight');
+  assert.ok(tool, 'the discovered exact read is a task declaration');
+  const ids = (tool.parameters['properties'] as Record<string, Record<string, unknown>>)['insight_ids']!;
+  assert.equal('uniqueItems' in ids, false, 'a repeated id stays a rule of the connector normalizer');
+  assert.equal(validateArguments(tool, { insight_ids: [], include_links: false }).ok, false, 'an empty batch is refused');
+  assert.equal(validateArguments(tool, { insight_ids: [4, 5], include_links: false }).ok, true);
 });
 
 // The paid smoke must be fail-closed: a configuration that declares company endpoints and a run that

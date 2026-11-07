@@ -7,8 +7,8 @@ import type { GoogleReader } from '../connectors/google.js';
 import { calendarResponseStatus, calendarRsvpRefusal, CALENDAR_RSVP_SCHEMA, CALENDAR_RSVP_REFUSAL } from '../tools/calendar-rsvp.js';
 import { createRegistry, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { ToolPorts } from '../tasks/tools.js';
-import { FakeAuthority } from '../tasks/authority.js';
-import type { Identity } from '../tasks/authority.js';
+import { Authority, createTaskAuthority } from '../tasks/authority.js';
+import type { Identity, JournalRecord } from '../tasks/authority.js';
 
 interface SentCall { toolName: string; arguments: Record<string, unknown> }
 
@@ -72,27 +72,56 @@ test('an unusable response word or empty id never reaches the wire', async () =>
   assert.equal(calendarResponseStatus('maybe'), undefined);
 });
 
-test('after outside text the authority port decides the write before the connector is called', async () => {
-  assert.ok(TASK_TOOL_NAMES.has(CALENDAR_RSVP_SCHEMA.name), 'the responder is a registered task tool');
-  const { reader, calls } = wire();
-  const authority = new FakeAuthority();
-  const order: string[] = [];
+/** The production authority port, the one that refuses a tool with no closed effect row (F1'). */
+function taskAuthority(reader: GoogleReader, answer = true) {
+  let checked = 0;
+  let calls = 0;
+  const records = new Map<string, JournalRecord>();
+  const permission = new Authority({
+    checkEffect: async () => { checked++; return answer; },
+    log: () => {},
+    journal: { get: async id => records.get(id), put: async (id, value) => { records.set(id, value); } },
+  });
+  let registry: ReturnType<typeof createRegistry>;
+  const context = {
+    isCurrent: () => true,
+    taskContext: () => ({ id: identity.task_id, revision: identity.task_revision, ownerWords: 'Accept the Thursday invite', ownerTurn: 3, exposures: [] as const }),
+    hostUrls: () => [] as string[],
+    registry: () => registry,
+  };
   const ports: ToolPorts = {
-    authority,
-    execute: async (name, args) => {
-      order.push('execute');
-      await reader.calendarRespondEvent({ eventId: String(args.id), response: calendarResponseStatus(String(args.response)) ?? 'accepted', ...(typeof args.note === 'string' ? { note: args.note } : {}) });
+    authority: createTaskAuthority(permission, context),
+    execute: async (_name, args) => {
+      calls++;
+      await reader.calendarRespondEvent({ eventId: String(args.id), response: calendarResponseStatus(args.response) ?? 'accepted', ...(typeof args.note === 'string' ? { note: args.note } : {}) });
       return { status: 'ok', text: 'Answered.', references: [], next_cursor: null, coverage: 'Synthetic responder.', repair: null };
     },
   };
-  const tool = createRegistry(ports).get(CALENDAR_RSVP_SCHEMA.name);
+  registry = createRegistry(ports);
+  return { registry, checked: () => checked, calls: () => calls };
+}
+
+test('after outside text the authority port decides the write before the connector is called', async () => {
+  assert.ok(TASK_TOOL_NAMES.has(CALENDAR_RSVP_SCHEMA.name), 'the responder is a registered task tool');
+  const { reader, calls } = wire();
+  const { registry, checked } = taskAuthority(reader);
+  const tool = registry.get(CALENDAR_RSVP_SCHEMA.name);
   assert.ok(tool, 'the responder is in the task registry');
   const result = await tool.run({ id: 'synthetic-event-5', response: 'accept', note: null }, identity, new AbortController().signal, true);
   assert.equal(result.status, 'ok');
-  assert.equal(calls.length, 1);
-  assert.equal(authority.requests.length, 1, 'the write is admitted by the authority port after outside text');
-  assert.equal(authority.requests[0]?.tool, CALENDAR_RSVP_SCHEMA.name);
-  assert.equal(authority.requests[0]?.effect, 'external');
-  assert.equal(authority.requests[0]?.outside_text, true);
-  assert.deepEqual(order, ['execute']);
+  assert.equal(checked(), 1, 'the isolated effect check decided this write');
+  assert.equal(calls.length, 1, 'the connector was called once, after admission');
+  assert.deepEqual(calls[0]?.arguments, { event_id: 'synthetic-event-5', response_status: 'accepted' });
+});
+
+test('the closed effect row is load bearing: a refused effect check writes nothing', async () => {
+  const { reader, calls } = wire();
+  const { registry, checked, calls: executed } = taskAuthority(reader, false);
+  const tool = registry.get(CALENDAR_RSVP_SCHEMA.name);
+  assert.ok(tool);
+  const result = await tool.run({ id: 'synthetic-event-6', response: 'decline', note: null }, identity, new AbortController().signal, true);
+  assert.equal(result.status, 'failed', 'the authority refuses, so the tool does not report success');
+  assert.equal(checked(), 1);
+  assert.equal(executed(), 0, 'nothing reaches the executor');
+  assert.equal(calls.length, 0, 'and nothing reaches the connector');
 });

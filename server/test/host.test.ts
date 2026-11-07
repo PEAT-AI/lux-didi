@@ -1762,13 +1762,14 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
                 const schemas = [{ name: spec.name, description: `Synthetic schema ${spec.id}`, annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: spec.properties } }];
                 runtime.registry.register(endpoint);
                 runtime.registry.enable(spec.id); runtime.registry.allowEgress(spec.id);
-                runtime.registry.observed(spec.id, schemas, runtime.registry.revision(spec.id));
                 runtime.owner.applyConnection({ schemaVersion: 1, bindingMode: 'connection', ownerId: options.ownerId, connectionId: spec.id,
                   generation: 1, enabled: true, connector: 'lux-knowledge', endpoint: { ...endpoint, credentialRef: null },
                   toolNames: [spec.name], schemaDigest: canonicalToolDigest(schemas),
                   sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
                   route: { identity: liveProfileIdentity(loaded.config.profile), allowedClasses: ['ordinary'] },
                   bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+                // Applying a new policy suspends prior discovery; observe and project only after it commits.
+                runtime.registry.observed(spec.id, schemas, runtime.registry.revision(spec.id));
                 runtime.owner.projectConnection(spec.id);
                 connected.add(spec.id);
               }

@@ -394,6 +394,8 @@ test('#1016: a correction that arrives during the wait answers his corrected wor
     const correction = call.input('Correction', 2);
     pending.resolve({ text: 'Stale synthetic answer.', calls: [] });
     await Promise.all([old, correction]);
+    // The answer goes out part by part and each accepted part releases the next one.
+    for (let index = 0; index < sent.length; index += 1) call.delivery.accepted(`c${index + 1}`);
     assert.equal(runs, 2, 'the hop finishes and re-hops once at the boundary with his latest words');
     assert.match(sent.join(' '), /Corrected synthetic answer/);
     assert.doesNotMatch(sent.join(' '), /Stale synthetic answer/, 'an answer to words he already revised never reaches the wire');

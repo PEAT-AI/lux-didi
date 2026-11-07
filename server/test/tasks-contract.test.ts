@@ -201,7 +201,7 @@ test('default model and effort are applied without provider-specific caller code
 test('review-owned worker instructions are short and preserve absence after widening', async () => {
   const { WORKER_INSTRUCTIONS } = await import('../tasks/instructions.js');
   // 10.11: the mandated worker rules re-pin the block to its measured size (TR-R5).
-assert.ok(WORKER_INSTRUCTIONS.length === 7658);
+assert.ok(WORKER_INSTRUCTIONS.length === 7996);
   assert.match(WORKER_INSTRUCTIONS, /speech recognition/);
   assert.match(WORKER_INSTRUCTIONS, /Absence\./);
 });

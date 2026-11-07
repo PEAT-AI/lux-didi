@@ -38,7 +38,8 @@ const mappings: Record<string, Mapping> = {
   read_drive: { connector: 'google', tool: 'drive_get_file', args: a => ({ file_id: a.id }) },
   search_chat: { connector: 'mattermost', tool: 'mattermost_search', args: a => ({ query: a.query }) },
   read_thread: { connector: 'mattermost', tool: 'mattermost_get_thread', args: a => ({ postId: a.ref }) },
-  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(12, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'snippets' }) },
+  // FR5: the mode the model chose travels with the search; an unstated mode keeps the ranked default.
+  search_knowledge: { connector: 'lux-knowledge', tool: 'search_knowledge', args: (a, parameters) => ({ query: a.query, limit: Math.min(12, (parameters.properties as { limit: { maximum: number } }).limit.maximum), detail: 'snippets', ...(a.mode === undefined || a.mode === null ? {} : { mode: a.mode }) }) },
   read_knowledge: { connector: 'lux-knowledge', tool: 'get_insight', args: a => ({ ids: Array.isArray(a.ids) ? a.ids : [Number(a.id)], include_links: a.include_links ?? true }) },
   search_company: { connector: 'mongoose', tool: 'search', args: a => ({ query: a.query, mode: a.mode ?? 'answer', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },
   read_company: { connector: 'mongoose', tool: 'read', args: a => ({ ref: a.ref, depth: a.depth ?? 'all', ...(typeof a.cursor === 'string' ? { cursor: a.cursor } : {}) }) },

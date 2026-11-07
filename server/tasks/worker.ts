@@ -108,8 +108,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     try { return await body(); }
     catch (error) {
       if (!retryableProvider(error)) throw error;
-      hostLogEvent({ event: 'task_inference_retry', taskId: options.identity.task_id, revision: options.identity.task_revision,
-        stage: 'inference', reason_code: (error as ProviderError).reason_code, elapsed_ms: Math.max(0, clock.now() - start) });
+      // No event of its own: the host log names only events it can sanitize, and a retry is a second
+      // attempt inside one settled task, which `task_settled` already accounts for.
       failure = undefined;
       return body();
     }

@@ -43,17 +43,26 @@ const failureFacts: Record<string, { what_failed: string; next_step: string }> =
   provider_empty: { what_failed: 'the provider returned no usable answer', next_step: 'ask again' },
 };
 export function resultCommentary(answer: CommentaryAnswer): Commentary {
-  const noAction = !answer.failure && (answer.status === 'no_action' || !answer.text.trim());
   const failed = answer.findings.find(finding => finding.status === 'failed');
   const failure = answer.failure;
   const facts = failure && Object.hasOwn(failureFacts, failure.reason_code) ? failureFacts[failure.reason_code] : undefined;
-  // Some verified work and one failure is a mixed account: neither a total failure nor a plain result.
-  const mixed = answer.findings.some(finding => finding.status !== 'failed') && (failure !== undefined || (answer.failures?.length ?? 0) > 0);
+  // Some verified work and one thing that did not settle is a mixed account: neither a total failure
+  // nor a plain result. That is the one case where the helper's single summary can misreport the work,
+  // so it is the one case where the host's own per-action line goes with it. A task with nothing said
+  // and a call still in flight says that too.
+  const actions = answer.actions ?? [];
+  const mixed = actions.some(action => action.outcome === 'succeeded') || answer.findings.some(finding => finding.status !== 'failed')
+    ? (actions.some(action => action.outcome !== 'succeeded') || failure !== undefined || (answer.failures?.length ?? 0) > 0)
+    : false;
+  const running = actions.some(action => action.outcome === 'running');
+  const line = mixed || (running && !answer.text.trim()) ? outcomeLine(actions) : '';
+  // Silence is honest only when there is nothing truthful to say: no action still in flight.
+  const noAction = !answer.failure && (answer.status === 'no_action' || (!answer.text.trim() && !line));
   return {
     kind: answer.failure ? (mixed ? 'partial' : 'failure') : noAction ? 'no_action' : mixed || answer.status === 'incomplete' ? 'partial' : 'result',
     exact: noAction ? [] : answer.exact ?? extractExact(answer.text),
     // The host line goes first: the voice hears what the receipts say before the helper's own account.
-    content: noAction ? '' : [outcomeLine(answer.actions ?? []), answer.text].filter(Boolean).join('\n'),
+    content: noAction ? '' : [line, answer.text].filter(Boolean).join('\n'),
     cause: noAction ? '' : failure?.reason_code ?? answer.failures?.[0]?.reason_code ?? failed?.reason_code ?? '',
     what_failed: noAction ? '' : failure ? facts?.what_failed ?? "the helper's model request" : answer.failures?.[0]?.tool ?? '',
     next_step: noAction ? '' : failed?.repair || facts?.next_step || '',

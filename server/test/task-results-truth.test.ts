@@ -13,7 +13,6 @@ import { resultCommentary } from '../tasks/delivery.js';
 import { TaskRuntime } from '../tasks/runtime.js';
 import { Authority } from '../tasks/authority.js';
 import { Store } from '../runtime/store.js';
-import { attachHostLogSink } from '../tools/host-events.js';
 
 const identity = { task_id: 't', task_revision: 1, connection_generation: 1 };
 
@@ -54,9 +53,7 @@ test('two opens and one failed search read as mixed, never as a total failure or
 });
 
 test('a provider outage is retried once and the answer keeps its verified action', async () => {
-  const events: Record<string, unknown>[] = [];
-  const detach = attachHostLogSink({ event: event => { events.push(event as Record<string, unknown>); } });
-  try {
+  {
     const registry = createRegistry({ authority: new FakeAuthority(), execute: async () => documentResult('opened the synthetic page', 'synthetic-open') });
     let calls = 0;
     const result = await runWorker({ registry, identity, input: 'open the synthetic page', signal: new AbortController().signal, clock: new FakeClock(), infer: async () => {
@@ -68,10 +65,11 @@ test('a provider outage is retried once and the answer keeps its verified action
     assert.equal(calls, 3, 'one provider call, one bounded retry');
     assert.equal(result.status, 'complete');
     assert.match(result.text, /synthetic page is open/);
-    assert.match(resultCommentary(result).content, /^Actions: read_mail succeeded\./);
-    const retry = events.find(event => event.event === 'task_inference_retry');
-    assert.equal(retry?.reason_code, 'provider_unavailable');
-  } finally { detach(); }
+    assert.equal(result.failure, undefined, 'the retried outage leaves no failure behind');
+    const commentary = resultCommentary(result);
+    assert.equal(commentary.kind, 'result');
+    assert.equal(commentary.content, result.text, 'one verified action needs no host list in front of her answer');
+  }
 });
 
 test('a provider outage with no time left is reported as failed, never as done', async () => {
@@ -124,4 +122,13 @@ test('a task that settled before the call ended keeps its own final state', asyn
     runtime.close();
     assert.equal(store.transaction(tx => tx.get('SELECT status FROM tasks'))?.status, 'complete', 'session end only settles what is still open');
   } finally { store.close(); rmSync(directory, { recursive: true }); }
+});
+
+test('a lone failure with nothing said stays silent, and a lone success is spoken without a host list', () => {
+  const failedOnly = { status: 'incomplete' as const, text: '', findings: [], failures: [{ tool: 'search_knowledge', reason_code: 'source_down' as const }],
+    actions: [{ action: 'search_knowledge', outcome: 'failed' as const, reason: 'source_down' as const }] };
+  assert.equal(resultCommentary(failedOnly).content, '', 'nothing verified, nothing said: the envelope stays empty');
+  const succeededOnly = { status: 'complete' as const, text: 'Synthetic answer.', findings: [documentResult('synthetic', 'id')],
+    actions: [{ action: 'read_mail', outcome: 'succeeded' as const }] };
+  assert.equal(resultCommentary(succeededOnly).content, 'Synthetic answer.');
 });

@@ -22,7 +22,7 @@ import { attachHostLogSink } from '../tools/host-events.js';
 
 import type { ComposeDispatch } from '../tools/types.js';
 import type { HostContext, JsonObject, ModelPort, ModelRequest, ModelResult, ToolCallIntent, ToolCallJournal, ToolDefinition, ToolResultBinding, ToolResultGate } from '../adapters/model/types.js';
-import { CONNECTOR_DESCRIPTORS, normalizeGetInsightArgs } from '../connectors/index.js';
+import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { declarationsFor, runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations, validatePolicy } from '../tools/index.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
@@ -31,7 +31,7 @@ import type { ConnectionPolicy, LiveAuthority, RunAcceptance, ToolsOwnerOptions,
 
 const tools: McpTool[] = [
   { name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false } },
-  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
+  { name: 'get_insight', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { insight_ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['insight_ids', 'include_links'], additionalProperties: false } },
 ];
 const route = { identity: 'synthetic-route', provider: 'gemini' as const, modelId: 'synthetic-model', allowedClasses: ['ordinary', 'private'] as const };
 // This suite drives the HTTP arm; the union's stdio arm has no url.
@@ -426,7 +426,7 @@ test('canonical UTF8 JSON rejects unsupported data without accessors; array orde
 });
 
 test('actual reader defaults remain untouched; trusted typed restrictions constrain separate classified snapshot', async t => {
-  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic', limit: 1 }, f.signal);
+  const f = await fixture(t); const evidence = await f.reader.call('search_insights', { query: 'synthetic', limit: 1 }, f.signal);
   assert.equal(evidence.state, 'completed');
   if (evidence.state !== 'completed') return;
   assert.equal(evidence.classification, 'unknown'); assert.equal(evidence.capability, 'local-only');
@@ -442,7 +442,7 @@ test('actual reader defaults remain untouched; trusted typed restrictions constr
 });
 
 test('bounded complete slice reader denies expired, missing, partial, hash and source scope mismatches', async t => {
-  const f = await fixture(t); const evidence = await f.reader.search({ query: 'synthetic', limit: 1 }, f.signal);
+  const f = await fixture(t); const evidence = await f.reader.call('search_insights', { query: 'synthetic', limit: 1 }, f.signal);
   if (evidence.state !== 'completed') { assert.fail('nonempty fixture must complete'); }
   for (const state of ['expired', 'unavailable', 'refused'] as const) {
     assert.throws(() => projectLuxResult(evidence, policy(), { ...f.port, readSlice: () => ({ state, reason: 'synthetic' }) }));
@@ -687,24 +687,12 @@ test('W4-R5/F6: a batch dispatches across and within endpoints concurrently and 
   assert.equal(peak, 2, 'one endpoint dispatches concurrently, never refused as busy');
 });
 
-// K1: get_insight must open entries for a reasonable id shape instead of refusing at the boundary.
-test('K1: get_insight argument normalization accepts loose id shapes at the boundary', () => {
+// K1: the discovered schema is the wire contract, so the helper reads publish their own argument shape.
+test('K1: the lux descriptor declares no helper tool of its own', () => {
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 3 } } as unknown as ConnectionPolicy;
-  const get = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy)).find(declaration => declaration.name === 'get_insight')!;
-  assert.equal(get.validate({ ids: ['89820', 89933] }), true, 'integer-valued numeric strings are accepted');
-  assert.equal(get.validate({ ids: 89820 }), true, 'a single number under ids is accepted');
-  assert.equal(get.validate({ id: '89820' }), true, 'the id key is accepted');
-  assert.equal(get.validate(89820), true, 'a bare id is accepted');
-  assert.deepEqual(get.normalize!({ ids: ['89820', 89933] }), { args: { ids: [89820, 89933] } });
-  assert.deepEqual(get.normalize!({ ids: [89820, 89820] }), { args: { ids: [89820] } }, 'duplicates are deduped');
-  assert.equal(get.validate({ ids: ['abc'] }), false, 'a non-numeric id is refused');
-  assert.equal(get.validate({ ids: [] }), false, 'an empty id list is refused');
-  assert.equal(get.validate({ ids: [7, 9], include_links: false }), true, 'a declared include_links key is accepted');
-  assert.equal(get.validate({ ids: [7, 9], project: 'p' }), true, 'an unknown read key is dropped, not refused');
-  assert.deepEqual(get.normalize!({ ids: [7, 9], include_links: true }), { args: { ids: [7, 9], include_links: true } }, 'include_links is passed through');
-  const capped = normalizeGetInsightArgs({ ids: [1, 2, 3, 4, 5] }, 3)!;
-  assert.deepEqual(capped.args, { ids: [1, 2, 3] }, 'over-budget ids are truncated, not refused');
-  assert.match(capped.notice!, /first 3 of 5/);
+  const declarations = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy));
+  assert.deepEqual(declarations, [], 'reads and writes come from reader.discovery(), never a synthesized list');
+  assert.deepEqual(CONNECTOR_DESCRIPTORS['lux-knowledge']!.envelope, [], 'no fixed read envelope survives discovery');
 });
 
 function errorTool(overrides: Partial<ToolDefinition> = {}): ToolDefinition {
@@ -854,7 +842,7 @@ async function readTaskPage(f: Awaited<ReturnType<typeof fixture>>, id: string, 
 test('task document pages reconstruct the complete source body and reject invalid cursors', async t => {
   const body = 'A'.repeat(25_000) + 'synthetic-tail';
   const f = await pagedTaskFixture(t, () => ({ content: [{ type: 'text', text: JSON.stringify({ id: 7, content: body }) }] }));
-  const source = await f.reader.get({ ids: [7], include_links: false }, f.signal);
+  const source = await f.reader.call('get_insight', { insight_ids: [7], include_links: false }, f.signal);
   assert.equal(source.state, 'completed', 'the same configured reader can fetch the source before task projection');
   const first = await readTaskPage(f, '7', null, 'page-first');
   assert.equal(first.status, 'partial', JSON.stringify({ status: first.status, cause: first.cause, next: first.next, repair: first.repair })); assert.ok(typeof first.next_cursor === 'string');

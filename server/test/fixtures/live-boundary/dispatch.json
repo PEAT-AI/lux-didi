@@ -30,7 +30,8 @@
     "id": "search_knowledge-valid",
     "tool": "search_knowledge",
     "args": {
-      "query": "synthetic"
+      "query": "synthetic",
+      "mode": null
     },
     "words": "Read the synthetic source."
   },

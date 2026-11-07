@@ -21,8 +21,8 @@ import * as memory from '../domain/memory.js';
 import * as summaries from '../domain/summaries.js';
 import { createHistoryReader } from '../domain/history-reader.js';
 import { HISTORY_CLASSES } from '../domain/history-lifecycle.js';
-import { profileFrom } from '../config/index.js';
-import { readPrivate } from '../config/files.js';
+import { entryAndParentIn } from '../domain/labels.js';
+import { loadLiveConfig } from '../config/live.js';
 import { listStandingMemory } from '../memory/import.js';
 import {
   NAYA_LIVE_BASE,
@@ -196,18 +196,14 @@ function storeStateFile(options: RunOptions): string {
 }
 
 /**
- * The data classes the evaluated route reads with. An explicit list wins; otherwise it is the owner
- * profile's own list, from the `profile.json` the live route reads next to the store, never an
- * ordinary-only constant. Fail closed: a copy without that profile names the flag instead of
- * scoring with a narrower route than the one that answered.
+ * The data classes the evaluated route reads with. An explicit list wins; otherwise it is the live
+ * owner route's own list, from the live.json the live host loads through `loadLiveConfig`, never an
+ * ordinary-only constant. A copy with no live route keeps the old ordinary default.
  */
 function routeClasses(options: RunOptions, ownerId: string, dataRoot: string): readonly DataClass[] {
   if (options.classes !== undefined) return [...options.classes];
-  const file = join(dataRoot, 'provider-config', 'profile.json');
-  let text: string;
-  try { text = readPrivate(file, 64 * 1024); }
-  catch { throw new Error(`memory_eval_route_classes_missing: no readable ${file}; pass --classes ${HISTORY_CLASSES.join(',')}`); }
-  return profileFrom(text, ownerId).dataClasses;
+  const loaded = loadLiveConfig({ configDir: join(dataRoot, 'provider-config'), ownerId });
+  return loaded.status === 'configured' ? [...loaded.config.profile.route.dataClasses] : ['ordinary'];
 }
 
 /** `--classes` names the store's own classes; anything else is a usage error, never a quiet default. */
@@ -292,17 +288,6 @@ function cutoffTime(tx: Transaction, sessionId: string): number | null {
   if (Number.isFinite(at) && at > 0) return at;
   const created = Number(row['created_at'] ?? 0);
   return Number.isFinite(created) && created > 0 ? created : null;
-}
-
-/** Both the entry and its parent session must carry one of the allowed classes; absent labels fail closed. */
-function entryAndParentIn(tx: Transaction, entryId: string, sessionId: string, allowedClasses: readonly DataClass[]): boolean {
-  if (allowedClasses.length === 0) return false;
-  const marks = allowedClasses.map(() => '?').join(',');
-  return tx.get(`SELECT 1 AS eligible FROM entries e JOIN sessions s ON s.id=e.session_id
-    WHERE e.id=? AND s.id=?
-      AND (SELECT data_class FROM routing_labels WHERE subject_kind='entry' AND subject_id=e.id ORDER BY revision DESC LIMIT 1) IN (${marks})
-      AND (SELECT data_class FROM routing_labels WHERE subject_kind='session' AND subject_id=s.id ORDER BY revision DESC LIMIT 1) IN (${marks})`,
-  [entryId, sessionId, ...allowedClasses, ...allowedClasses]) !== undefined;
 }
 
 /**

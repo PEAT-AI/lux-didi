@@ -56,11 +56,18 @@ export function current(tx: Transaction, subject: RoutingSubject): RoutingLabelL
 
 /** Current entry and parent labels must both be ordinary; absent subjects or labels fail closed. */
 export function entryAndParentOrdinary(tx: Transaction, entryId: string, sessionId: string): boolean {
+  return entryAndParentIn(tx, entryId, sessionId, ['ordinary']);
+}
+
+/** Both the entry and its parent session label must be inside the allowed classes; absent labels fail closed. */
+export function entryAndParentIn(tx: Transaction, entryId: string, sessionId: string, allowedClasses: readonly RoutingDataClass[]): boolean {
+  if (allowedClasses.length === 0) return false;
+  const marks = allowedClasses.map(() => '?').join(',');
   return tx.get(`SELECT 1 AS eligible FROM entries e JOIN sessions s ON s.id=e.session_id
     WHERE e.id=? AND s.id=?
-      AND (SELECT data_class FROM routing_labels WHERE subject_kind='entry' AND subject_id=e.id ORDER BY revision DESC LIMIT 1)='ordinary'
-      AND (SELECT data_class FROM routing_labels WHERE subject_kind='session' AND subject_id=s.id ORDER BY revision DESC LIMIT 1)='ordinary'`,
-  [entryId, sessionId]) !== undefined;
+      AND (SELECT data_class FROM routing_labels WHERE subject_kind='entry' AND subject_id=e.id ORDER BY revision DESC LIMIT 1) IN (${marks})
+      AND (SELECT data_class FROM routing_labels WHERE subject_kind='session' AND subject_id=s.id ORDER BY revision DESC LIMIT 1) IN (${marks})`,
+  [entryId, sessionId, ...allowedClasses, ...allowedClasses]) !== undefined;
 }
 
 export function history(tx: Transaction, subject: RoutingSubject): RoutingLabel[] {

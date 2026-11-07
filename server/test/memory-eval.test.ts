@@ -18,18 +18,16 @@ import {
   type MemoryEvalReport, type RestoreTool,
 } from '../memory/eval-runner.js';
 import { GOLDEN_FILE, answersFile, buildEvalStore } from './fixtures/memory-eval/build.js';
-import { slotFor } from '../config/index.js';
 
 const ROOT = process.cwd();
 
-/** The route classes the live host reads: the profile.json the data dir carries next to the store. */
-function plantRouteProfile(store: string, classes: readonly string[]): void {
+/** The live owner route the host loads: live.json in the provider-config the data dir carries. */
+function plantLiveRoute(store: string, classes: readonly string[]): void {
   const dir = join(store, 'provider-config');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(dir, 'profile.json'), JSON.stringify({
-    schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'gemini-synthetic',
-    keyReference: slotFor('gemini').keyReference, dataClasses: [...classes],
-    preferences: { dataClass: 'ordinary', language: 'de-de', register: 'plain', humor: 'off', verbosity: 'balanced' },
+  writeFileSync(join(dir, 'live.json'), JSON.stringify({
+    schemaVersion: 1, enabled: true, dataClasses: [...classes],
+    preferences: { dataClass: classes[0], language: 'de-de', register: 'plain', humor: 'off', verbosity: 'balanced' },
   }), { mode: 0o600 });
 }
 
@@ -47,7 +45,7 @@ async function withStore<T>(variant: 'defect' | 'clean', body: (store: string, w
   const work = mkdtempSync(join(tmpdir(), `memory-eval-${variant}-`));
   const store = buildEvalStore(join(work, 'store'), variant);
   store.close();
-  plantRouteProfile(join(work, 'store'), ['ordinary']);
+  plantLiveRoute(join(work, 'store'), ['ordinary']);
   try {
     return await body(join(work, 'store'), work);
   } finally {
@@ -108,10 +106,10 @@ test('the clean variant passes every bar', async () => {
 });
 
 // The live owner route is classed sensitive; an ordinary-only harness scores that store at recall 0.
-test('the scorer reads with the route classes the owner profile carries', async () => {
+test('the scorer reads with the classes the live route carries', async () => {
   await withStore('clean', async (store, work) => {
     reclassSensitive(store);
-    plantRouteProfile(store, ['sensitive']);
+    plantLiveRoute(store, ['sensitive']);
     const out = join(work, 'report.json');
     const result = cli(['--store', store, '--golden', GOLDEN_FILE, '--answers', answersFile('clean'), '--out', out]);
     assert.equal(result.status, 0, `a sensitive route must score its own sessions:\n${result.stderr}${result.stdout}`);
@@ -128,7 +126,7 @@ test('the scorer reads with the route classes the owner profile carries', async 
 test('--classes ordinary still restricts the run to the ordinary slice', async () => {
   await withStore('clean', async (store, work) => {
     reclassSensitive(store);
-    plantRouteProfile(store, ['sensitive']);
+    plantLiveRoute(store, ['sensitive']);
     const out = join(work, 'report.json');
     const result = cli(['--store', store, '--golden', GOLDEN_FILE, '--answers', answersFile('clean'), '--out', out, '--classes', 'ordinary']);
     assert.equal(result.status, 1, 'the ordinary slice no longer holds these sessions');
@@ -137,6 +135,20 @@ test('--classes ordinary still restricts the run to the ordinary slice', async (
     assert.equal(recall.search.overlap, 0, 'an ordinary-only route reaches none of the sensitive gold');
     const start = report.items_detail.find(item => item.id === 'm1-coffee')!;
     assert.notEqual(start.verdict, 'pass', 'the start item is not carried from the ordinary slice');
+  });
+});
+
+// F2: a copy with no live.json is scored the way base scored it, not refused and not widened.
+test('a copy with no live route keeps the ordinary default', async () => {
+  await withStore('clean', async (store, work) => {
+    reclassSensitive(store);
+    rmSync(join(store, 'provider-config'), { recursive: true, force: true });
+    const out = join(work, 'report.json');
+    const result = cli(['--store', store, '--golden', GOLDEN_FILE, '--answers', answersFile('clean'), '--out', out]);
+    assert.equal(result.status, 1, 'no live route means the ordinary slice, never a usage error');
+    const report = readReport(out);
+    const recall = report.items_detail.find(item => item.id === 'm2-brakes')!;
+    assert.equal(recall.search.overlap, 0, 'the sensitive rows stay unreadable without a live route');
   });
 });
 

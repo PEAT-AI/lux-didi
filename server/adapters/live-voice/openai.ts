@@ -117,6 +117,10 @@ const OUTPUT_PCM_BYTES_PER_MS = 48;
  *  underruns of session 82ab994a: a 400 ms cushion covers 162 of them (300 ms leaves 6). */
 const HEAD_START_MS = 400;
 const HEAD_START_BYTES = HEAD_START_MS * OUTPUT_PCM_BYTES_PER_MS;
+/** #924: a response the provider opened that makes no audible output within this window is reported as a silent
+ *  continuation. Text the owner cannot hear is not progress (#820: about 30 percent of continuations go silent), and
+ *  waiting for the host's 8 s dead-air rung is the wait Rob actually hears. */
+export const POST_TOOL_NO_OUTPUT_MS = 1_500;
 /** Epoch-anchored monotonic time keeps local windows independent of wall-clock adjustments. */
 const REAL_CLOCK: LiveVoiceClock = {
   now: () => Math.floor(performance.timeOrigin + performance.now()),
@@ -452,6 +456,9 @@ class Session implements LiveVoiceSession {
   /** The response this turn is answering, for the receipts that name it (S5). */
   private currentResponse: string | undefined;
   private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
+  /** #924: the open response's silent-continuation deadline, and whether this turn already reported it. */
+  private silentResponseTimer: unknown;
+  private silentResponseReported = false;
   private commandSequence = 0;
   /** S4a-R2 (d): event id to the command it identified. Correlation only. */
   private readonly commands = new Map<string, { kind: CommandKind; sentAt: number; epoch: number }>();
@@ -687,6 +694,8 @@ class Session implements LiveVoiceSession {
 
       // 3r D4: the provider opening a delegation. Unread until now, so it landed in the unknown-frame counter.
       case 'session.delegation.created': return this.delegationCreated(message);
+      // #924: a delegated response the provider opened, and the audibility of the answer it owes.
+      case 'response.event': return this.delegatedEvent(message);
       // #438: the provider acknowledges an append in the past tense; an unknown frame is a fact of its own and
       // these are known, so they are classified instead of counted as one.
 
@@ -723,6 +732,9 @@ class Session implements LiveVoiceSession {
   private outputAudio(message: ObjectValue): void {
     const pcm = this.audioDelta(message);
     if (!pcm) return;
+    // #924: the opened response is making sound, so it is not a stuck continuation. A fill frame counts: the
+    // owner's silence has ended either way.
+    this.clearSilentResponse();
     const now = this.clock.now();
     // Only speech is model output: a frame whose level is below the audible threshold is a fill frame, and it
     // neither counts as the server talking for a barge-in (session 1018 sent 48 kB/s for the whole call) nor
@@ -840,6 +852,7 @@ class Session implements LiveVoiceSession {
     // Reset on the first real owner fragment, not its quiet tail: a fast provider may start before that tail.
     if (this.episodeQuiet === undefined) {
       this.continuationTiming = undefined;
+      this.resetSilentResponse();
     }
     if (this.episodeQuiet !== undefined) this.clock.clearTimer(this.episodeQuiet);
     const token = this.episodeToken + 1, epoch = this.socket;
@@ -978,6 +991,38 @@ class Session implements LiveVoiceSession {
     if (typeof delegation.id !== 'string' || !delegation.id.length) { this.touch(); return; }
     this.latestDelegationId = delegation.id;
     this.emit({ type: 'delegation', delegationId: delegation.id }); this.touch();
+  }
+  /**
+   * #924: delegated response events. Only two facts matter here: a response opened (arm the silent-continuation
+   * deadline) and audio arrived (the response is answering, so nothing is stuck). Tool items and text are not
+   * audible output and never satisfy the deadline; a closed response stands it down.
+   */
+  private delegatedEvent(message: ObjectValue): void {
+    const event = object(message.event) ? message.event : undefined;
+    if (!event || typeof event.type !== 'string') { this.touch(); return; }
+    if (event.type === 'response.created') this.armSilentResponse();
+    else if (event.type === 'response.output_audio.delta' || event.type === 'response.audio.delta') this.clearSilentResponse();
+    else if (event.type === 'response.done' || event.type === 'response.cancelled') this.clearSilentResponse();
+    this.touch();
+  }
+  /** One report per opened response: the owner still hears nothing POST_TOOL_NO_OUTPUT_MS after it opened. */
+  private armSilentResponse(): void {
+    this.clearSilentResponse();
+    if (this.silentResponseReported || this.terminal) return;
+    this.silentResponseTimer = this.clock.setTimer(POST_TOOL_NO_OUTPUT_MS, () => {
+      this.silentResponseTimer = undefined;
+      if (this.terminal || this.silentResponseReported) return;
+      this.silentResponseReported = true;
+      this.emit({ type: 'interactionStatus', value: 'post_tool_no_output' });
+    });
+  }
+  private clearSilentResponse(): void {
+    if (this.silentResponseTimer !== undefined) { this.clock.clearTimer(this.silentResponseTimer); this.silentResponseTimer = undefined; }
+  }
+  /** A new owner fragment is a new turn, so the previous turn's report is spent. */
+  private resetSilentResponse(): void {
+    this.clearSilentResponse();
+    this.silentResponseReported = false;
   }
   private readonly recentCommands = new Map<string, string>();
 
@@ -1350,6 +1395,7 @@ class Session implements LiveVoiceSession {
     if (this.idleQuiet !== undefined) { this.clock.clearTimer(this.idleQuiet); this.idleQuiet = undefined; }
     // A closed session has no speaking stretch: no silence check is still owed to the turn it was in.
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
+    this.clearSilentResponse();
     this.reportUnknownFrames();
 
     this.readiness.reject(new LiveVoiceError(code));

@@ -53,6 +53,8 @@ class DeadlineClock {
 const portEvent = (event: unknown) => event as never;
 const ownerFinal = (text: string) => portEvent({ type: 'inputTranscription', text, finished: true, finalOrigin: 'app_voice' });
 const toolCall = (id: string) => portEvent({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'bridge', limit: 1 , mode: null } }] });
+/** #924: the adapter's report that an opened continuation made no audible output inside its window. */
+const silentContinuation = () => portEvent({ type: 'interactionStatus', value: 'post_tool_no_output' });
 const audible = () => portEvent({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
 
 /** The dead-air rungs this call has recorded, in order. */
@@ -325,4 +327,45 @@ test('C-REBUILD B: a held note is not dropped by the late window on its way back
     'and a note held by a response in flight is held, not expired, on the way in');
   assert.equal(lateCommentarySilence({ ...past, held: true, responseInProgress: false }), null,
     'on its terminal the same note is spoken, however long the response held it');
+});
+
+// #924/#802: about thirty percent of continuations go silent, and today recovery waits for the 8 s dead-air rung
+// or the 23 s rebuild. A silent continuation is reported by the adapter at its window and earns exactly one quiet
+// continuation input, once per turn, with the gap the owner sat through recorded. It is never a rebuild.
+test('#924/#802: a silent continuation is nudged once at the threshold and never twice in a turn', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('What did we decide about the bridge?'));
+  await live.emit(toolCall('silent-1'));
+  await live.advance(1_500);
+  await live.emit(silentContinuation());
+  assert.equal(rungReceipts(live).length, 1, 'one quiet nudge for one stuck continuation');
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the nudge is one continuation input, never a rebuild');
+  assert.match(live.fake.texts.at(-1) ?? '', /lookup has finished/);
+  assert.ok(Number(rungReceipts(live)[0]?.elapsedMs) >= 1_500, 'the record carries the gap the owner sat through');
+  await live.emit(silentContinuation());
+  await live.advance(1_000);
+  assert.equal(rungReceipts(live).length, 1, 'a second report in the same turn never nudges again');
+  assert.equal(live.fake.sessionsOpened, 1, 'a stuck response is never a rebuild');
+});
+
+// #820: the rebuild a mute asks for is removed when nothing is owed. Owner silence is the case that used to walk
+// the watchdog into a fresh session; it names the removal and keeps the session the owner is holding.
+test('#820: sixty seconds of owner silence with nothing owed never rebuilds the session', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('Thanks, that is all for now.'));
+  await live.advance(60_000);
+  assert.equal(live.receipts.filter(record => record.event === 'live_rebuild').length, 0, 'silence is not a mute');
+  assert.equal(live.fake.sessionsOpened, 1, 'the session the owner is holding is never replaced for silence');
+  assert.ok(live.fake.texts.length <= live.sentTexts + 1, 'and nothing is injected behind the silence');
+});
+
+// #820: a helper task that is still running owns the wait, so a long one never counts toward a rebuild.
+test('#820: a running helper task never causes a rebuild', async t => {
+  const release = deferred<void>(); t.after(() => release.resolve()); let calls = 0;
+  const f = await liveTaskFixture(t, async () => { calls++; await release.promise; return { text: 'The synthetic task answer.', calls: [] }; }, { clock: true });
+  f.finalize('Do the synthetic task.'); f.bind(); await fixtureUntil(() => calls === 1, 'controlled task');
+  t.mock.timers.tick(60_000); await f.flush();
+  assert.equal(f.voice.sessionsOpened, 1, 'a long helper task walks no rebuild');
+  assert.equal(f.voice.taskAnswers.length, 0, 'and speaks nothing the owner did not ask for');
+  release.resolve(); assert.equal((await f.answer()).text, 'The synthetic task answer.'); assert.equal(calls, 1);
 });

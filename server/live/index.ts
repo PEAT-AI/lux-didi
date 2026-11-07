@@ -2593,8 +2593,15 @@ export class LiveSessionOwner {
     // inside the rung, instead of being waited out to a dead-air rebuild.
     if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
       this.#continuationReRequested.add(handle);
+      // #802: one quiet nudge, never a rebuild, and the gap the owner actually sat through is the record.
+      const openSince = handle.responseCreatedAt ?? handle.debtSince ?? this.#now();
+      hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: Math.max(0, this.#now() - openSince) });
+      handle.deadAirNudgedAt = this.#now();
       this.#sendHostSpeech(handle, hostNote(CONTINUATION_RE_REQUEST_NOTE), 'The tool batch settled with no spoken continuation.');
-      this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
+      // The nudge buys the provider the rest of the ordinary rung, never less: a faster recovery of a stuck
+      // response must not move the rebuild rung earlier than the 8 s the owner already waits (#820).
+      const owed = AUDIBLE_DEBT_RUNG_MS - (this.#now() - handle.debtSince);
+      this.#scheduleDebt(handle, Math.max(DEAD_AIR_CONTINUATION_MS, owed), 'rung');
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');

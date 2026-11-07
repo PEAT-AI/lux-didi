@@ -55,6 +55,9 @@ const silentFrame = (f: { send: (value: unknown) => void }) => f.send({ type: 's
 /** 9600 samples at 16 kHz is 19200 bytes of 24 kHz s16 mono, exactly the 400 ms head start a stretch must fill. */
 const speak = (f: { send: (value: unknown) => void }, samples = 9_600) => sendAudio(f, samples);
 const delegated = (type: string, event: Record<string, unknown>, id = 'item_1') => ({ type: 'response.event', delegation_id: id, event: { type, ...event } });
+/** #924: every report of an opened response that made no audible output. */
+const silentContinuations = (opened: { captured: { events: { type: string }[] } }) =>
+  opened.captured.events.filter(event => event.type === 'interactionStatus' && (event as { value?: string }).value === 'post_tool_no_output');
 const tools = () => [{ name: 'research', description: 'Look something up', parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'], additionalProperties: false } }];
 type Start = { type: string; session: Record<string, unknown> };
 
@@ -1697,13 +1700,21 @@ async function continuation(t: TestContext, accepted = true, overrides: Partial<
 
 
 
-test('SILENCE c: output item at 4.5 seconds prevents early nudge', async t => {
+test('SILENCE c: an output item at 4.5 seconds never satisfies the silent-continuation deadline (#924)', async t => {
   const opened = await continuation(t);
   opened.clock.advance(4_500);
   opened.socket.deliver(delegated('response.output_item.added', { item: { type: 'message', id: 'synthetic-message' } }));
   opened.clock.advance(3_500);
   await quiet();
-  assert.equal(opened.captured.events.some(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output'), false);
+  assert.equal(silentContinuations(opened).length, 1, 'text the owner cannot hear is not an answer, so the open response is reported silent once');
+});
+test('SILENCE c: an audible frame stands the silent-continuation deadline down', async t => {
+  const opened = await continuation(t);
+  opened.clock.advance(1_000);
+  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
+  opened.clock.advance(5_000);
+  await quiet();
+  assert.equal(silentContinuations(opened).length, 0, 'the response is answering, so nothing is stuck');
 });
 
 

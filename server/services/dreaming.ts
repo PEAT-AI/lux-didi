@@ -426,7 +426,7 @@ export function createDreaming(options: DreamingOptions): Dreaming {
     return { status: 'done', ops, rejected: rejected.length, coverageGap: session.coverageGap, elapsedMs };
   }
 
-  /** Ended owner sessions with turns of their own, newest first: the backlog's order, never its schedule. */
+  /** Ended owner sessions with turns of their own, newest first, minus the ones whose job is spent. */
   function candidates(limit: number): readonly string[] {
     return options.store.transaction(tx => tx.all(
       `SELECT s.live_session_id AS id
@@ -434,8 +434,10 @@ export function createDreaming(options: DreamingOptions): Dreaming {
         WHERE s.lifecycle='terminal' AND s.journal_complete=1 AND ${ownerMemorySessionSql('s')}
           AND NOT EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind='live' AND h.source_id=s.live_session_id)
           AND EXISTS (SELECT 1 FROM history_turns t WHERE t.live_session_id=s.live_session_id)
+          AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.session_id=s.live_session_id
+                            AND j.extractor_version=? AND j.state='failed' AND j.attempts>=?)
         ORDER BY (s.terminal_at IS NULL), s.terminal_at DESC, s.created_at DESC
-        LIMIT ?`, [limit]).map(row => String(row['id'])));
+        LIMIT ?`, [DREAMING_EXTRACTOR_VERSION, DREAMING_MAX_ATTEMPTS, limit]).map(row => String(row['id'])));
   }
 
   return {

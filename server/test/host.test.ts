@@ -1769,6 +1769,7 @@ for (const [recoveredAt, requestedAt] of [[0, 10_000], [12_000, 10_000], [24_000
                   sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
                   route: { identity: liveProfileIdentity(loaded.config.profile), allowedClasses: ['ordinary'] },
                   bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+                runtime.owner.projectConnection(spec.id);
                 connected.add(spec.id);
               }
             };

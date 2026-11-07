@@ -61,7 +61,7 @@ test('the answer is the only body text and its evidence is folded under it, newe
     ].join('\n'), sources: [{ title: 'Mattermost: moving the sync', url: 'https://mm.example.org/p/1' }] },
     { name: 'gmail_search_messages', markdown: '- Quarterly numbers | from: Dana | date: 2026-10-16T08:00:00Z | the deck is ready', sources: [{ title: 'Gmail: Quarterly numbers', url: 'https://mail.example.org/1' }] },
     { name: 'calendar_list_events', markdown: '- 2026-10-17T14:30:00, Release review [id e1]', sources: [] },
-    { name: 'search_knowledge', markdown: '### Release rhythm (PATTERN | 2026-10-10) [id 42]\nReleases ship on fridays.', sources: [] },
+    { name: 'search_insights', markdown: '### Release rhythm (PATTERN | 2026-10-10) [id 42]\nReleases ship on fridays.', sources: [] },
   ];
   const html = evidenceMarkup(evidence, NOW);
   // One folded block, never the raw shaped output as the body.

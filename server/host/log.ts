@@ -895,6 +895,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'phase']) || !isSafeMember(value.phase, VAULT_TRANSPORT_PHASES)) return;
     return { event: 'vault_transport', phase: value.phase };
   }
+  if (value.event === 'vault_write' && value.tool !== undefined) {
+    if (!closedKeys(value, ['event', 'tool', 'outcome', 'insight_id_prefix'])) return;
+    if (!['vault_save', 'vault_update'].includes(String(value.tool))) return;
+    if (!['created', 'duplicate_of', 'refused', 'updated', 'completed'].includes(String(value.outcome))) return;
+    if (typeof value.insight_id_prefix !== 'string' || !/^[0-9]{0,8}$/.test(value.insight_id_prefix)) return;
+    return { event: 'vault_write', tool: value.tool, outcome: value.outcome, insight_id_prefix: value.insight_id_prefix };
+  }
   if (value.event === 'vault_write') {
     // Closed shape: the attempt outcome, the closed failure code, the vault's own insight id on a confirmed save, and the wire latency. Never text.
     const hasInsight = value.insightId !== undefined;

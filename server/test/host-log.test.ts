@@ -800,3 +800,11 @@ test('a dreaming_done line names a below-floor skip and carries no other outcome
   assert.equal(skipped?.['outcome'], 'skipped_below_floor');
   assert.equal(safeEvent({ ...line, outcome: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'the outcome is a closed word');
 });
+
+
+test('helper vault_write logs only the closed outcome and id prefix, never content', () => {
+  const event = { event: 'vault_write', tool: 'vault_save', outcome: 'created', insight_id_prefix: '42' };
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, content: 'synthetic private content' }), undefined);
+  assert.equal(safeEvent({ ...event, tool: 'purge_insight' }), undefined);
+});

@@ -1,4 +1,4 @@
-import { itemsForSubject } from '../domain/memory-items.js';
+import { activeItems } from '../domain/memory-items.js';
 import { historySessionEvidence } from '../domain/history-lifecycle.js';
 import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
@@ -7,7 +7,6 @@ import { loadTaskModels } from '../config/tasks.js';
 import { boundTextModel, pinProviderBinding, type PinnedProviderBinding } from './provider-binding.js';
 import { ConfigError } from '../config/files.js';
 import { validateLiveProfile } from '../live/config.js';
-import * as memory from '../domain/memory.js';
 import { HISTORY_CLASSES } from '../domain/history-lifecycle.js';
 import { listStandingMemory } from '../memory/import.js';
 import type { LiveMemorySource } from '../live/types.js';
@@ -212,6 +211,8 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
     executors: sessionId => tools?.owner.taskExecutors(sessionId) ?? {},
     ...(tools?.draftChat ? { draftChat: tools.draftChat.bind(tools) } : {}),
     timeZone: ownerZone,
+    // D3: the helper's memory search is admitted by the same route classes the start block uses.
+    dataClasses: [...profile.route.dataClasses],
     ...(researchWeb ? { web: researchWeb } : {}), log: event => hostLogEvent(event),
   });
   // The host zone is never pinned: #ownerTimeZone resolves Intl at compose time, so a Mac zone change between
@@ -224,44 +225,56 @@ export function composeLive(store: Store, configDir: string, testing?: LiveTesti
   return { service: new HostLiveService(profile, owner, store, configDir, keyPresent, binding), status: statusFromProfile(profile) };
 }
 
-/** Resolve durable candidates once; the Live owner applies its route's class set at admission. */
+/**
+ * Resolve durable candidates once; the Live owner applies its route's class set at admission.
+ * D6: one indexed read per store, never a scan plus a round trip per row: the entries read
+ * carries its own text inside the same left join, the items read is one statement, and the
+ * source sessions of every item arrive together with one memoized evidence walk.
+ */
 export const resolveLiveMemory: LiveMemorySource = tx => {
-  const rows = tx.all(`SELECT e.id,el.data_class AS entry_class,pl.data_class AS parent_class
+  const rows = tx.all(`SELECT e.id,e.text,e.captured_at,el.data_class AS entry_class,pl.data_class AS parent_class
     FROM entries e JOIN sessions s ON s.id=e.session_id
     LEFT JOIN routing_labels el ON el.subject_kind='entry' AND el.subject_id=e.id
       AND el.revision=(SELECT MAX(revision) FROM routing_labels WHERE subject_kind='entry' AND subject_id=e.id)
     LEFT JOIN routing_labels pl ON pl.subject_kind='session' AND pl.subject_id=s.id
       AND pl.revision=(SELECT MAX(revision) FROM routing_labels WHERE subject_kind='session' AND subject_id=s.id)
     ORDER BY e.captured_at DESC,e.id`);
-  const classes = new Map(rows.map(row => {
+  const records = rows.map(row => {
     const entry = HISTORY_CLASSES.find(value => value === row['entry_class']);
     const parent = HISTORY_CLASSES.find(value => value === row['parent_class']);
     const dataClass = entry === undefined || parent === undefined ? 'unknown' as const
       : HISTORY_CLASSES[Math.max(HISTORY_CLASSES.indexOf(entry), HISTORY_CLASSES.indexOf(parent))]!;
-    return [String(row['id']), dataClass] as const;
-  }));
-  const ids = rows.map(row => String(row['id']));
-  const records: ReturnType<typeof memory.resolveEntries> = [];
-  for (let offset = 0; offset < ids.length; offset += memory.MAX_RESOLVE_ENTRIES) {
-    records.push(...memory.resolveEntries(tx, ids.slice(offset, offset + memory.MAX_RESOLVE_ENTRIES)));
-  }
+    return { id: String(row['id']), text: String(row['text']), capturedAt: Number(row['captured_at']), dataClass };
+  });
   const ranked = listStandingMemory(tx);
-  const resolved = new Map(records.map(record => [record.entryId, record]));
+  const resolved = new Map(records.map(record => [record.id, record]));
   const standing = ranked.flatMap(item => {
     const record = resolved.get(item.id);
-    return record === undefined ? [] : [{ id: record.entryId, text: record.text, capturedAt: record.capturedAt,
-      dataClass: classes.get(record.entryId)!, standing: item }];
+    return record === undefined ? [] : [{ id: record.id, text: record.text, capturedAt: record.capturedAt,
+      dataClass: record.dataClass, standing: item }];
   });
   const taken = new Set(standing.map(record => record.id));
-  const plain = records.filter(record => !taken.has(record.entryId)).map(record => ({ id: record.entryId, text: record.text,
-    capturedAt: record.capturedAt, dataClass: classes.get(record.entryId)! }));
+  const plain = records.filter(record => !taken.has(record.id));
   const order = ['ordinary', 'private', 'sensitive', 'unknown'] as const;
-  const items = tx.all("SELECT DISTINCT subject FROM memory_items WHERE status='active' ORDER BY subject")
-    .flatMap(row => itemsForSubject(tx, String(row['subject'])).filter(item => item.status === 'active'));
+  // One read of every active item, in the subject order the typed part has always had. `activeItems`
+  // orders by creation, so the subject order is restored here rather than re-queried per subject; the
+  // start block admits before the budget does, so this read is not capped.
+  const items = activeItems(tx, { limit: Number.MAX_SAFE_INTEGER })
+    .sort((a, b) => (a.subject < b.subject ? -1 : a.subject > b.subject ? 1 : 0)
+      || b.createdAt - a.createdAt
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const sources = new Map<string, string[]>();
+  for (const row of tx.all('SELECT memory_id, session_id FROM memory_sources ORDER BY memory_id, session_id')) {
+    const memoryId = String(row['memory_id']);
+    const sessionId = String(row['session_id']);
+    const list = sources.get(memoryId) ?? [];
+    if (!list.includes(sessionId)) list.push(sessionId);
+    sources.set(memoryId, list);
+  }
+  const evidence = new Map<string, ReturnType<typeof historySessionEvidence>>();
   const typed = items.map(memoryItem => {
-    const sourceSessionIds = tx.all('SELECT DISTINCT session_id FROM memory_sources WHERE memory_id=? ORDER BY session_id', [memoryItem.id])
-      .map(row => String(row['session_id']));
-    const sourceClasses = sourceSessionIds.map(id => historySessionEvidence(tx, id)?.dataClass ?? 'unknown');
+    const sourceSessionIds = sources.get(memoryItem.id) ?? [];
+    const sourceClasses = sourceSessionIds.map(id => historySessionEvidence(tx, id, evidence)?.dataClass ?? 'unknown');
     const dataClass = order[sourceClasses.length ? Math.max(...sourceClasses.map(value => order.indexOf(value))) : 3]!;
     return { id: memoryItem.id, text: memoryItem.text, dataClass, memoryItem, sourceSessionIds };
   });

@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { Store } from '../dist/runtime/store.js';
 import { domainMigrations } from '../dist/domain/schema.js';
 import * as items from '../dist/domain/memory-items.js';
+import * as memory from '../dist/domain/memory.js';
+import type { Transaction } from '../dist/contracts/storage.js';
 
 // Source-run by scripts/check-domain.sh (node strips the types), so every
 // import points at the build the check just produced.
@@ -47,7 +49,7 @@ test('migration 10 creates the memory tables, the indexes and the FTS table, and
     const indexes = store.transaction(tx => tx.all("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'ix_memory%'")
       .map(row => String(row.name)));
     assert.deepEqual(indexes.sort(), ['ix_memory_items_event_at', 'ix_memory_items_status_kind',
-      'ix_memory_items_subject', 'ix_memory_sources_session'].sort());
+      'ix_memory_items_subject', 'ix_memory_sources_memory', 'ix_memory_sources_session'].sort());
     store.close();
     const again = new Store(dir, domainMigrations);
     try {
@@ -184,5 +186,113 @@ test('forgetScope by item id and all, and the FTS index returns the item by a wo
     assert.equal(f.store.transaction(tx => items.forgetScope(tx, { all: true, now: 3000 })), 1);
     assert.equal(f.store.transaction(tx => tx.all('SELECT id FROM memory_items')).length, 0);
     assert.equal(f.store.transaction(tx => tx.all('SELECT memory_id FROM memory_sources')).length, 0);
+  } finally { f.done(); }
+});
+
+// --- M19: the helper's own memory search -------------------------------------
+
+/** A synthetic entry with its session and the current labels a route admits. */
+function entry(store: Store, id: string, text: string, capturedAt: number, entryClass: string, parentClass: string) {
+  store.transaction(tx => {
+    tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', [`parent-${id}`, 'Synthetic', capturedAt, 'UTC', capturedAt, capturedAt]);
+    tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?,?,1)', [id, `parent-${id}`, 'user', text, capturedAt, 'UTC']);
+    tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', ['entry', id, entryClass, 'owner_review', capturedAt]);
+    tx.run('INSERT INTO routing_labels VALUES (?,?,1,?,?,?)', ['session', `parent-${id}`, parentClass, 'owner_review', capturedAt]);
+  });
+}
+
+/** A record that only the history mirror gives a memory item its class from. */
+function mirrored(store: Store, sessionId: string, dataClass: string) {
+  store.transaction(tx => tx.run('INSERT INTO history_sessions VALUES (?,?,?,?,?)', [sessionId, store.assistantId, dataClass, 1, 1000]));
+}
+
+interface CountingSeen { queries: number; maxRows: number }
+/** Counts the store work the way a query budget does: round trips, and rows any read returned. */
+function counted<T>(tx: Transaction, body: (tx: Transaction) => T) {
+  const seen: CountingSeen = { queries: 0, maxRows: 0 };
+  const proxy: Transaction = {
+    run: (sql, params) => tx.run(sql, params),
+    get: (sql, params) => { seen.queries += 1; return tx.get(sql, params); },
+    all: (sql, params) => {
+      seen.queries += 1;
+      const rows = tx.all(sql, params);
+      seen.maxRows = Math.max(seen.maxRows, rows.length);
+      return rows;
+    },
+  };
+  return { seen, result: body(proxy) };
+}
+
+test('M19 D2: a fact the dreaming pass learned is found by the helper memory search', () => {
+  const f = fixture();
+  const session = '33333333-3333-4333-8333-333333333333';
+  try {
+    const [turn] = turns(f.store, session, ['my passport expires in march next year']);
+    mirrored(f.store, session, 'ordinary');
+    const written = f.store.transaction(tx => items.insertItem(tx, {
+      kind: 'durable_fact', text: 'His passport expires in March next year.', subject: 'documents:passport',
+      validFrom: 4000, createdAt: 4000, createdBy: 'dreaming:v1',
+      sources: [{ sessionId: session, turnStartId: turn!, turnEndId: turn! }],
+    }));
+    // A superseded fact is not a fact any more, and the entries table never held it.
+    const replaced = f.store.transaction(tx => items.insertItem(tx, {
+      kind: 'durable_fact', text: 'His old passport number was synthetic.', subject: 'documents:passport',
+      validFrom: 3000, createdAt: 3000, createdBy: 'dreaming:v1',
+    }));
+    f.store.transaction(tx => items.supersedeItem(tx, replaced.id, written.id, 4000));
+    const found = f.store.transaction(tx => memory.searchMemory(tx, 'passport', 20, { classes: ['ordinary'] }));
+    assert.deepEqual(found.hits.map(hit => [hit.source, hit.id, hit.date]), [['memory_item', written.id, 4000]]);
+    assert.ok(found.hits[0]!.text.includes('passport'));
+    assert.equal(found.totalMatches, 1);
+  } finally { f.done(); }
+});
+
+test('M19 D3: the helper memory search admits only the data classes the route allows', () => {
+  const f = fixture();
+  const session = '44444444-4444-4444-8444-444444444444';
+  try {
+    entry(f.store, 'e-ordinary', 'Synthetic keycard lifts on monday', 1000, 'ordinary', 'ordinary');
+    entry(f.store, 'e-sensitive', 'Synthetic keycard code is 0000', 2000, 'sensitive', 'ordinary');
+    mirrored(f.store, session, 'private');
+    const [turn] = turns(f.store, session, ['the keycard pin was written down']);
+    const secret = f.store.transaction(tx => items.insertItem(tx, {
+      kind: 'durable_fact', text: 'The keycard pin for the garage is synthetic.', subject: 'home:keycard',
+      validFrom: 3000, createdAt: 3000, createdBy: 'dreaming:v1',
+      sources: [{ sessionId: session, turnStartId: turn!, turnEndId: turn! }],
+    }));
+    const ordinaryOnly = f.store.transaction(tx => memory.searchMemory(tx, 'keycard', 20, { classes: ['ordinary'] }));
+    assert.deepEqual(ordinaryOnly.hits.map(hit => hit.id), ['e-ordinary']);
+    assert.equal(ordinaryOnly.totalMatches, 1, 'the withheld matches are not counted either');
+    const all = f.store.transaction(tx => memory.searchMemory(tx, 'keycard', 20, { classes: ['ordinary', 'private', 'sensitive'] }));
+    assert.deepEqual(all.hits.map(hit => hit.id).sort(), [secret.id, 'e-ordinary', 'e-sensitive'].sort());
+  } finally { f.done(); }
+});
+
+test('M19 D8: recall keeps the base result over an indexed, bounded read', () => {
+  const f = fixture();
+  try {
+    f.store.transaction(tx => {
+      for (let i = 0; i < 500; i += 1) {
+        const text = i % 2 === 0 ? `Synthetic keyword note ${i}` : `Synthetic other note ${i}`;
+        tx.run('INSERT INTO sessions VALUES (?,?,?,NULL,?,1,?,?)', [`parent-${i}`, 'Synthetic', 1000 + i, 'UTC', 1000, 1000]);
+        tx.run('INSERT INTO entries VALUES (?,?,1,?,?,?,?,1)', [`e-${i}`, `parent-${i}`, 'user', text, 2000 + i, 'UTC']);
+      }
+    });
+    // The base algorithm, written out: fold, count the tokens present, then score and capture order.
+    const base = f.store.transaction(tx => {
+      const tokens = ['synthetic', 'keyword'];
+      const scored = tx.all('SELECT * FROM entries').map(row => {
+        const text = String(row['text']).toLowerCase();
+        return { id: String(row['id']), capturedAt: Number(row['captured_at']), score: tokens.filter(token => text.includes(token)).length };
+      }).filter(row => row.score > 0);
+      scored.sort((a, b) => b.score - a.score || b.capturedAt - a.capturedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      return { ids: scored.slice(0, 20).map(row => row.id), totalMatches: scored.length, truncated: scored.length > 20 };
+    });
+    const { seen, result: actual } = f.store.transaction(outer => counted(outer, tx => memory.recall(tx, 'synthetic keyword', 20)));
+    assert.deepEqual(actual.hits.map(hit => hit.entryId), base.ids);
+    assert.equal(actual.totalMatches, base.totalMatches);
+    assert.equal(actual.truncated, base.truncated);
+    assert.ok(seen.maxRows <= 200, `recall reads a bounded candidate set, read ${seen.maxRows} rows`);
+    assert.ok(seen.queries <= 4, `recall issues a fixed number of queries, issued ${seen.queries}`);
   } finally { f.done(); }
 });

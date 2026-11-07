@@ -1,7 +1,9 @@
 import { forgetHistorySessions } from './history-lifecycle.js';
 import { notFound, badRequest } from './contract.js';
-import type { Transaction, SQLRow } from './contract.js';
-import { entryAndParentOrdinary } from './labels.js';
+import type { Transaction, SQLRow, SQLValue } from './contract.js';
+import { historySessionEvidence, type HistoryEligibility } from './history-lifecycle.js';
+import { searchItems, ftsExpression } from './memory-items.js';
+import type { DataClass } from '../adapters/model/types.js';
 import { assertLimit, assertTimeZone, fold, newId, requireText, tokenize } from './util.js';
 
 export type EntryRole = 'user' | 'assistant' | 'system';
@@ -237,6 +239,23 @@ export function addSourceReference(
   return mapSourceRef(tx.get(`SELECT * FROM source_references WHERE id = ?`, [id])!);
 }
 
+/** One read for a whole page of hits, in the same order the single-owner read returns. */
+function sourceReferencesFor(tx: Transaction, ownerIds: readonly string[]): Map<string, SourceRefRecord[]> {
+  const byOwner = new Map<string, SourceRefRecord[]>();
+  if (ownerIds.length === 0) return byOwner;
+  const rows = tx.all(
+    `SELECT * FROM source_references WHERE owner_id IN (${ownerIds.map(() => '?').join(',')}) ORDER BY owner_id ASC, id ASC`,
+    ownerIds,
+  );
+  for (const row of rows) {
+    const ref = mapSourceRef(row);
+    const list = byOwner.get(ref.ownerId) ?? [];
+    list.push(ref);
+    byOwner.set(ref.ownerId, list);
+  }
+  return byOwner;
+}
+
 export function sourceReferences(tx: Transaction, ownerId: string): SourceRefRecord[] {
   return tx
     .all(`SELECT * FROM source_references WHERE owner_id = ? ORDER BY id ASC`, [ownerId])
@@ -352,32 +371,74 @@ function snippetFor(text: string, tokens: string[]): string {
   return `${from > 0 ? '\u2026' : ''}${text.slice(from, to)}${to < text.length ? '\u2026' : ''}`;
 }
 
-export interface RecallOptions { readonly eligibility?: 'ordinary-entry-and-parent' }
+export interface RecallOptions {
+  readonly eligibility?: 'ordinary-entry-and-parent';
+  /** The data classes the caller's route admits; the entry's and its parent's own labels decide. */
+  readonly classes?: readonly DataClass[];
+}
 
-/** Deterministic keyword + recency recall. Eligibility precedes ranking and the result limit. */
+/** A search reads at most this many matching rows; the count of matches still covers the whole index. */
+export const RECALL_CANDIDATES = 200;
+
+/** The start block's own admission rule, kept as one predicate so the count and the hits agree. */
+const ENTRY_AND_PARENT_ORDINARY = "el.data_class='ordinary' AND pl.data_class='ordinary'";
+
+/** An entry is admitted by the most restrictive of its own and its parent's current label, never by an absent one. */
+function classPredicate(classes: readonly DataClass[]): { sql: string; params: SQLValue[] } {
+  return {
+    sql: `(CASE WHEN el.data_class IS NULL OR pl.data_class IS NULL THEN 'unknown'
+        WHEN el.data_class='sensitive' OR pl.data_class='sensitive' THEN 'sensitive'
+        WHEN el.data_class='private' OR pl.data_class='private' THEN 'private'
+        ELSE 'ordinary' END) IN (${classes.map(() => '?').join(',')})`,
+    params: [...classes],
+  };
+}
+
+/**
+ * Deterministic keyword + recency recall. Eligibility precedes ranking and the result limit.
+ * D8: the candidates come from the entries FTS index, bounded, instead of a fold over every entry.
+ */
 export function recall(tx: Transaction, query: string, limit = 20, options: RecallOptions = {}): RecallResult {
   assertLimit(limit);
   const tokens = tokenize(typeof query === 'string' ? query : '');
   if (tokens.length === 0) return { hits: [], totalMatches: 0, truncated: false };
-
-  const rows = tx.all(`SELECT * FROM entries`, []);
-  const scored: { entry: EntryRecord; score: number }[] = [];
-  for (const row of rows) {
-    const entry = mapEntry(row);
-    const folded = fold(entry.text);
-    let score = 0;
-    for (const t of tokens) if (folded.includes(t)) score += 1;
-    if (score > 0 && (options.eligibility === undefined || entryAndParentOrdinary(tx, entry.id, entry.sessionId))) scored.push({ entry, score });
+  const from = `FROM entries_fts
+      JOIN entries e ON e.rowid = entries_fts.rowid
+      JOIN sessions s ON s.id = e.session_id
+      LEFT JOIN routing_labels el ON el.subject_kind='entry' AND el.subject_id=e.id
+        AND el.revision=(SELECT MAX(revision) FROM routing_labels WHERE subject_kind='entry' AND subject_id=e.id)
+      LEFT JOIN routing_labels pl ON pl.subject_kind='session' AND pl.subject_id=s.id
+        AND pl.revision=(SELECT MAX(revision) FROM routing_labels WHERE subject_kind='session' AND subject_id=s.id)`;
+  const params: SQLValue[] = [ftsExpression(tokens)];
+  const predicates: string[] = [];
+  if (options.eligibility === 'ordinary-entry-and-parent') predicates.push(ENTRY_AND_PARENT_ORDINARY);
+  if (options.classes !== undefined) {
+    const predicate = classPredicate(options.classes);
+    predicates.push(predicate.sql);
+    params.push(...predicate.params);
   }
+  const where = `WHERE entries_fts MATCH ?${predicates.map((predicate) => ` AND ${predicate}`).join('')}`;
+  const totalMatches = Number(tx.get(`SELECT COUNT(*) AS n ${from} ${where}`, params)?.['n'] ?? 0);
+  if (totalMatches === 0) return { hits: [], totalMatches: 0, truncated: false };
+
+  const scored = tx
+    .all(`SELECT e.* ${from} ${where} ORDER BY e.captured_at DESC, e.id LIMIT ?`, [...params, RECALL_CANDIDATES])
+    .map((row) => {
+      const entry = mapEntry(row);
+      const folded = fold(entry.text);
+      return { entry, score: tokens.filter((t) => folded.includes(t)).length };
+    })
+    .filter((row) => row.score > 0);
   scored.sort(
     (a, b) =>
       b.score - a.score ||
       b.entry.capturedAt - a.entry.capturedAt ||
       (a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0),
   );
-  const totalMatches = scored.length;
-  const hits: RecallHit[] = scored.slice(0, limit).map(({ entry, score }) => {
-    const refs = sourceReferences(tx, entry.id);
+  const selected = scored.slice(0, limit);
+  const references = sourceReferencesFor(tx, selected.map(({ entry }) => entry.id));
+  const hits: RecallHit[] = selected.map(({ entry, score }) => {
+    const refs = references.get(entry.id) ?? [];
     const stamped = refs.map((r) => r.sourceTimestamp).filter((t): t is number => t !== null);
     return {
       sessionId: entry.sessionId,
@@ -389,6 +450,66 @@ export function recall(tx: Transaction, query: string, limit = 20, options: Reca
     };
   });
   return { hits, totalMatches, truncated: totalMatches > limit };
+}
+
+export interface MemorySearchHit {
+  readonly source: 'entry' | 'memory_item';
+  readonly id: string;
+  readonly text: string;
+  readonly score: number;
+  /** Epoch ms the hit is about: an entry's own source time, an item's event or valid-from time. */
+  readonly date: number;
+}
+
+export interface MemorySearchResult {
+  readonly hits: MemorySearchHit[];
+  readonly totalMatches: number;
+  readonly truncated: boolean;
+}
+
+const CLASS_ORDER = ['ordinary', 'private', 'sensitive', 'unknown'] as const;
+
+/** The start block's rule for a typed fact: its sources' most restrictive class, unknown without a source. */
+function itemClass(tx: Transaction, sourceSessionIds: readonly string[], memo: HistoryEligibility): DataClass | 'unknown' {
+  const classes = sourceSessionIds.map((id) => historySessionEvidence(tx, id, memo)?.dataClass ?? 'unknown');
+  if (classes.length === 0) return 'unknown';
+  return CLASS_ORDER[Math.max(...classes.map((value) => CLASS_ORDER.indexOf(value)))]!;
+}
+
+/**
+ * D2/D3: the helper's memory tool reads the same two stores the start block reads. The word
+ * `passport` finds what the dreaming pass learned as well as what the owner said, each hit
+ * carries its source and date, and only the classes the route admits are returned.
+ * An explicit owner entry outranks a derived fact on the same score.
+ */
+export function searchMemory(tx: Transaction, query: string, limit = 20, options: RecallOptions = {}): MemorySearchResult {
+  assertLimit(limit);
+  const entries = recall(tx, query, limit, options);
+  const typed = searchItems(tx, query, limit);
+  const memo: HistoryEligibility = new Map();
+  // Only an admitted fact is a fact: a withheld class is neither a hit nor a reported match.
+  const admitted = typed.hits.flatMap((item) => {
+    const dataClass = itemClass(tx, item.sourceSessionIds, memo);
+    if (dataClass === 'unknown' || (options.classes !== undefined && !options.classes.includes(dataClass))) return [];
+    return [{ source: 'memory_item' as const, id: item.id, text: item.text, score: item.score, date: item.date }];
+  });
+  const merged: MemorySearchHit[] = [
+    ...entries.hits.map((hit) => ({ source: 'entry' as const, id: hit.entryId, text: hit.snippet, score: hit.score, date: hit.sourceTimestamp })),
+    ...admitted,
+  ];
+  merged.sort(
+    (a, b) =>
+      b.score - a.score ||
+      (a.source === 'entry' ? 0 : 1) - (b.source === 'entry' ? 0 : 1) ||
+      b.date - a.date ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  return {
+    hits: merged.slice(0, limit),
+    // The entry count covers the whole index; the typed count covers what one bounded read admitted.
+    totalMatches: entries.totalMatches + admitted.length,
+    truncated: entries.truncated || typed.totalMatches > limit || merged.length > limit,
+  };
 }
 
 export interface PreferenceRecord {

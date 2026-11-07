@@ -5,7 +5,7 @@ import type { VaultWriter } from '../tools/vault-write.js';
 import { createHash } from 'node:crypto';
 import { readPublishedCatalogues, type Store } from '../runtime/store.js';
 import { join } from 'node:path';
-import type { Credentials } from '../adapters/model/types.js';
+import type { Credentials, DataClass } from '../adapters/model/types.js';
 import type { WebSearchPort } from '../tools/web-search.js';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
@@ -22,6 +22,11 @@ export interface HostTaskOptions {
   bindings(): readonly BoundConnector[];
   draftChat?(input: Parameters<ComposeDispatch['draftChat']>[0], connectionIds?: readonly string[]): Promise<ComposeOutcome>;
   timeZone: string;
+  /**
+   * The route's own data classes, which is what a memory search may return. The Live host always
+   * passes its profile's set; a runtime composed without a route keeps the domain's own recall.
+   */
+  dataClasses?: readonly DataClass[];
   executors?(sessionId: string): ExistingExecutors;
   web?: WebSearchPort;
   vault?: VaultWriter;
@@ -88,7 +93,7 @@ export function hostTaskFactory(options: HostTaskOptions): HostTaskFactory {
           if (receipt.saved) return documentResult(JSON.stringify(receipt), 'vault-receipt');
           return { ...failed(receipt.guidance ?? 'The vault did not confirm this save.'), receipt: { operation_id: identity.operation_id, state: receipt.code === 'outcome_unknown' ? 'unknown' : 'failed' } };
         }
-        if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.recall(tx, String(args.query)))), 'local-memory');
+        if (name === 'search_memory') return documentResult(JSON.stringify(options.store.transaction(tx => memory.searchMemory(tx, String(args.query), 20, options.dataClasses === undefined ? {} : { classes: options.dataClasses }))), 'local-memory');
         if (name === 'read_memory') {
           try {
             const entry = options.store.transaction(tx => memory.readEntry(tx, String(args.ref)));

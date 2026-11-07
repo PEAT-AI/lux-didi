@@ -63,7 +63,13 @@ grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exi
 node server/test/mongoose-login.integration.mjs || http_status=$?
 # Preserve every HTTP failure while still collecting discriminating real-browser proof.
 # Deliberately not the web fixture producer: this drives the shipped UI on the real host.
+# BOX-R2: the proof launches the installed chromium channel with --use-angle=metal and --enable-gpu, so it is a
+# macOS GPU proof. Where that is absent the check says so once instead of a Playwright install crash.
 browser_status=0
-lux-browser-slot run --priority worker --want 1 --wait 1800 -- node server/test/host-browser.mjs || browser_status=$?
+if [ "$(uname -s)" = Darwin ]; then
+  lux-browser-slot run --priority worker --want 1 --wait 1800 -- node server/test/host-browser.mjs || browser_status=$?
+else
+  echo "check-host: the real-browser proof needs macOS with the installed chromium channel (--use-angle=metal), so this host skips it; every Node test above still ran" >&2
+fi
 if [ "$http_status" -ne 0 ]; then exit "$http_status"; fi
 exit "$browser_status"

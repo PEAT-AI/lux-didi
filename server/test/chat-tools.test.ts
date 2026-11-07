@@ -22,7 +22,7 @@ import type { LiveAuthority, ConnectionPolicy } from '../tools/types.js';
 import type { ModelPort, ModelRequest, DataClass } from '../adapters/model/types.js';
 
 const schema = { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, include_sensitive: { type: 'boolean' }, detail: { type: 'string', enum: ['snippets', 'bodies', 'voice'] }, snippet_chars: { type: 'integer', minimum: 100, maximum: 6000 } }, required: ['query', 'limit', 'include_sensitive'], additionalProperties: false };
-const tools: { name: string; inputSchema: Record<string, unknown> }[] = [{ name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: schema }];
+const tools: { name: string; annotations?: Record<string, unknown>; inputSchema: Record<string, unknown> }[] = [{ name: 'search_insights', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: schema }];
 const ACCEPTED = 'ACCEPTED [Überblick 🌱](https://example.com/evidence) insight 42';
 const REJECTED = 'REJECTED [diagnostic](https://example.com/rejected) insight 99';
 const UNCLASSIFIED = '[unclassified](https://example.com/unclassified) insight 100';
@@ -74,7 +74,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
   let executions = 0; const sourceRequests: Record<string, unknown>[] = [];
   // The real helper always publishes its identity probe, and a strict Google connector refuses to
   // publish without it, so the fixture publishes and answers gmail_get_profile as well.
-  let exposed = sourceKind === 'gmail' ? [{ name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }, { name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id', 'format'], additionalProperties: false } }] : structuredClone(tools);
+  let exposed: { name: string; annotations?: Record<string, unknown>; inputSchema: Record<string, unknown> }[] = sourceKind === 'gmail' ? [{ name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }, { name: 'gmail_read_message', inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['full', 'metadata'] } }, required: ['id', 'format'], additionalProperties: false } }] : structuredClone(tools);
   let onDispatch: (() => void) | undefined;
   let reject = false;
   let errorFlag = true;

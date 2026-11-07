@@ -42,7 +42,7 @@ test('FR5 fast-first replay: a clear fast hit is read, a miss falls back to full
   const root = process.env.DIDI_TEST_SOURCE_ROOT ?? fileURLToPath(new URL('../../test/', import.meta.url));
   const replay = await import(pathToFileURL(resolve(root, '../../scripts/eval-worker-replay.mjs')).href);
   const rows = replay.VAULT_FAST_ROWS;
-  assert.deepEqual(rows.map((row: { id: string }) => row.id), ['vault-fast-named-topic', 'vault-fast-unrelated-hits', 'vault-fast-empty']);
+  assert.deepEqual(rows.map((row: { id: string }) => row.id), ['vault-fast-named-topic', 'vault-fast-unrelated-hits', 'vault-fast-empty', 'vault-fast-absent-topic']);
   for (const row of rows) {
     const score = replay.scoreVaultFast(row, { calls: replay.vaultFastPlan(row), spoken: row.answer });
     assert.deepEqual(Object.values(score), [true, true, true, true, true, true], `${row.id} follows the shipped rule`);
@@ -61,9 +61,14 @@ test('FR5 fast-first replay: a clear fast hit is read, a miss falls back to full
   assert.equal(fullFirst.fast_first, false, 'a ranked search first is not fast-first');
   const skippedFull = replay.scoreVaultFast(rows[1], { calls: [replay.vaultFastPlan(rows[1])[0], { name: 'get_insight', args: { ids: [rows[1].record_id] } }], spoken: rows[1].answer });
   assert.equal(skippedFull.full_when_needed, false, 'an unclear fast result still needs the full search');
+  // FR5-R1: fast returned hits for 3 of 5 absent topics, so an absence claim after the fast search
+  // alone is refused, and the full search must be the one that found nothing.
+  const absent = rows[3];
+  const claimedFromFast = replay.scoreVaultFast(absent, { calls: [replay.vaultFastPlan(absent)[0]], spoken: absent.answer });
+  assert.equal(claimedFromFast.full_when_needed, false, 'an absence claim never rests on the fast search alone');
 
-  // Paired simulated wait to the first body-supported finding for these rows.
-  assert.deepEqual(replay.vaultPairedMs(), { fast_first: 150 + 1678 + 1678, full_only: 1528 * 3 });
-  assert.equal(replay.vaultFirstFindingMs(named, 'fast-first'), 150);
+  // Paired simulated wait to the first body-supported finding: 70 ms fast, 1528 ms full (FR5-R1).
+  assert.deepEqual(replay.vaultPairedMs(), { fast_first: 70 + 3 * 1598, full_only: 1528 * 4 });
+  assert.equal(replay.vaultFirstFindingMs(named, 'fast-first'), 70);
   assert.equal(replay.vaultFirstFindingMs(named, 'full-only'), 1528);
 });

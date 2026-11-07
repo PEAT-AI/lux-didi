@@ -45,7 +45,7 @@ function policy(overrides: Partial<ConnectionPolicy> = {}): ConnectionPolicy {
     bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 }, ...overrides };
 }
 const request: ModelRequest = { system: 'synthetic', promptVersion: '1', contents: [{ role: 'user', parts: [{ text: 'synthetic' }] }], dataClasses: ['ordinary'], context: { items: [], selectedIds: [], maxChars: 100 } };
-function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic' }): ModelResult {
+function modelResult(name?: string, args: Record<string, unknown> = { query: 'synthetic', mode: null }): ModelResult {
   return { status: 'complete', text: name ? '' : 'done', providerContent: { role: 'model', parts: name ? [{ functionCall: { name, args, id: 'call' } }] : [{ text: 'done' }] }, reason: 'complete', prompt: { version: '1', hash: 'synthetic', omittedContextIds: [] }, timings: { kind: 'synthetic', totalMs: 0, firstTextMs: null } };
 }
 interface FixtureOptions { sourceTools?: McpTool[]; resultOf?: (name: string) => unknown; log?: ToolsOwnerOptions['log']; policy?: ConnectionPolicy; bindings?: string[]; result?: unknown; memoryBytes?: number; responseBytes?: number; compose?: ComposeDispatch; grantMode?: 'owner-trusted-reads'; alarms?: ToolsOwnerOptions['alarms']; timezone?: string }
@@ -110,10 +110,10 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
     return taskDefinitions(task.runtime, task.identity, owner, runId);
   };
   const definitions = () => allDefinitions().filter(tool => tool.name === 'search_knowledge' || tool.name === 'read_knowledge');
-  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic' }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
+  const intent = (executionId = 'run:1:0', name = 'search_knowledge', args: Record<string, unknown> = { query: 'synthetic', mode: null }): ToolCallIntent => ({ runId: host.runId, actorId: host.actorId, authorityEpoch: host.authorityEpoch, revision: host.revision,
     executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), callId: 'call', accountId: TASK_ACCOUNT, resourceId: TASK_RESOURCE });
   const binding = (ref: { id: string; sha256: string }, call = intent()): ToolResultBinding => ({ executionId: call.executionId, name: call.toolName, callId: call.callId!, contentIndex: 2, partIndex: 0, result: structuredClone(ref) });
-  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic' }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
+  const execute = (call = intent(), args: Record<string, unknown> = { query: 'synthetic', mode: null }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
   return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions, allDefinitions, observeOwner, taskRuntime: () => { allDefinitions(); return taskRuns.get('run')!.runtime; },
@@ -290,7 +290,10 @@ test('task search/read strict arguments keep requested ids distinct from verifie
   assert.equal(search.parameters['additionalProperties'], false);
   assert.equal(search.validate({ query: 'x', limit: 4 }), false);
   assert.equal(search.validate({ query: 'x', account: 'foreign' }), false);
-  assert.equal(search.validate({ query: 'x' }), true);
+  assert.equal(search.validate({ query: 'x' }), false, 'the declared mode field travels on every call, null for the ranked default');
+  assert.equal(search.validate({ query: 'x', mode: null }), true);
+  assert.equal(search.validate({ query: 'x', mode: 'fast' }), true);
+  assert.equal(search.validate({ query: 'x', mode: 'quick' }), false, 'only the vault\'s own two modes are admitted');
   const read = f.definitions().find(tool => tool.name === 'read_knowledge')!;
   assert.equal(read.validate({ ids: [13, 7], include_links: false, cursor: null }), true, 'a task read accepts the merged typed batch schema');
   assert.equal(read.validate({ ids: [], include_links: false, cursor: null }), false);

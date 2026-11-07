@@ -349,9 +349,9 @@ test('public voice and worker policies contain judgments, not lines to recite', 
   const { WORKER_INSTRUCTIONS, workerInstructions } = await import('../tasks/instructions.js');
   const { createHash } = await import('node:crypto');
   assert.equal(createHash('sha256').update(NAYA_WORK_DELIVERY).digest('hex'), '9c1bbaf3182f03085a8d5b1c67b6ccfd3886cba0a583f4b2513a931c1a5025b4', 'Architect-authored voice text stays exact');
-  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), 'b40be9f9c0f7d91af4ae34cbb1d9f95f7d555edd74914f958cb4c95af3a1f5d9', 'Architect-authored worker text stays exact');
+  assert.equal(createHash('sha256').update(WORKER_INSTRUCTIONS).digest('hex'), 'b12266966a6dbf8ebabc54e33687015ded774453a95b51fa0470420388bc964d', 'Architect-authored worker text stays exact');
   // 10.11: the mandated scope, searching and speech rules re-pin the worker block to its measured size (TR-R5).
-  assert.ok(WORKER_INSTRUCTIONS.length === 7996);
+  assert.ok(WORKER_INSTRUCTIONS.length === 8170);
   for (const text of [NAYA_WORK_DELIVERY, WORKER_INSTRUCTIONS]) {
     assert.doesNotMatch(text, /[\u2013\u2014]|\bresearch\b/i);
     assert.doesNotMatch(text.replace('{"status":"no_action"}', ''), /["“][^"”]+["”]/, 'no quoted prose to recite outside the required JSON schema');

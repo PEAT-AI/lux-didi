@@ -356,7 +356,7 @@ export const VAULT_FAST_RULE = Object.freeze({
   body_before_fact: /read a hit[^.]*body/isu,
   title_never_fact: /title is never a fact/iu,
   // FR5-R1: fast top-3 held full's top-1 in 7 of 10 verified queries, so a fast hit is a lead only.
-  leads_not_answers: /fast hits are leads[^.]*never prove absence/isu,
+  leads_not_answers: /fast hits are leads[^.]*never proves? absence/isu,
   // FR5-R1: the confidence and low_confidence fields contradict each other in fast mode.
   confidence_not_gate: /confidence fields[^.]*not a gate/isu,
   fall_back_full: /search full when the fast hit does not clearly match/isu,

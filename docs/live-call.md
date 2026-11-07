@@ -277,8 +277,12 @@ post-tool continuation request) use a session-level `session.commentary.append`
 with explicit `delegation_id: null`, not a typed owner turn. An adapter that has
 no commentary channel (Gemini) sends the same note through the host-text path it
 accepts, so the alarm opening is announced on every adapter. Typed owner input
-keeps its existing response commands; their client-delegation compatibility is
-a known gap. Provider rejection metadata includes the client event id, its prefix
+rides `session.instructions.append` with an explicit `delegation_id: null`: this
+session declares client delegation, and `response.item.create` and
+`response.create` both require Responses delegation, so the provider refused
+that pair with `invalid_request_error` param `type` (#925). The typed words are
+carried inside an instruction to answer, sliced under the provider's 500-token
+append limit. Provider rejection metadata includes the client event id, its prefix
 and the command type when retained in the adapter's bounded recent-command map,
 without logging instruction content.
 

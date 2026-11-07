@@ -86,7 +86,7 @@ async function fixture(options: FixtureOptions = {}) {
   const url = `http://127.0.0.1:${address.port}/mcp`;
   return {
     url, calls, responseEntities,
-    async close() { await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); },
+    async close() { listener.closeAllConnections(); await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); },
   };
 }
 

@@ -813,3 +813,16 @@ test('a dreaming_done line names a below-floor skip and carries no other outcome
   assert.equal(skipped?.['outcome'], 'skipped_below_floor');
   assert.equal(safeEvent({ ...line, outcome: 'SYNTHETIC PRIVATE CONTENT' }), undefined, 'the outcome is a closed word');
 });
+
+// L6 (#940): one aggregated omission record replaces 1,557 per-item lines per five call starts. Closed,
+// counted by reason and kind, and content free: only opaque ids of the items that were selected.
+test('the aggregated startup omission record is closed, counted and content free', () => {
+  const record = { event: 'live_context_items_omitted', selected: 3, omitted: 5,
+    reasons: { budget: 2, duplicate: 2, expired: 1, superseded: 0, invalid: 0, 'not-yet-valid': 0 },
+    kinds: { plan: 1, preference: 2 }, selectedIds: ['fact-1', 'plan-2', 'summary-3'] };
+  assert.deepEqual(safeEvent(record), record);
+  assert.equal(safeEvent({ ...record, selectedIds: [...record.selectedIds, 'SYNTHETIC PRIVATE CONTENT'] }), undefined);
+  assert.equal(safeEvent({ ...record, reasons: { ...record.reasons, budget: -1 } }), undefined);
+  assert.equal(safeEvent({ ...record, kinds: { legacy_context: 1 } }), undefined);
+  assert.equal(safeEvent({ ...record, text: 'SYNTHETIC PRIVATE CONTENT' }), undefined);
+});

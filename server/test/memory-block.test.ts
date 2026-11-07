@@ -150,3 +150,48 @@ test('M19 D7: identity selection keeps the base outcome while accumulating once 
   assert.deepEqual(result.omitted.map(omitted => omitted.id), rejected);
   assert.ok(result.text.includes(text), 'the selected part text is unchanged');
 });
+
+// DREAM-1 (#940): the owner learns a durable fact in one call and must still know it at the next start.
+// Legacy context records carry owner authority and a full salience, so at base they fill the identity
+// budget first and every fact and preference the dreaming turn just wrote is dropped for budget.
+test('coverage-first: durable facts and preferences reach the start block under legacy context pressure', () => {
+  const facts = Array.from({ length: 12 }, (_, index) => item(`fact-${index}`, {
+    text: `Fact ${index}: his sister Ana lives in Lisbon ${index}`, salience: 0.2 }));
+  const preferences = Array.from({ length: 12 }, (_, index) => item(`pref-${index}`, {
+    kind: 'preference', text: `Preference ${index}: he wants tea, never coffee ${index}`, salience: 0.2 }));
+  const legacy = Array.from({ length: 60 }, (_, index) => ({
+    id: `entry-${index}`, text: `Legacy context line ${index} ${'detail '.repeat(24)}`, salience: 1 }));
+  const result = compileMemoryBlock({ ...input, items: [...facts, ...preferences], entries: legacy });
+  for (const typed of [...facts, ...preferences]) assert.ok(result.selectedIds.includes(typed.id), `${typed.id} must reach the start block`);
+  assert.equal(result.omitted.filter(value => value.reason === 'budget' && /^(fact|pref)-/.test(value.id)).length, 0);
+  assert.ok(estimatedTokens(result.text) <= CONTEXT_BUDGET.sections.memory.ceiling);
+});
+
+test('a plan the clock has passed is never selected and ranks no better than the nearest dated loop', () => {
+  const day = 86_400_000;
+  const result = compileMemoryBlock({ ...input, items: [
+    item('expired-plan', { kind: 'plan', eventAt: now - day, text: 'Old plan: he flies to Phuket' }),
+    item('tomorrow-plan', { kind: 'plan', eventAt: now + day, text: 'Tomorrow plan: he drives to Bogor' }),
+    item('undated-loop', { kind: 'transient_state', eventAt: null, text: 'Undated state: the kitchen tap leaks' }),
+  ] });
+  assert.ok(!result.selectedIds.includes('expired-plan'));
+  assert.ok(result.omitted.some(value => value.id === 'expired-plan' && value.reason === 'expired'));
+  assert.ok(result.text.indexOf('Tomorrow plan') < result.text.indexOf('Undated state'), 'the nearer plan outranks the undated equal-salience loop');
+});
+
+test('the selector accounting matches the composed block size it actually renders', () => {
+  const items = Array.from({ length: 40 }, (_, index) => item(`acc-${index}`, { text: `Accounting fixture line ${index} ${'word '.repeat(12)}`, salience: 1 }));
+  const result = compileMemoryBlock({ ...input, items });
+  const accounting = result.parts.reduce((sum, part) => sum + part.estimatedTokens, 0);
+  const composed = estimatedTokens(result.text);
+  assert.ok(Math.abs(accounting - composed) <= composed * 0.05, `accounting ${accounting} vs composed ${composed}`);
+});
+
+test('an allowance tighter than the composed memory section drops the lowest ranked whole item', () => {
+  const items = Array.from({ length: 40 }, (_, index) => item(`tight-${index}`, { text: `Tight fixture line ${index} ${'word '.repeat(12)}`, salience: 1 - index / 100 }));
+  const roomy = compileMemoryBlock({ ...input, items });
+  const tight = compileMemoryBlock({ ...input, items, allowanceTokens: 400 });
+  assert.ok(estimatedTokens(tight.text) <= 400);
+  assert.ok(tight.selectedIds.length < roomy.selectedIds.length);
+  assert.ok(tight.omitted.some(value => value.reason === 'budget') || tight.selectedIds.length === 0);
+});

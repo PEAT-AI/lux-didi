@@ -28,11 +28,13 @@ function harness(t: TestContext): Store {
 
 test('F8: the dispatched save envelope carries the owner speaker in source_ref', async t => {
   const store = harness(t);
-  const row = store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: SESSION, stageId: 'speaker-dispatch', content: NOTE, title: NOTE, now: NOW }));
+  const minted = store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: SESSION, stageId: 'speaker-dispatch', content: NOTE, title: NOTE, now: NOW }));
+  assert.equal(minted.state, 'dispatch', 'the row is minted and ready to dispatch');
+  const opId = minted.state === 'dispatch' ? minted.opId : '';
   const envelopes: VaultSaveArgs[] = [];
   const writer = new VaultWriter({ store, now: () => NOW, log: () => {}, backoff: async () => {},
     transport: { save: async args => { envelopes.push(args); return { outcome: 'inserted' as const, insightId: '9' }; } } });
-  await writer.dispatch({ opId: String((row as Record<string, unknown>)['op_id']), content: NOTE, title: NOTE });
+  await writer.dispatch({ opId, content: NOTE, title: NOTE });
   assert.equal(envelopes.length, 1, 'one dispatch, one save');
   const ref = envelopes[0]?.source?.[P.sourceRef] as Record<string, unknown> | undefined;
   assert.ok(ref, 'a durable write carries its provenance envelope');

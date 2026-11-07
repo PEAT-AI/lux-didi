@@ -243,7 +243,8 @@ test('a larger native search limit returns and preserves the next slice without 
     assert.deepEqual(f.calls.at(-1), { name: 'search_insights', arguments: { query: 'q', limit: 25, include_sensitive: true } });
     const shaped = shapeLuxKnowledge('search_insights', text(second));
     assert.equal(shaped.partial, false, 'the formatter did not discard returned source bodies');
-    assert.equal((shaped.text.match(/^### /gm) ?? []).length, 25);
+    // F1: no heading is synthesized any more, so the hits are counted by their own text.
+    for (let index = 1; index <= 25; index += 1) assert.ok(shaped.text.includes(`Insight ${index}`), `hit ${index} survives shaping`);
     assert.match(shaped.text, /Insight 25/);
     assert.equal(shaped.text.includes('call search_insights again'), false, 'no self-repeating follow-up for a host-invented cut');
   } finally { await adapter.close(); await f.close(); }
@@ -257,7 +258,7 @@ test('a completed native search preserves all returned hits and their bodies in 
     const { reader } = await readerFor(adapter, registry);
     const result = complete(await reader.call('search_insights', { query: 'q', limit: 12 }));
     const shaped = shapeLuxKnowledge('search_insights', (result.decodedResult as { content?: { text?: string }[] }).content?.[0]?.text ?? '');
-    assert.equal((shaped.text.match(/^### /gm) ?? []).length, 12, 'all twelve actual native hits survive shaping');
+    for (let index = 1; index <= 12; index += 1) assert.ok(shaped.text.includes(`Insight ${index}`), `hit ${index} of the twelve survives shaping`);
     assert.match(shaped.text, /Body of insight 1\./);
     assert.match(shaped.text, /Body of insight 12\./, 'the last actual native body is retained too');
   } finally { await adapter.close(); await f.close(); }

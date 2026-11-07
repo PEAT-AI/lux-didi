@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { loadMcpEndpoints } from '../config/mcp.js';
+// The installed-app template is a signed Mac bundle: the fixture signs it with the host codesign and the
+// installer verifies every copy with the same tool. A host without that tool cannot build the premise, so the
+// two template tests say so in one line instead of turning into a red that names nothing (#933).
+const hostCanSignApp = (): boolean => existsSync('/usr/bin/codesign');
 import { loadLiveConfig } from '../config/live.js';
 // Resolved from this file, not from the process cwd: the declared checks run with cwd 'server'.
 const sourceInstaller = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'install-macos-app.sh');
@@ -21,7 +25,10 @@ function fixture() {
   writeFileSync(join(app, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.example.synthetic-didi</string><key>CFBundleExecutable</key><string>LuxDidi</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>');
   copyFileSync('/usr/bin/true', join(app, 'Contents/MacOS/LuxDidi'));
   const signed = spawnSync('/usr/bin/codesign', ['--force', '--sign', '-', app], { encoding: 'utf8' });
-  assert.equal(signed.status, 0, signed.stderr);
+  // #933: when the host has no codesign at all the spawn itself fails and `signed.stderr` is undefined, so
+  // this line used to fail with "the message argument must be one of type string or function" instead of
+  // naming the missing tool. A host without it skips below, and any other failure now reads its own error.
+  assert.equal(signed.status, 0, signed.stderr ?? signed.error?.message ?? 'codesign could not be run');
   // The portable bundle has no service or account data. Exercise the real installer and gate
   // with a fixture-local installed check, never the checkout's compile/account probes.
   const scripts = join(root, 'scripts'); mkdirSync(scripts);
@@ -56,7 +63,8 @@ test('installed open-web check binds the explicit app target before any build', 
     assert.doesNotMatch(result.stdout, /A5 STAGED|>.*build|tsc -p/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
-test('fresh installation creates no connector or provider authority configuration', () => {
+test('fresh installation creates no connector or provider authority configuration', t => {
+  if (!hostCanSignApp()) { t.skip('codesign is a macOS tool: this host cannot build the signed bundle the installer template verifies'); return; }
   const f = fixture();
   try {
     const result = f.run(); assert.equal(result.status, 0, result.stderr);
@@ -87,7 +95,8 @@ test('fresh installation creates no connector or provider authority configuratio
     assert.match(verified.stdout, /INSTALL-MACOS-APP PASS .*canary=task_tool_and_task_settled/, 'a receipt bound to this build finalizes the install');
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
-test('successful upgrade and failed post-swap verification preserve owner files and symlinks', () => {
+test('successful upgrade and failed post-swap verification preserve owner files and symlinks', t => {
+  if (!hostCanSignApp()) { t.skip('codesign is a macOS tool: this host cannot build the signed bundle the installer template verifies'); return; }
   const f = fixture();
   try {
     const snapshots: { path: string; bytes: string; ino: bigint; mtime: bigint; link?: string }[] = [];

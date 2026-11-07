@@ -475,14 +475,28 @@ test('live_upstream_drop is a closed metadata-only host log shape', () => {
   assert.equal(safeEvent({ event: 'live_upstream_drop', errorKind: 'stalled', closeCode: 1006, bufferedAmount: 3000, writesFailed: 4, sessionMs: 12_000, rebuilt: true, text: 'leak' }), undefined);
 });
 
+// #896: each limit below is a 30 ms timer, and a wall clock turned four 30 ms waits into a race the busy
+// box won or lost: the deadline could pass while the loop was still delivering the setup, so the code was
+// the wrong one. The adapter's limits are setTimeout and its deadline arithmetic is Date.now, so both are
+// virtual here and the test decides when each limit is due.
 test('handshake, idle, session and deadline timers bound cleanup', async t => {
   for (const expected of ['handshake_timeout', 'idle_timeout', 'session_timeout', 'deadline'] as const) {
     const f = await fixture(t);
-    const limits = { handshakeMs: expected === 'handshake_timeout' ? 30 : 1000, idleMs: expected === 'idle_timeout' ? 30 : 1000, sessionMs: expected === 'session_timeout' ? 30 : 3000, closeMs: 20 };
-    const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, limits })).open(request(), { ...control(), deadlineMs: Date.now() + (expected === 'deadline' ? 30 : 4000) });
-    await f.frame(1); if (expected !== 'handshake_timeout') { f.send({ setupComplete: {} }); await session.ready; }
-    assert.equal((await session.done).code, expected);
-    assert.equal(f.attempts, 1);
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    try {
+      const limits = { handshakeMs: expected === 'handshake_timeout' ? 30 : 1000, idleMs: expected === 'idle_timeout' ? 30 : 1000, sessionMs: expected === 'session_timeout' ? 30 : 3000, closeMs: 20 };
+      const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory, limits })).open(request(), { ...control(), deadlineMs: Date.now() + (expected === 'deadline' ? 30 : 4000) });
+      await f.frame(1); if (expected !== 'handshake_timeout') { f.send({ setupComplete: {} }); await session.ready; }
+      let code: string | undefined;
+      void session.done.then(result => { code = result.code; });
+      // Small virtual steps with real socket I/O between them: the due limit fires here, whichever one it is.
+      for (let step = 0; step < 100 && code === undefined; step += 1) {
+        t.mock.timers.tick(5);
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      assert.equal(code, expected);
+      assert.equal(f.attempts, 1);
+    } finally { t.mock.timers.reset(); }
   }
 });
 

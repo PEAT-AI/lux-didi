@@ -400,7 +400,7 @@ export function scoreVaultFast(row, result = {}) {
   const searches = calls.filter(call => call.name === L.search && call.args);
   const fast = searches.findIndex(call => call.args.mode === 'fast');
   const full = searches.findIndex(call => call.args.mode !== 'fast');
-  const read = row.record_id === null ? undefined : calls.find(call => call.name === L.get && (call.args?.ids ?? []).includes(row.record_id));
+  const read = row.record_id === null ? undefined : calls.find(call => call.name === L.get && (call.args?.[P.insightIds] ?? []).includes(row.record_id));
   return {
     fast_first: fast !== -1 && searches[fast].args.limit <= 5,
     full_when_needed: row.expect_full ? full > fast : true,

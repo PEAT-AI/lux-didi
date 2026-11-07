@@ -5,7 +5,7 @@ import { commitAlarmEffect } from '../runtime/store.js';
 import { authorizedTaskEffect } from '../tasks/authority.js';
 import { connectorFailures } from '../tasks/results.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES } from '../adapters/mcp/port.js';
-import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead } from '../tasks/connectors.js';
+import { nativeTaskReadTool, nativeTaskReadGranted, isConnectorTaskRead, configuredCompanyTools } from '../tasks/connectors.js';
 import { TASK_ACCOUNT, TASK_RESOURCE, TASK_TOOL_NAMES } from '../tasks/tools.js';
 import type { TaskExecutionContext, ExistingExecutors } from '../tasks/connectors.js';
 import { documentResult as taskDocumentResult, failed as taskFailed } from '../tasks/results.js';
@@ -252,7 +252,18 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     return p.connector === 'lux-knowledge' && p.toolNames.includes(name)
       && registry.visibleTools(p.endpoint.id).some(tool => tool.name === name && luxToolAdmitted(tool) && !luxWriteAdmitted(tool));
   });
-  const taskToolAdmitted = (snapshot: RunSnapshot, name: string): boolean => TASK_TOOL_NAMES.has(name) || luxTaskRead(snapshot, name);
+  const taskToolAdmitted = (snapshot: RunSnapshot, name: string): boolean => {
+    if (TASK_TOOL_NAMES.has(name)) return true; // Local and unchanged non-Lux helper tools.
+    const bindings = snapshot.connections.flatMap(bound => {
+      const policy = bound.policy;
+      if (policy.connector !== 'lux-knowledge' || !policy.enabled) return [];
+      const descriptor = connectorDescriptor(policy.connector);
+      if (!descriptor) return [];
+      const reader = descriptor.createReader({ port, registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
+      return [{ connector: policy.connector, policy, reader }];
+    });
+    return configuredCompanyTools(bindings).some(tool => tool.name === name);
+  };
   const target = (snapshot: RunSnapshot, call: ToolCallRefusal, transaction?: Transaction): { connectionId: string; policy: { sourcePolicy: { allowedClasses: readonly DataClass[] }; route: { allowedClasses: readonly DataClass[] }; bounds: { maxResultBytes: number } } } => {
     if (taskToolAdmitted(snapshot, call.toolName) && call.accountId === TASK_ACCOUNT && call.resourceId === TASK_RESOURCE) {
       // Native source admission and completion bind the selected source in runTask/evidenceCurrent, not every unrelated connector.

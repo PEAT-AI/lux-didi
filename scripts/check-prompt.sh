@@ -190,7 +190,7 @@ assert.match(notConnected, /^Connectors: team chat not connected\./mu, 'a connec
 console.log(JSON.stringify({ case: 'connector_truth', approvalNoControl: true, noSettingsLocation: true, notConnected: true }));
 // C-CLAIMS9 outcome 2, W3-R2: the rule holds on a session with no connector rows too, where no connector line
 // is built at all, so it lives in the voice surface the model always receives.
-assert.ok(persona.NAYA_VOICE_SURFACE.includes('Name settings or approval locations only from the connector state line.'),
+assert.ok(persona.NAYA_VOICE_SURFACE.includes('Name settings or approval places only from the connector state line.'),
   'the voice surface forbids naming a location the connector state line does not name, with or without connector rows');
 console.log(JSON.stringify({ case: 'connector_truth_without_rows', voiceRule: true }));
 NODE

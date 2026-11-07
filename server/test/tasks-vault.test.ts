@@ -64,22 +64,12 @@ test('vault shaping is bounded and does not change company exact-name matching',
   assert.equal(projectTaskPayload('search_company', vaultEnvelope, { query: 'orchid watering' }).status, 'no_match');
 });
 
-test('vault exposes only the reviewed read catalogue with bounded valid lookup arguments', async () => {
+test('the vault descriptor synthesizes no read catalogue; discovery alone publishes the reads', async () => {
   const { CONNECTOR_DESCRIPTORS } = await import('../connectors/index.js');
   const policy = { bounds: { maxSearchLimit: 25, maxGetIds: 10 } } as import('../tools/types.js').ConnectionPolicy;
   const descriptor = CONNECTOR_DESCRIPTORS['lux-knowledge']!;
-  assert.deepEqual([...descriptor.envelope], ['search_insights', 'get_insight', 'list_meetings', 'get_meeting', 'list_insights']);
-  const tools = descriptor.declarations(policy);
-  for (const [name, valid, invalid] of [
-    ['list_meetings', { participant: 'Synthetic', date_from: '2026-01-01', limit: 10 }, { date_from: '2026-02-30' }],
-    ['get_meeting', { meeting_id: 'synthetic', limit: 10 }, { limit: 10 }],
-    ['list_insights', { count_only: true, limit: 10 }, { limit: 100000 }],
-  ] as const) {
-    const tool = tools.find(tool => tool.name === name);
-    assert.ok(tool, name);
-    assert.equal(tool.validate(valid), true, name);
-    assert.equal(tool.validate(invalid), false, name);
-  }
+  assert.deepEqual([...descriptor.envelope], [], 'no fixed read envelope survives discovery');
+  assert.deepEqual(descriptor.declarations(policy), [], 'every helper declaration is the daemon own published schema');
 });
 
 test('fresh vault source defaults sensitive without widening another connector or an explicit class', async t => {
@@ -170,7 +160,12 @@ test('existing lux write transport sends LK6 provenance and preserves candidate 
     calls.push(call);
     const result = call.method === 'tools/call'
       ? { structuredContent: { disposition: 'created', insight_id: 42, candidates: [{ insight_id: 9 }] } }
-      : {};
+      : call.method === 'tools/list'
+        ? { tools: [{ name: 'create_insight', description: 'Create an insight', annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+          inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' },
+            project: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' }, quote: { type: 'string' },
+            follow_up_state: { type: 'string' }, insight_id: { type: 'integer' } } } }] }
+        : {};
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }), { status: 200 });
   });
   const receipt = await transport.write('create_insight', {
@@ -182,8 +177,10 @@ test('existing lux write transport sends LK6 provenance and preserves candidate 
   assert.equal(receipt.disposition, 'created');
   assert.equal(receipt.insight_id, 42);
   assert.deepEqual(receipt.candidates, [{ insight_id: 9 }]);
-  assert.deepEqual((calls[2]?.params as Record<string, unknown>).name, 'create_insight');
-  assert.equal(((calls[2]?.params as Record<string, unknown>).arguments as Record<string, unknown>).idempotency_key, 'synthetic-session:7:7');
+  const call = calls.find(entry => entry['method'] === 'tools/call');
+  assert.equal((call?.['params'] as Record<string, unknown>)['name'], 'create_insight');
+  assert.equal(((call?.['params'] as Record<string, unknown>)['arguments'] as Record<string, unknown>)['idempotency_key'], 'synthetic-session:7:7');
+  assert.ok(calls.some(entry => entry['method'] === 'tools/list'), 'the write client re-reads the discovery before it writes');
 });
 
 test('existing lux write transport refuses destructive tool names without dispatch', async () => {
@@ -218,7 +215,7 @@ test('helper writes require persisted owner consent, retain update ids and bound
   const args = { payload: { insight_title: 'Synthetic title', content: 'Synthetic fact', insight_type: 'PATTERN', follow_up_state: 'open' } };
   // The host selects the operation by discovered schema; the model supplies only the nested payload.
   const createSchema = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' }, insight_type: { type: 'string' }, follow_up_state: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } };
-  const updateSchema = { type: 'object', required: ['insight_id'], properties: { insight_id: { type: 'integer', minimum: 1 }, content: { type: 'string' }, follow_up_state: { type: 'string' } } };
+  const updateSchema = { type: 'object', required: ['insight_id'], properties: { insight_id: { type: 'integer', minimum: 1 }, content: { type: 'string' }, follow_up_state: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, revision_reason: { type: 'string' } } };
   const run = (turn: string, sessionId = 'synthetic-call') => writer.writeTask({ sessionId, tool: 'vault_save', operation: 'create_insight', inputSchema: createSchema, maxPayloadBytes: 100000, authorized: () => true, args: { ...args, requested_turn_id: turn } });
   assert.equal((await run('1')).disposition, 'refused');
   assert.equal((await run('999')).disposition, 'refused');

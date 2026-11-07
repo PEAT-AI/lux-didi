@@ -17,7 +17,7 @@ import { fakeLux } from './fixtures/fake-lux-vault.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
 import { Store } from '../runtime/store.js';
-import { VaultWriter, authorizeComposedWrite, vaultContentKey, type VaultReceipt, type VaultWriteResult } from '../tools/vault-write.js';
+import { VaultWriter, authorizeComposedWrite, vaultContentKey, type VaultWriteResult } from '../tools/vault-write.js';
 
 const NOW = 1_700_000_000_000;
 const SESSION = 'live-vault-write';
@@ -40,10 +40,10 @@ const SPOKEN_AT = new Date(NOW).toISOString();
 const OWNER_TURN_ID = '2';
 const PROVENANCE = `\n\nProvenance: lux-didi; speaker=owner; confidence=1; session=${SESSION}; requested_turn_id=${OWNER_TURN_ID}.`;
 /** The discovered create schema is the payload contract; the helper never assembles the wire itself. */
-const CREATE_SCHEMA = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string' }, insight_title: { type: 'string' },
+const CREATE_SCHEMA = { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string', minLength: 1 }, insight_title: { type: 'string', minLength: 1 },
   insight_type: { type: 'string' }, project: { type: 'string' }, source_kind: { type: 'string' }, source_ref: { type: 'object' }, idempotency_key: { type: 'string' } } };
 /** The write carries its provenance and an idempotency key; the key is the op id, minted per op. */
-const saveArgs = (key: unknown) => ({ content: `${NOTE}${PROVENANCE}`, insight_title: NOTE, insight_type: 'UNCATEGORIZED', project: 'didi-voice',
+const saveArgs = (key: unknown) => ({ content: `${NOTE}${PROVENANCE}`, insight_title: NOTE,
   source_kind: 'voice_call', source_ref: { app: 'lux-didi', session_id: SESSION, turn_start_id: OWNER_TURN_ID, turn_end_id: OWNER_TURN_ID, spoken_at: SPOKEN_AT }, idempotency_key: key });
 
 /** One owner turn, persisted where the host reads it, then one write that names it. */
@@ -68,7 +68,7 @@ test('an authorized task saves its exact words once under the vault project', as
 test('an empty authorized task payload writes nothing and returns an honest invalid-payload receipt', async t => {
   const fake = await fakeLux(t, 'inserted'); const h = harness(t, fake.url);
   // The discovered schema owns the payload, so a blank note is refused before the wire.
-  assert.deepEqual(await save(h, ''), { disposition: 'refused', reason: 'invalid_arguments' });
+  assert.deepEqual(await save(h, ''), { disposition: 'refused', reason: 'invalid_arguments_after_host_provenance' });
   assert.equal(fake.calls.length, 0);
 });
 
@@ -76,8 +76,7 @@ test('an unreachable vault is logged as unavailable with its closed code', async
   const h = harness(t, 'http://127.0.0.1:1/mcp');
   assert.deepEqual(await save(h, NOTE), { disposition: 'refused', reason: 'transport_unavailable' });
   const attempt = h.events.at(-1);
-  assert.equal(attempt?.['state'], 'unavailable');
-  assert.equal(attempt?.['code'], 'vault_unavailable');
+  assert.deepEqual(attempt, { event: 'vault_write', tool: 'create_insight', outcome: 'refused', insight_id_prefix: '' }, 'the attempt is logged by closed shape only');
 });
 
 test('a dictated note reaches the vault once, and only the vault id comes back', async t => {
@@ -93,44 +92,41 @@ test('a dictated note reaches the vault once, and only the vault id comes back',
   assert.equal(row?.['state'], 'confirmed');
   assert.equal(row?.['insight_id'], '7');
   const event = h.events.at(-1);
-  assert.equal(event?.['event'], 'vault_write');
-  assert.equal(event?.['state'], 'confirmed');
-  assert.equal(event?.['insightId'], '7');
-  assert.ok(Number.isSafeInteger(event?.['latencyMs']));
+  assert.deepEqual(event, { event: 'vault_write', tool: 'create_insight', outcome: 'created', insight_id_prefix: '7' },
+    'the attempt is logged by closed shape: the tool, the outcome and an id prefix, never the note');
   assert.ok(!JSON.stringify(event).includes(NOTE), 'the host event carries no note text');
   assert.deepEqual(safeEvent(event), event, 'the event passes the host log allowlist');
 });
 
 
 
-test('an admitted task operation freezes its first payload and repeats read the same outcome', async t => {
+test('an admitted task operation freezes its first payload and refuses a second write in the same owner turn', async t => {
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
-  // Authority admitted this operation. The writer freezes its exact payload and owns replay, not owner-language classification.
-  const paraphrase = await save(h, 'the boat survey is on Wednesday');
-  assert.equal(paraphrase.disposition, 'created', 'the note she keeps reaches the vault');
+  // Authority admitted this operation. The owner turn is the write key, so a second write in it is refused outright.
+  const first = await save(h, 'the boat survey is on Wednesday');
+  assert.deepEqual(first, { disposition: 'created', insight_id: 7 }, 'the note she keeps reaches the vault');
   assert.equal(fake.calls.length, 1, 'one row is claimed once');
-  const first = await save(h, NOTE);
-  assert.equal(first.disposition, 'created');
   const again = await save(h, 'The boat survey, is on TUESDAY');
-  assert.deepEqual(again, { disposition: 'created', insight_id: 7 }, 'the stored outcome, past case, spacing and punctuation');
-  assert.equal(fake.calls.length, 1, 'the same authorization is never sent twice');
-  const after = await save(h, NOTE);
-  assert.deepEqual(after, { disposition: 'created', insight_id: 7 }, 'different replay arguments do not change the first frozen operation');
-  assert.equal(fake.calls.length, 1, 'and it still sends nothing');
+  assert.deepEqual(again, { disposition: 'refused', reason: 'one write per owner turn' }, 'the same authorization is never sent twice');
+  const after = await save(h, NOTE, '3');
+  assert.deepEqual(after, { disposition: 'created', insight_id: 7 }, 'a fresh owner turn writes again');
+  assert.equal(fake.calls.length, 2, 'two turns, two requests');
+  assert.equal(String((fake.calls[0]?.arguments as Record<string, unknown>)['content']).includes('Wednesday'), true, 'the frozen row keeps the first words');
 });
 
-test('a dispatched row at host start becomes uncertain and is never re-sent', async t => {
+test('a dispatched helper row at host start becomes uncertain and is never re-sent', async t => {
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
-  h.store.transaction(tx => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES ('op-old',?,'task:vault-task:save','create_insight',?,'old note','old note','dispatched',?)",
+  // The helper row is keyed by the owner turn, so it is seeded on the turn this test writes.
+  h.store.transaction(tx => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES ('op-old',?,'helper:2','create_insight',?,'old note','old note','dispatched',?)",
     [SESSION, 'old note', NOW - 5000]));
   const events: Record<string, unknown>[] = [];
   new VaultWriter({ store: h.store, transport: createLuxWriteTransport({ url: fake.url }), now: () => NOW, log: event => { events.push(event); } });
   const row = h.store.transaction(tx => tx.get("SELECT state FROM vault_writes WHERE op_id='op-old'", []));
-  assert.equal(row?.['state'], 'uncertain');
+  assert.equal(row?.['state'], 'uncertain', 'a dispatched row at startup is never trusted');
   const receipt = await save(h, 'old note');
-  assert.deepEqual(receipt, { disposition: 'refused', reason: 'outcome_unknown' });
+  assert.deepEqual(receipt, { disposition: 'refused', reason: 'one write per owner turn' });
   assert.equal(fake.calls.length, 0, 'an uncertain row is never re-sent');
 });
 
@@ -150,11 +146,11 @@ test('a refused vault call is outcome_unknown after exactly one request', async 
   assert.equal(fake.calls.length, 1);
 });
 
-test('a duplicate refusal is never reported as saved', async t => {
+test('a duplicate is reported as a duplicate, never as a new save', async t => {
   const fake = await fakeLux(t, 'duplicate');
   const h = harness(t, fake.url);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { disposition: 'refused', reason: 'outcome_unknown' });
+  assert.deepEqual(receipt, { disposition: 'duplicate_of', insight_id: 7 }, 'the daemon says it already held this note');
   assert.equal(fake.calls.length, 1);
 });
 
@@ -233,40 +229,49 @@ test('the adapter-shaped transcript never mints a legacy dictation write authori
 test('the exact note supplied by an admitted task is the persisted content', async t => {
   const fake = await fakeLux(t, 'inserted');
   const h = harness(t, fake.url);
-  assert.equal((await save(h, 'the survey boat is moored at pontoon three')).saved, true);
+  assert.equal((await save(h, 'the survey boat is moored at pontoon three')).disposition, 'created');
   const rows = h.store.transaction(tx => tx.all('SELECT content FROM vault_writes'));
-  assert.deepEqual(rows.map(row => row['content']), ['the survey boat is moored at pontoon three']);
+  const persisted = JSON.parse(String(rows[0]?.['content'])) as Record<string, unknown>;
+  assert.match(String(persisted['content']), /^the survey boat is moored at pontoon three\n\nProvenance: lux-didi; speaker=owner/, 'the exact note is kept, then its provenance');
 });
 
 
 // Upstream src/lux_knowledge/server.py:517, schema SHA256
 // cdd259f3d686f24298ed6444880930a0648590730890fe27c98bc9329c7c38a1.
 // SaveInsightResult in core.py declares insight_id: int | None.
-test('C-LUXSAVE11 W12-R1: outbound save obeys the upstream schema and accepts its numeric receipt', async () => {
+
+/** One in-process lux wire: initialize, initialized, the daemon's discovery, then the tool call. */
+function luxFetch(options: { tools?: unknown[]; callResult?: unknown; onCall?: (method: string) => Response | undefined } = {}) {
   const calls: Record<string, unknown>[] = [];
-  const fakeFetch: typeof fetch = async (_url, init) => {
+  const fetchImpl: typeof fetch = async (_url, init) => {
     const call = JSON.parse(String(init?.body)) as Record<string, unknown>;
     calls.push(call);
     const headers = { 'content-type': 'application/json', 'mcp-session-id': 'synthetic-session' };
+    const override = options.onCall?.(String(call['method']));
+    if (override) return override;
     if (call['method'] === 'notifications/initialized') return new Response(null, { status: 202, headers });
-    return new Response(JSON.stringify({ jsonrpc: '2.0', id: call['id'], result: call['method'] === 'initialize'
-      ? { protocolVersion: '2025-06-18', capabilities: {} }
-      : { content: [{ type: 'text', text: JSON.stringify({ disposition: 'created', insight_id: 81, candidates: [] }) }] } }), { headers });
+    const result = call['method'] === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: {} }
+      : call['method'] === 'tools/list' ? { tools: options.tools ?? [discoveredCreate()] }
+        : options.callResult ?? { content: [{ type: 'text', text: JSON.stringify({ disposition: 'created', insight_id: 81, candidates: [] }) }] };
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: call['id'], result }), { headers });
   };
-  const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fakeFetch);
-  const result = await transport.save({ content: 'Synthetic candidate.', title: 'Synthetic title', insightType: 'UNCATEGORIZED', project: 'didi-voice' });
+  return { calls, fetchImpl };
+}
+function discoveredCreate() {
+  return { name: 'create_insight', description: 'Create an insight', annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    inputSchema: { type: 'object', required: ['content', 'insight_title'], properties: { content: { type: 'string', minLength: 1 }, insight_title: { type: 'string' } } } };
+}
+test('C-LUXSAVE11 W12-R1: outbound save obeys the upstream schema and accepts its numeric receipt', async () => {
+  const { calls, fetchImpl } = luxFetch();
+  const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fetchImpl);
+  const result = await transport.write('create_insight', { content: 'Synthetic candidate.', insight_title: 'Synthetic title' });
   const call = calls.find(entry => entry['method'] === 'tools/call');
   assert.ok(call);
   const params = call['params'] as { name: string; arguments: Record<string, unknown> };
   assert.equal(params.name, 'create_insight');
-  // Required and optional names from the unmodified upstream signature, no invented metadata argument.
-  const required = ['content', 'insight_title', 'insight_type'];
-  const allowed = [...required, 'project', 'force'];
-  assert.ok(required.every(key => key in params.arguments));
-  assert.ok(Object.keys(params.arguments).every(key => allowed.includes(key)));
-  for (const key of ['content', 'insight_title', 'insight_type', 'project']) assert.equal(typeof params.arguments[key], 'string');
-  assert.ok(['TECHNICAL_DECISION', 'BUG_GOTCHA', 'PATTERN', 'MEETING', 'USER_PREFERENCE', 'PROJECT_CONSTRAINT', 'UNCATEGORIZED'].includes(String(params.arguments['insight_type'])));
-  assert.deepEqual(result, { outcome: 'inserted', insightId: '81' });
+  // The caller's own keys travel unchanged: the discovered schema is the only shape decided here.
+  assert.deepEqual(params.arguments, { content: 'Synthetic candidate.', insight_title: 'Synthetic title' });
+  assert.deepEqual(result, { disposition: 'created', insight_id: 81, candidates: [] }, 'a numeric receipt is accepted as the daemon sent it');
 });
 
 
@@ -286,23 +291,24 @@ for (const phase of ['initialize_http', 'initialize_transport', 'initialized_not
           const headers = { 'content-type': 'application/json', 'mcp-session-id': 'synthetic-session' };
           if (call.method === 'notifications/initialized') return new Response(null, { status: 202, headers });
           const result = call.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: {} }
-            : { content: [{ type: 'text', text: JSON.stringify(refuse && phase === 'schema_rejected'
-              ? { unrelated: true } : { disposition: 'created', insight_id: 81 }) }] };
+            : call.method === 'tools/list' ? { tools: refuse && phase === 'schema_rejected' ? [{ name: 'create_insight', annotations: { readOnlyHint: true }, inputSchema: { type: 'object' } }] : [discoveredCreate()] }
+              : { content: [{ type: 'text', text: JSON.stringify({ disposition: 'created', insight_id: 81 }) }] };
           return new Response(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }), { headers });
         };
         const transport = createLuxWriteTransport({ url: refuse && phase === 'endpoint_rejected'
           ? 'https://example.invalid/mcp' : 'http://127.0.0.1:12345/mcp' }, fakeFetch);
-        const result = await transport.save({ title: 'Synthetic', content: 'Synthetic body.', insightType: 'UNCATEGORIZED', project: 'didi-voice' });
+        const result = await transport.write('create_insight', { content: 'Synthetic body.', insight_title: 'Synthetic' });
         const diagnostics = events.filter(event => event && typeof event === 'object' && (event as { event?: string }).event === 'vault_transport');
         if (refuse) {
-          // A pre-dispatch refusal is unavailable, a dropped call after the send is unknown, and a refused wire is failed.
-          assert.equal(result.outcome, ['initialize_http', 'initialize_transport', 'initialized_notify'].includes(phase) ? 'unavailable'
-            : phase === 'call_transport' ? 'unknown' : 'failed');
+          // Every refused phase is a closed refusal with its own reason; nothing is retried above the wire.
+          assert.equal(result.disposition, 'refused');
+          assert.equal(result.reason, ['initialize_http', 'initialize_transport', 'initialized_notify', 'endpoint_rejected'].includes(phase) ? 'transport_unavailable'
+            : phase === 'call_transport' ? 'outcome_unknown' : phase === 'schema_rejected' ? 'tool_missing_or_forbidden' : 'outcome_unknown');
           assert.deepEqual(diagnostics, [{ event: 'vault_transport', phase }]);
           assert.deepEqual(safeEvent(diagnostics[0]), { event: 'vault_transport', phase });
           assert.equal(safeEvent({ event: 'vault_transport', phase, url: 'synthetic private value' }), undefined);
         } else {
-          assert.deepEqual(result, { outcome: 'inserted', insightId: '81' });
+          assert.deepEqual(result, { disposition: 'created', insight_id: 81 });
           assert.deepEqual(diagnostics, []);
         }
       } finally { detach(); }
@@ -319,31 +325,28 @@ test('startup claims an authorized operation by its execution identity exactly o
   h.store.transaction(tx => tx.run("INSERT INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES ('restart-op',?,'restart',?,?,?,?, 'authorized',?)", [SESSION, LUX_TOOLS.create, NOTE, vaultContentKey(NOTE), NOTE, NOW]));
   const calls: string[] = [];
   const options = { store: h.store, now: () => NOW, log: () => {},
-    transport: { save: async (args: { content: string }) => { calls.push(args.content); return { outcome: 'inserted' as const, insightId: 'restart-7' }; } } };
+    transport: { save: async (args: { content: string }) => { calls.push(args.content); return { outcome: 'inserted' as const, insightId: '7' }; },
+      write: async () => ({ disposition: 'created', insight_id: 7 }) } };
   const restarted = new VaultWriter(options);
   await restarted.recovery;
   await new VaultWriter(options).recovery;
-  assert.deepEqual(calls, [NOTE]);
+  assert.equal(calls.length, 1);
+  assert.match(String(calls[0]), /^the boat survey is on Tuesday\n\nProvenance: lux-didi/, 'the recovered note keeps its exact words, then its provenance');
   assert.equal(h.store.transaction(tx => tx.get('SELECT state FROM vault_writes WHERE utterance_id=?', ['restart']))?.state, 'confirmed');
 });
 
-test('unavailable retries once with backoff and then confirms without a duplicate', async t => {
+test('an unavailable legacy dispatch settles uncertain and leaves the one retry to startup', async t => {
   const h = harness(t, 'http://127.0.0.1:1');
+  const row = h.store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: SESSION, stageId: 'retry-dispatch', content: NOTE, title: NOTE, now: NOW }));
   let calls = 0;
-  const delays: number[] = [];
   const writer = new VaultWriter({ store: h.store, now: () => NOW, log: () => {},
-    backoff: async ms => { delays.push(ms); },
-    transport: { save: async () => ++calls === 1 ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'retry-7' } } });
-  const input = { sessionId: SESSION, tool: 'vault_save' as const, operation: 'create_insight', inputSchema: CREATE_SCHEMA,
-    maxPayloadBytes: 100_000, authorized: () => true, args: { requested_turn_id: OWNER_TURN_ID, payload: { content: NOTE, insight_title: NOTE } } };
-  h.store.transaction(tx => tx.run('INSERT OR IGNORE INTO history_turns(id,live_session_id,journal_first,journal_last,role,text,at) VALUES(?,?,?,?,?,?,?)',
-    [Number(OWNER_TURN_ID), SESSION, Number(OWNER_TURN_ID), Number(OWNER_TURN_ID), 'owner', NOTE, NOW]));
-  const result = await writer.writeTask(input);
-  assert.equal(result.saved, true);
-  assert.match(String(result.guidance), /retried.*lux/i);
-  assert.deepEqual(delays, [250]);
-  assert.equal(calls, 2);
-  assert.deepEqual(await writer.writeTask(input), { saved: true, insightId: 'retry-7' }); assert.equal(calls, 2, 'replay does not send a third request');
+    backoff: async () => {},
+    transport: { save: async () => { calls++; return { outcome: 'unavailable' as const }; } } });
+  await writer.dispatch({ opId: String((row as Record<string, unknown>)['op_id']), content: NOTE, title: NOTE });
+  assert.equal(calls, 1, 'one attempt in the request, never a silent second');
+  const settled = h.store.transaction(tx => tx.get("SELECT state,retry_count FROM vault_writes WHERE utterance_id='retry-dispatch'"));
+  assert.equal(settled?.['state'], 'uncertain', 'an unreachable vault leaves the outcome unconfirmed');
+  assert.equal(settled?.['retry_count'], 0, 'the startup recovery owns the single retry');
 });
 
 test('startup retries a legacy unavailable row only once across restarts', async t => {
@@ -353,7 +356,8 @@ test('startup retries a legacy unavailable row only once across restarts', async
   let calls = 0;
   const delays: number[] = [];
   const options = { store: h.store, now: () => NOW, log: () => {}, backoff: async (ms: number) => { delays.push(ms); },
-    transport: { save: async () => { calls++; return { outcome: 'inserted' as const, insightId: 'recovered-7' }; } } };
+    transport: { save: async () => { calls++; return { outcome: 'inserted' as const, insightId: '8' }; },
+      write: async () => ({ disposition: 'created', insight_id: 8 }) } };
   await new VaultWriter(options).recovery;
   await new VaultWriter(options).recovery;
   assert.equal(calls, 1);

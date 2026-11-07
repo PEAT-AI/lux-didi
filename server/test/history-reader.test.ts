@@ -1,11 +1,10 @@
 /**
- * The history search reranks its candidate pool before the five-session cut.
+ * The history search reranks its whole candidate pool before the five-session cut.
  *
- * A past call whose summary paraphrases the question does not look relevant to a
- * summary-only score, so its evidence is dropped before the cut even though its
- * turns are exactly what Rob asked about. The pool is built from the summaries in
- * `ORDER BY id` and the ranked list keeps only five, so the ninth session in that
- * order was the one lost. Synthetic store, no model, no network.
+ * The pool used to be ordered by kind, not by relevance: five verbatim turn hits led it whatever their
+ * score, so the call whose summary is all about the question was cut at whatever position it held.
+ * The sessions here are numbered in the pool's own `ORDER BY id` order, gold last (position nine).
+ * Synthetic store, no model, no network.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,14 +37,14 @@ function seedSession(store: Store, id: string, at: number): void {
       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,1,'ended',?,?,?,?,NULL)`,
       [id, store.assistantId, store.authorityEpoch, `key-${id}`, `fp-${id}`, 'client', 'audit', 'profile', 'prompt', 'terminal',
         JSON.stringify({ state: 'closed', code: 'normal' }), at, at, at]);
-    recordHistorySession(tx, id, 'owner', ['ordinary' as DataClass], [], at);
+    recordHistorySession(tx, id, store.assistantId, ['ordinary' as DataClass], [], at);
   });
 }
 
-function seedTurn(store: Store, id: string, kind: 'inputTranscription' | 'outputTranscription', text: string, at: number): void {
+function seedTurn(store: Store, id: string, text: string, at: number): void {
   store.transaction(tx => tx.run(
     'INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
-    [id, kind, text, text.length, at]));
+    [id, 'inputTranscription', text, text.length, at]));
 }
 
 function seedSummary(store: Store, id: string, text: string, endedAt: number): void {
@@ -53,70 +52,72 @@ function seedSummary(store: Store, id: string, text: string, endedAt: number): v
     dataClass: 'ordinary', sourceRevision: 1, endedAt, now: endedAt }));
 }
 
-/** Nine past calls whose summaries are numbered in the pool's own `ORDER BY id` order, gold last. */
+/**
+ * Nine past calls, numbered in the pool's own `ORDER BY id` order.
+ *
+ * Five of them mention the dentist only in a turn, which is what the verbatim turn index reaches, and
+ * they are the newest. The ninth is the one that is about the appointment: it says so twice in its
+ * summary, never in its turns, and it is the oldest, so a kind-then-recency cut leaves it at position six.
+ */
 function seedPool(store: Store): void {
   for (let index = 1; index <= 9; index += 1) {
     const id = `call-${String(index).padStart(2, '0')}`;
-    const at = NOW + index * DAY;
+    // The ninth call is the oldest; the five turn hits are the newest five.
+    const at = NOW + (index === 9 ? 0 : index + 9) * DAY;
     seedSession(store, id, at);
+    seedSummary(store, id, `Call ${index} covered the weather and the walk to the shop.`, at);
+    store.transaction(tx => tx.run('UPDATE conversation_summaries SET id=? WHERE live_session_id=?', [`summary-${index}`, id]));
+  }
+  for (let index = 1; index <= 5; index += 1) {
+    const id = `call-${String(index).padStart(2, '0')}`;
+    seedTurn(store, id, 'I asked about the dentist again and nothing moved.', NOW + (index + 9) * DAY);
   }
   store.transaction(tx => {
-    for (let index = 1; index <= 9; index += 1) {
-      const id = `call-${String(index).padStart(2, '0')}`;
-      seedSummary(store, id, index === 9
-        ? 'The owner had a sore tooth and asked what to do about it.'
-        : `Call ${index} covered the weather and the walk to the shop.`, NOW + index * DAY);
-      // The pool is read in this order; the ninth row is the one the cut used to drop.
-      tx.run('UPDATE conversation_summaries SET id=? WHERE live_session_id=?', [`summary-${index}`, id]);
-    }
+    tx.run('UPDATE conversation_summaries SET summary=? WHERE live_session_id=?',
+      ['The dentist is booked for the twelfth; the dentist said half past eight.', 'call-09']);
   });
-  // The gold call mentions the dentist only in its turns, never in its summary.
-  seedTurn(store, 'call-09', 'inputTranscription', 'I still need the dentist for this tooth.', NOW + 9 * DAY);
-  seedTurn(store, 'call-09', 'outputTranscription', 'The dentist can see you on the twelfth.', NOW + 9 * DAY);
-  seedTurn(store, 'call-09', 'inputTranscription', 'Then the dentist it is.', NOW + 9 * DAY);
+  seedTurn(store, 'call-09', 'Half past eight on the twelfth is fine.', NOW);
   store.transaction(tx => { backfillHistoryTurns(tx); });
 }
 
-function scope(store: Store): Parameters<ReturnType<typeof createHistoryReader>['read']>[1] {
-  return {
+function read(store: Store, query: string): string[] {
+  const reader = createHistoryReader(() => NOW + 10 * DAY);
+  const scope = {
     ownerId: store.assistantId, runId: 'reader-test', routeIdentity: 'synthetic',
     authorityEpoch: store.authorityEpoch, revision: 1, allowedClasses: ['ordinary' as DataClass],
   };
+  const result = store.transaction(tx => reader.read(tx, scope, { query, limit: 5 }));
+  return (result.response['hits'] as { sessionId: string }[]).map(hit => hit.sessionId);
 }
 
-test('the ninth session in the pool survives the five-session cut when its turns hold the answer', () => {
+test('the ninth session in the pool survives the five-session cut when it is the one about the question', () => {
   const f = open();
   try {
     seedPool(f.store);
-    const reader = createHistoryReader(() => NOW + 10 * DAY);
-    const result = f.store.transaction(tx => reader.read(tx, scope(f.store), { query: 'when is the dentist', limit: 5 }));
-    const hits = (result.response['hits'] as { sessionId: string }[]).map(hit => hit.sessionId);
+    const hits = read(f.store, 'when is the dentist');
     assert.equal(hits.length, 5, 'the output shape stays five sessions');
-    assert.ok(hits.includes('call-09'), `the call whose turns hold the answer is in the top five: ${hits.join(',')}`);
+    assert.ok(hits.includes('call-09'), `the call about the appointment is in the top five: ${hits.join(',')}`);
   } finally { f.cleanup(); }
 });
 
-test('a call the summary already answers keeps its place in the top five', () => {
+test('a call reached by its turns keeps its place at the top', () => {
   const f = open();
   try {
     seedPool(f.store);
-    seedSummary(f.store, 'call-03', 'The dentist is booked for the twelfth of November.', NOW + 3 * DAY);
-    const reader = createHistoryReader(() => NOW + 10 * DAY);
-    const result = f.store.transaction(tx => reader.read(tx, scope(f.store), { query: 'when is the dentist', limit: 5 }));
-    const hits = (result.response['hits'] as { sessionId: string }[]).map(hit => hit.sessionId);
-    assert.ok(hits.includes('call-03'), `a summary that names the dentist still reaches the top five: ${hits.join(',')}`);
-    assert.ok(hits.includes('call-09'), `and the turn-only call still reaches it too: ${hits.join(',')}`);
+    seedTurn(f.store, 'call-03', 'The rear brake pads are gone and the shop had none.', NOW + 12 * DAY);
+    f.store.transaction(tx => { backfillHistoryTurns(tx); });
+    const hits = read(f.store, 'where did the brake pads go');
+    assert.equal(hits[0], 'call-03', `the verbatim turn hit still leads: ${hits.join(',')}`);
   } finally { f.cleanup(); }
 });
 
-test('a pool with no matching term still answers with the newest five calls', () => {
+test('a pool with no matching term still answers with the newest five calls in order', () => {
   const f = open();
   try {
     seedPool(f.store);
-    const reader = createHistoryReader(() => NOW + 10 * DAY);
-    const result = f.store.transaction(tx => reader.read(tx, scope(f.store), { query: 'what did we talk about', limit: 5 }));
-    const hits = (result.response['hits'] as { sessionId: string }[]).map(hit => hit.sessionId);
+    const hits = read(f.store, 'what did we talk about');
     assert.equal(hits.length, 5);
-    assert.deepEqual(hits, ['call-09', 'call-08', 'call-07', 'call-06', 'call-05'], 'no term to rank on keeps recency order');
+    // The five calls that carry turns are the newest by their own turn time, and keep that order.
+    assert.deepEqual(hits, ['call-05', 'call-04', 'call-03', 'call-02', 'call-01'], 'no term to rank on keeps recency order');
   } finally { f.cleanup(); }
 });

@@ -111,6 +111,8 @@ interface StageOutcome {
   matched: string[];
   missing: string[];
   leaked: string[];
+  /** Whether this stage alone carried its needles, never the whole item: a search miss is not a start miss. */
+  passed: boolean | null;
 }
 
 export interface ItemResult {
@@ -119,6 +121,10 @@ export interface ItemResult {
   cutoff: { session: string; at: string | null };
   start: StageOutcome & { earlierConversationsIncluded: boolean | null };
   search: { status: 'scored' | 'not_run'; reason: string | null; hits: string[]; gold: string[]; overlap: number | null };
+  /** Turn one from the start block: did every required needle reach the block's text, memory on. */
+  turnOne: { status: 'scored' | 'not_run'; reason: string | null; found: boolean };
+  /** The same block with the memory removed: the arm the turn-one claim is measured against. */
+  memoryOff: { status: 'scored' | 'not_run'; reason: string | null; found: boolean };
   answer: StageOutcome & { searched: boolean | null; abstained: boolean | null };
   restore: { status: 'scored' | 'not_run'; reason: string | null; fidelity: number | null };
   latency: { finalToFirstAudioMs: number | null };
@@ -138,12 +144,23 @@ export interface MemoryEvalReport {
     firstAnswer: { scored: number; passed: number; ratio: number | null };
     startCoverage: { scored: number; passed: number; ratio: number | null };
     recallAt5: number | null;
+    foundBySearch: number | null;
+    turnOneFromStartBlock: number | null;
+    turnOneMemoryOff: number | null;
     dateErrors: number;
     falseMemory: number;
     restoreFidelity: number | null;
     latency: { count: number; p50: number | null; p90: number | null };
   };
-  classes: Record<string, { scored: number; passed: number; ratio: number | null; notRun: number; misses: number }>;
+  classes: Record<string, {
+    scored: number; passed: number; ratio: number | null; notRun: number; misses: number;
+    /** Gold calls reached by the history search, over the items that search. */
+    foundBySearch: number | null;
+    /** Items whose required needles all reached the start block at turn one. */
+    turnOneFromStartBlock: number | null;
+    /** The same measurement with the memory removed from that block. */
+    turnOneMemoryOff: number | null;
+  }>;
   notRun: Record<string, number>;
   bars: { id: string; bar: number; value: number | null; met: boolean }[];
   exitCode: 0 | 1;
@@ -297,6 +314,8 @@ function cutoffTime(tx: Transaction, sessionId: string): number | null {
  */
 export function startBlock(tx: Transaction, input: {
   nowMs: number; cutoffMs: number; timeZone: string; allowedClasses: readonly DataClass[];
+  /** False builds the same block with no memory in it: the arm the turn-one claim is measured against. */
+  memory?: boolean;
 }): {
   text: string;
   earlierConversationsIncluded: boolean;
@@ -339,19 +358,19 @@ export function startBlock(tx: Transaction, input: {
       timeZone: input.timeZone,
       clock: new Intl.DateTimeFormat('en-GB', { timeZone: input.timeZone, dateStyle: 'full', timeStyle: 'short' }).format(input.nowMs),
       items: [],
-      entries: records.map(record => ({
+      entries: input.memory === false ? [] : records.map(record => ({
         id: record.id,
         text: record.text,
         ...(Number.isFinite(Date.parse(record.capturedAt)) ? { capturedAt: Date.parse(record.capturedAt) } : {}),
       })),
       sources: {},
-      summaries: earlier.candidates.map(candidate => ({ id: candidate.id, sessionId: candidate.liveSessionId, startedAt: candidate.endedAt, text: candidate.summary })),
+      summaries: input.memory === false ? [] : earlier.candidates.map(candidate => ({ id: candidate.id, sessionId: candidate.liveSessionId, startedAt: candidate.endedAt, text: candidate.summary })),
     },
     trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
     now: input.nowMs,
     timeZone: input.timeZone,
   });
-  return { text: composed.text, earlierConversationsIncluded: composed.earlierConversationsIncluded, records: records.length };
+  return { text: composed.text, earlierConversationsIncluded: composed.earlierConversationsIncluded, records: input.memory === false ? 0 : records.length };
 }
 
 /** The sessions that hold the gold turns, so a turn id is scored against a real hit. */
@@ -424,11 +443,13 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
       const cutoff = { session: item.cutoff_session, at: cutoffMs === null ? null : new Date(cutoffMs).toISOString() };
 
       const start: StageOutcome & { earlierConversationsIncluded: boolean | null } = {
-        status: 'not_run', reason: null, matched: [], missing: [], leaked: [], earlierConversationsIncluded: null,
+        status: 'not_run', reason: null, matched: [], missing: [], leaked: [], passed: null, earlierConversationsIncluded: null,
       };
       const search: ItemResult['search'] = { status: 'not_run', reason: null, hits: [], gold: [], overlap: null };
+      const turnOne: ItemResult['turnOne'] = { status: 'not_run', reason: null, found: false };
+      const memoryOff: ItemResult['memoryOff'] = { status: 'not_run', reason: null, found: false };
       const answer: StageOutcome & { searched: boolean | null; abstained: boolean | null } = {
-        status: 'not_run', reason: null, matched: [], missing: [], leaked: [], searched: null, abstained: null,
+        status: 'not_run', reason: null, matched: [], missing: [], leaked: [], passed: null, searched: null, abstained: null,
       };
       const restore: ItemResult['restore'] = { status: 'not_run', reason: null, fidelity: null };
       let latency: number | null = null;
@@ -440,8 +461,21 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
         misses.push('cutoff_session_missing');
       } else {
         // (b) the start block at eval_at, on the memory the cutoff allows.
+        const block = startBlock(tx, { nowMs, cutoffMs, timeZone, allowedClasses });
+        // Turn one, on the block's own text: the needle either reached the opening call or it did not.
+        // Conservative by design, because a paraphrase a model could read is not what this number claims.
+        if (item.required.length === 0) {
+          turnOne.reason = 'no_required_needles';
+          memoryOff.reason = 'no_required_needles';
+        } else {
+          turnOne.status = 'scored';
+          turnOne.found = item.required.every(needle => has(block.text, needle));
+          const arm = startBlock(tx, { nowMs, cutoffMs, timeZone, allowedClasses, memory: false });
+          memoryOff.status = 'scored';
+          memoryOff.found = item.required.every(needle => has(arm.text, needle));
+        }
         if (item.expect_in_start_block) {
-          const block = startBlock(tx, { nowMs, cutoffMs, timeZone, allowedClasses });
+          const before = misses.length;
           const graded = await gradeStage({ item, stage: 'start', text: block.text, verifier: options.verifier });
           Object.assign(start, {
             status: 'scored', matched: graded.matched, missing: graded.missing, leaked: graded.leaked,
@@ -450,6 +484,7 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
           for (const needle of graded.missing) misses.push(`start_required:${needle}`);
           for (const needle of graded.leaked) misses.push(`start_forbidden:${needle}`);
           if (graded.error !== null) misses.push(`verifier_error:${graded.error}`);
+          start.passed = misses.length === before;
         } else {
           start.reason = 'not_expected_in_start_block';
           notRun.push('start:not_expected_in_start_block');
@@ -487,6 +522,7 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
           answer.reason = 'no_runner';
           notRun.push('answer:no_runner');
         } else {
+          const before = misses.length;
           const graded = await gradeStage({ item, stage: 'answer', text: recorded.text, verifier: options.verifier });
           const abstained = ABSTENTION_MARKERS.some(marker => has(recorded.text, marker));
           answer.status = 'scored';
@@ -503,6 +539,7 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
           if (item.expect_search && !recorded.searched && abstained) misses.push('denial_before_search');
           if (item.expect_search && !recorded.searched && !abstained) misses.push('search_not_run');
           if (item.expect_abstain && !abstained) misses.push('no_abstention');
+          answer.passed = misses.length === before;
         }
 
         // (e) class 7: call the restore tool when one is registered, else say so.
@@ -532,6 +569,8 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
         cutoff,
         start,
         search,
+        turnOne,
+        memoryOff,
         answer,
         restore,
         latency: { finalToFirstAudioMs: latency },
@@ -549,6 +588,17 @@ export async function runEval(options: RunOptions): Promise<{ report: MemoryEval
 
 function ratio(passed: number, scored: number): number | null {
   return scored === 0 ? null : passed / scored;
+}
+
+/** The gold call reached by the history search, over the items that search at all. */
+function foundBySearch(items: readonly ItemResult[]): number | null {
+  return ratio(items.filter(item => item.search.overlap === 1).length, items.filter(item => item.search.status === 'scored').length);
+}
+
+/** Turn one, over the items whose needles were graded at turn one: memory on, or the memory-off arm. */
+function foundAtTurnOne(items: readonly ItemResult[], stage: 'turnOne' | 'memoryOff'): number | null {
+  const graded = items.filter(item => item[stage].status === 'scored');
+  return ratio(graded.filter(item => item[stage].found).length, graded.length);
 }
 
 function finish(
@@ -569,6 +619,9 @@ function finish(
       ratio: ratio(scored.filter(item => item.verdict === 'pass').length, scored.length),
       notRun: inClass.filter(item => item.notRun.length > 0).length,
       misses: inClass.filter(item => item.verdict === 'miss').length,
+      foundBySearch: foundBySearch(inClass),
+      turnOneFromStartBlock: foundAtTurnOne(inClass, 'turnOne'),
+      turnOneMemoryOff: foundAtTurnOne(inClass, 'memoryOff'),
     };
   }
   const notRun: Record<string, number> = {};
@@ -576,17 +629,21 @@ function finish(
   const latencies = details.map(item => item.latency.finalToFirstAudioMs).filter((value): value is number => value !== null);
   const restores = details.filter(item => item.restore.status === 'scored' && item.restore.fidelity !== null);
   const overall = {
+    // Each stage is judged on its own outcome: a search miss is not a start miss, and the other way round.
     firstAnswer: {
       scored: answerScored.length,
-      passed: answerScored.filter(item => item.verdict === 'pass').length,
-      ratio: ratio(answerScored.filter(item => item.verdict === 'pass').length, answerScored.length),
+      passed: answerScored.filter(item => item.answer.passed === true).length,
+      ratio: ratio(answerScored.filter(item => item.answer.passed === true).length, answerScored.length),
     },
     startCoverage: {
       scored: startScored.length,
-      passed: startScored.filter(item => item.verdict === 'pass').length,
-      ratio: ratio(startScored.filter(item => item.verdict === 'pass').length, startScored.length),
+      passed: startScored.filter(item => item.start.passed === true).length,
+      ratio: ratio(startScored.filter(item => item.start.passed === true).length, startScored.length),
     },
     recallAt5: average(details.map(item => item.search.overlap).filter((value): value is number => value !== null)),
+    foundBySearch: foundBySearch(details),
+    turnOneFromStartBlock: foundAtTurnOne(details, 'turnOne'),
+    turnOneMemoryOff: foundAtTurnOne(details, 'memoryOff'),
     dateErrors: details.filter(item => item.class === 3 && itemMiss(item)).length,
     falseMemory: details.reduce((total, item) => total + item.start.leaked.length + item.answer.leaked.length, 0),
     restoreFidelity: restores.length === 0 ? null
@@ -771,12 +828,22 @@ export async function main(argv: readonly string[]): Promise<number> {
 
 function report(summary: MemoryEvalReport): void {
   const open = summary.bars.filter(bar => !bar.met).map(bar => bar.id);
+  // The 10.21 table: the same two numbers per class, and the arm with the memory removed. `n/a` is a
+  // class with no graded item, never a zero.
+  const score = (value: number | null): string => (value === null ? 'n/a' : value.toFixed(2));
+  const table = Object.entries(summary.classes).map(([id, entry]) =>
+    `class ${id}  found_by_search@5 ${score(entry.foundBySearch)}  turn_one_from_start_block ${score(entry.turnOneFromStartBlock)}  turn_one_memory_off ${score(entry.turnOneMemoryOff)}`);
+  table.push(`all      found_by_search@5 ${score(summary.overall.foundBySearch)}  turn_one_from_start_block ${score(summary.overall.turnOneFromStartBlock)}  turn_one_memory_off ${score(summary.overall.turnOneMemoryOff)}`);
+  process.stdout.write(`${table.join('\n')}\n`);
   process.stdout.write(`${JSON.stringify({
     items: summary.items,
     exitCode: summary.exitCode,
     firstAnswer: summary.overall.firstAnswer,
     startCoverage: summary.overall.startCoverage,
     recallAt5: summary.overall.recallAt5,
+    foundBySearch: summary.overall.foundBySearch,
+    turnOneFromStartBlock: summary.overall.turnOneFromStartBlock,
+    turnOneMemoryOff: summary.overall.turnOneMemoryOff,
     falseMemory: summary.overall.falseMemory,
     dateErrors: summary.overall.dateErrors,
     notRun: summary.notRun,

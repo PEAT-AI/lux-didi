@@ -66,6 +66,49 @@ function liveValue(tx: Transaction, ownerId: string, id: string, eligibility: Hi
 
 const RECALL_FILLERS = new Set('a an the i you we she he it they me my your our did do does have has had was were is are be been what when where how why about talked talk said say told tell yesterday story transcript last time conversation conversations remember und oder der die das ein eine ich du wir ihr sie er es im in am an mit von zu auf haben hat hatten war waren ist sind was wie wann wo gestern erzähl erzählt gesagt besprochen'.split(' '));
 function recallTerms(query: string): string[] { return [...new Set(tokenize(query))].filter(term => term.length > 1 && !RECALL_FILLERS.has(term)); }
+/** Occurrences of a folded term, capped so one long call cannot bury a short one. */
+const OCCURRENCE_CAP = 4;
+function occurrences(folded: string, term: string): number {
+  let count = 0, at = folded.indexOf(term);
+  while (at !== -1 && count < OCCURRENCE_CAP) { count += 1; at = folded.indexOf(term, at + term.length); }
+  return count;
+}
+/** The turns a summary stands for: the question's words are often only there, never in the summary. */
+function summaryTurnText(tx: Transaction, records: readonly RecordValue[]): Map<string, string> {
+  const ids = [...new Set(records.filter(value => value.ref.kind === 'summary').map(value => String(value.metadata['sessionId'] ?? '')))].filter(id => id !== '');
+  const text = new Map<string, string>();
+  if (!ids.length) return text;
+  const marks = ids.map(() => '?').join(',');
+  for (const row of tx.all(`SELECT live_session_id,text FROM history_turns WHERE live_session_id IN (${marks})`, ids)) {
+    const id = String(row['live_session_id']);
+    text.set(id, `${text.get(id) ?? ''}\n${String(row['text'])}`);
+  }
+  return text;
+}
+/** The names the question uses: a capitalised word mid-sentence, so "Marek" or "King Street" outranks a passing mention. */
+function namedEntities(text: string, terms: readonly string[]): Set<string> {
+  const found = new Set<string>();
+  let sentenceStart = true;
+  for (const part of text.split(/([^\p{L}\p{N}]+)/u)) {
+    if (part === '') continue;
+    if (!/^[\p{L}\p{N}]/u.test(part)) { if (/[.!?]/.test(part)) sentenceStart = true; continue; }
+    const head = part[0]!;
+    if (!sentenceStart && head !== head.toLowerCase() && terms.includes(fold(part))) found.add(fold(part));
+    sentenceStart = false;
+  }
+  return found;
+}
+/**
+ * The rerank score for one candidate, before the five-session cut: the summary, the turns a summary
+ * stands for, and the names the question uses. A verbatim record already carries its own turns.
+ */
+function relevance(value: RecordValue, terms: readonly string[], turns: ReadonlyMap<string, string>): number {
+  const summary = fold(value.text), named = namedEntities(value.text, terms);
+  const turnText = value.ref.kind === 'summary' ? fold(turns.get(String(value.metadata['sessionId'] ?? '')) ?? '') : '';
+  let score = 0;
+  for (const term of terms) score += occurrences(summary, term) + occurrences(turnText, term) + (named.has(term) ? 2 : 0);
+  return score;
+}
 function turnExcerpt(tx: Transaction, id: string, hitId: number, terms: readonly string[]): string {
   const rows = tx.all('SELECT id,role,text FROM history_turns WHERE live_session_id=? ORDER BY journal_first', [id]);
   const index = rows.findIndex(row => Number(row.id) === hitId);
@@ -250,9 +293,15 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
     } else {
       const { records, coverage } = corpus(tx, scope, args.query ?? '', args.from, args.to);
       const tokens = recallTerms(args.query ?? '');
-      const ranked = records.map(value => ({ value, score: tokens.reduce((sum, term) => sum + (fold(value.text).includes(term) ? 1 : 0), 0) }))
+      const turns = summaryTurnText(tx, records);
+      const ranked = records.map(value => ({ value, score: relevance(value, tokens, turns) }))
         .filter(({ value, score }) => (value.ref.kind === 'live' || !tokens.length || score > 0) && (value.ref.kind === 'live' || ((!args.from || value.date >= Date.parse(args.from)) && (!args.to || value.date < Date.parse(args.to)))))
-        .sort((a, b) => Number(b.value.ref.kind === 'live') - Number(a.value.ref.kind === 'live') || (a.value.ref.kind === 'live' && b.value.ref.kind === 'live' ? Number(a.value.metadata['recallRank']) - Number(b.value.metadata['recallRank']) : b.score - a.score) || b.value.date - a.value.date);
+        // One relevance order for the whole pool: a verbatim turn hit no longer leads the cut on kind alone,
+        // and the turn index's own rank only breaks a tie between two of its hits.
+        .sort((a, b) => b.score - a.score
+          || Number(b.value.ref.kind === 'live') - Number(a.value.ref.kind === 'live')
+          || (a.value.ref.kind === 'live' && b.value.ref.kind === 'live' ? Number(a.value.metadata['recallRank']) - Number(b.value.metadata['recallRank']) : 0)
+          || b.value.date - a.value.date);
       const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: ranked.map(row => row.value.ref), references: [], coverage, limit: Math.min(args.limit ?? 5, 5), snippets: ranked.map(row => String(row.value.metadata['recallExcerpt'] ?? row.value.text.slice(0, 550))) };
       snapshot.references = snapshot.sources.map((_, index) => token({ snapshot, index, offset: 0, detail: true }));
       position = { snapshot, index: 0, offset: 0, detail: false };

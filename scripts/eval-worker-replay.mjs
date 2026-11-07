@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 // Use the shipped public worker instruction, not a second replay-only prompt.
 const instructionSource = readFileSync(new URL('../server/tasks/instructions.ts', import.meta.url), 'utf8');
 export const WORKER_INSTRUCTIONS = JSON.parse(instructionSource.match(/export const WORKER_INSTRUCTIONS = ("[^\n]*");/)[1]);
-if (WORKER_INSTRUCTIONS.length !== 8708) throw new Error('Worker instruction length changed: expected 8708 characters');
+if (WORKER_INSTRUCTIONS.length !== 8707) throw new Error('Worker instruction length changed: expected 8707 characters');
 
 // Synthetic Gmail fixtures and semantics from probe/worker-replay-110.
 // Offline only. A canned replay does not establish real model behaviour.

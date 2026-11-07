@@ -325,25 +325,21 @@ for (const bad of [null, 'absent'] as const) test(`unknown source policy ${bad} 
 });
 
 for (const [label, result, memoryBytes] of [
-  ['empty-valid', { content: [] }, 10000], ['unsupported', { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] }, 10000],
+  ['empty-content', { content: [] }, 10000], ['unsupported', { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] }, 10000],
   ['oversize', { content: [{ type: 'text', text: 'x'.repeat(5000) }] }, 10000], ['capacity', { content: [{ type: 'text', text: 'nonempty' }] }, 1],
 ] as const) test(`honest bounded Lux ${label} outcome`, async t => {
   const f = await fixture(t, { result, memoryBytes }); f.owner.journal.intent(f.intent());
   const outcome = await f.execute();
   assert.equal(outcome.status, 'completed', 'the task envelope completed, not necessarily the connector action');
   const state = f.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE execution_id=?', ['run:1:0']))?.state;
-  assert.equal(state, label === 'empty-valid' ? 'completed' : 'failed', 'failed source reads must remain failed durable calls');
+  assert.equal(state, 'failed', 'failed source reads must remain failed durable calls');
   const gate = await f.owner.resultGate.authorize(f.host, [f.binding(outcome.result)], ['ordinary'], f.signal);
-  if (label === 'empty-valid') {
-    assert.equal(gate.state, 'allowed'); if (gate.state === 'allowed') assert.equal(gate.results[0]!.response['text'], '');
-  } else {
-    assert.equal(gate.state, 'allowed', 'the host-authored failure repair is safe to deliver');
-    if (gate.state === 'allowed') {
-      assert.equal(gate.results[0]!.response['status'], 'failed');
-      assert.equal(typeof gate.results[0]!.response['cause'], 'string');
-      assert.equal(typeof gate.results[0]!.response['next'], 'string');
-      assert.ok(JSON.stringify(gate.results[0]!.response).length < 1_000, 'unbounded source bytes are not delivered as a repair');
-    }
+  assert.equal(gate.state, 'allowed', 'the host-authored failure repair is safe to deliver');
+  if (gate.state === 'allowed') {
+    assert.equal(gate.results[0]!.response['status'], 'failed');
+    assert.equal(typeof gate.results[0]!.response['cause'], 'string');
+    assert.equal(typeof gate.results[0]!.response['next'], 'string');
+    assert.ok(JSON.stringify(gate.results[0]!.response).length < 1_000, 'unbounded source bytes are not delivered as a repair');
   }
 });
 

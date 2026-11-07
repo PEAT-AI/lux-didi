@@ -686,7 +686,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       return executors;
     },
     taskBindings(connectionIds) {
-      const policies = store.transaction(tx => connectionIds.map(id => connection(tx, id).policy).filter(policy => policy.enabled));
+      const policies = store.transaction(tx => connectionIds.map(id => connection(tx, id).policy).filter(policy => policy.enabled && (policy.connector !== 'lux-knowledge' || policy.bindingMode === 'connection')));
       return policies.map(policy => {
         const descriptor = connectorDescriptor(policy.connector);
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', policy.connectionId, policy.connector);

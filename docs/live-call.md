@@ -274,7 +274,9 @@ For information asks, the helper includes every supported fact that matters to t
 
 Host speech instructions (the alarm opening, the muted-answer offer and the
 post-tool continuation request) use a session-level `session.commentary.append`
-with explicit `delegation_id: null`, not a typed owner turn. Typed owner input
+with explicit `delegation_id: null`, not a typed owner turn. An adapter that has
+no commentary channel (Gemini) sends the same note through the host-text path it
+accepts, so the alarm opening is announced on every adapter. Typed owner input
 keeps its existing response commands; their client-delegation compatibility is
 a known gap. Provider rejection metadata includes the client event id, its prefix
 and the command type when retained in the adapter's bounded recent-command map,

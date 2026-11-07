@@ -1468,13 +1468,25 @@ export class LiveSessionOwner {
     return this.get(handle.liveSessionId);
   }
 
+  /**
+   * The one place that picks a host note's transport, by adapter capability rather than by provider name. An
+   * adapter with a commentary channel acknowledges it; one without (Gemini has none) receives the same note
+   * as a host text turn, the path it does accept. A closed transport sends nothing and reports it.
+   */
+  #sendHostNote(handle: ActiveSession, text: string): boolean {
+    if (handle.session.sendSessionCommentary?.({ text }) !== undefined) return true;
+    if (!handle.ready) return false;
+    try { handle.session.sendText({ text }); } catch { return false; }
+    return true;
+  }
+
   #sendHostSpeech(handle: ActiveSession, text: string, point: string): number {
     const items = text.length <= 450 ? [text] : commentaryItems({
       kind: 'result', exact: [], cause: point, what_failed: '', next_step: '', content: `${point} ${text}`,
     });
     let sent = 0;
     for (const item of items) {
-      if (handle.session.sendSessionCommentary?.({ text: item }) === undefined) break;
+      if (!this.#sendHostNote(handle, item)) break;
       sent += 1;
     }
     return sent;
@@ -2369,8 +2381,8 @@ export class LiveSessionOwner {
       if (this.#settled(handle) || handle.muted || !handle.heldAnswer) return;
       const ownerSpoke = handle.inputAt !== undefined && handle.inputAt >= since;
       if (ownerSpoke) { this.#mutedOfferSkipped(handle, 'owner_spoke'); return; }
-      try { if (!handle.session.sendSessionCommentary?.({ text: MUTED_OFFER_TEXT })) throw new Error('send_failed'); handle.heldAnswer = false; }
-      catch { this.#mutedOfferSkipped(handle, 'send_failed'); }
+      if (!this.#sendHostNote(handle, MUTED_OFFER_TEXT)) { this.#mutedOfferSkipped(handle, 'send_failed'); return; }
+      handle.heldAnswer = false;
     }, MUTED_OFFER_SILENCE_MS);
     handle.mutedOfferTimer.unref?.();
   }
@@ -2534,10 +2546,7 @@ export class LiveSessionOwner {
     // inside the rung, instead of being waited out to a dead-air rebuild.
     if (postToolNoOutput && step === 'rung' && !this.#continuationReRequested.has(handle)) {
       this.#continuationReRequested.add(handle);
-      try {
-        const ask = handle.session.sendSessionCommentary;
-        if (typeof ask === 'function') ask.call(handle.session, { text: hostNote(CONTINUATION_RE_REQUEST_NOTE) });
-      } catch { /* a closed transport settles on its own */ }
+      this.#sendHostNote(handle, hostNote(CONTINUATION_RE_REQUEST_NOTE));
       this.#scheduleDebt(handle, DEAD_AIR_CONTINUATION_MS, 'rung');
       return;
     }

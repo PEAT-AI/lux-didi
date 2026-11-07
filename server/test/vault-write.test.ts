@@ -140,7 +140,7 @@ test('a duplicate refusal is never reported as saved', async t => {
 });
 
 test('the write surface is one tool and no other remote name exists', async () => {
-  assert.equal('save_insight');
+  assert.equal(LUX_TOOLS.create, 'create_insight');
   for (const tool of LUX_KNOWLEDGE_TOOLS) assert.ok(!/^(save|delete|purge|update|link)_insight$/.test(tool));
   const client = await import('../adapters/lux-write/client.js');
   assert.deepEqual(Object.keys(client).sort(), ['createLuxWriteTransport', 'luxWriteEndpoint'],

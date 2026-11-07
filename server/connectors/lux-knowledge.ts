@@ -355,7 +355,7 @@ export function createLuxKnowledgeReader(options: LuxKnowledgeOptions): LuxKnowl
     if (!declaration || !luxToolAdmitted(declaration)) return { state: 'refused', reason: 'tool_missing_or_forbidden' };
     const properties = declaration.inputSchema.properties as Record<string, unknown> | undefined;
     if (Object.keys(args).some(key => !properties || !Object.hasOwn(properties, key))) return { state: 'refused', reason: 'unknown_wire_parameter' };
-    const wire = { ...args, ...(properties && Object.hasOwn(properties, 'include_sensitive') ? { include_sensitive: true } : {}) };
+    const wire: Record<string, unknown> = { ...args, ...(properties && Object.hasOwn(properties, 'include_sensitive') ? { include_sensitive: true } : {}) };
     if (!validator.getValidator(declaration.inputSchema)(wire).valid) return { state: 'refused', reason: 'invalid_arguments' };
     if (typeof wire.limit === 'number' && wire.limit > settings.maxSearchLimit) return { state: 'refused', reason: 'request_bound_exceeded' };
     return dispatch(tool, wire, signal);
